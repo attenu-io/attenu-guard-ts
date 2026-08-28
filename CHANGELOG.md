@@ -4,6 +4,11 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-08-28
+
+### Changed
+- Releases are published from GitHub Actions with npm trusted publishing (OIDC) and provenance attestations; no tokens are stored anywhere. Node 20 is the minimum.
+
 ## [0.1.0] — 2026-08-28
 
 First release: the TypeScript implementation of attenu-guard.
