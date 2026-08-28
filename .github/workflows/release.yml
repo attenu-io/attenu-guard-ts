@@ -1,0 +1,44 @@
+name: release
+# Publishing to npm with trusted publishing (OIDC): no long-lived token lives in
+# this repository. It needs a one-time trusted-publisher configuration on the npm
+# side, naming this repository and this workflow file.
+#
+# A pushed `vX.Y.Z` tag is a release. The tag must equal the version in
+# package.json; the guard below refuses the publish otherwise.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # the OIDC token trusted publishing exchanges
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - name: The tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          test "$tag" = "$pkg" || {
+            echo "::error::tag v$tag does not match package.json version $pkg"
+            exit 1
+          }
+      - name: Publish
+        run: npm publish --provenance --access public

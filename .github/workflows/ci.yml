@@ -1,0 +1,79 @@
+name: ci
+permissions: read-all
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # The whole suite, on every supported Node. Zero runtime dependencies, so a
+    # green run here is a green run for a consumer with nothing else installed.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["18", "20", "22"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: Build (ESM + CommonJS + types)
+        run: npm run build
+      - name: Test
+        run: npm test
+      - name: The package installs and loads from a clean directory
+        run: |
+          set -eu
+          npm pack --pack-destination "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/consumer" && cd "$RUNNER_TEMP/consumer"
+          npm init -y >/dev/null
+          npm install --no-save "$RUNNER_TEMP"/attenu-guard-*.tgz
+          node -e "
+            const { Authority, Guard, RowLimit } = require('attenu-guard');
+            const { guardTool } = require('attenu-guard/adapters/langgraph');
+            const g = Guard.issue('root', new Authority({ scopes: ['crm.*'], ceilings: [new RowLimit(10)], ttl: 60 }));
+            const c = g.delegate('reader', new Authority({ scopes: ['crm.read'], ttl: 30 }), 'read');
+            if (!c.check('crm.read').allowed) throw new Error('allow expected');
+            if (c.check('crm.write').allowed) throw new Error('deny expected');
+            if (typeof guardTool !== 'function') throw new Error('adapter missing');
+            console.log('commonjs entry point ok');
+          "
+          node --input-type=module -e "
+            import { VERSION } from 'attenu-guard';
+            import { guardNode } from 'attenu-guard/adapters/langgraph';
+            if (typeof guardNode !== 'function') throw new Error('adapter missing');
+            console.log('esm entry point ok', VERSION);
+          "
+
+  interop:
+    # The claim the fixtures exist to support: a bundle written by either
+    # implementation verifies with the other. Fails the build if it stops holding.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - name: Install the Python implementation
+        run: python -m pip install --quiet "attenu-guard>=0.5" cryptography
+      - name: Cross-language suite (TypeScript reads Python, Python reads TypeScript)
+        run: npm test
+        env:
+          ATTENU_GUARD_PY: attenu-guard
+      - name: The committed fixtures still match what Python generates
+        run: |
+          set -eu
+          python3 tools/gen_fixtures.py
+          git diff --exit-code -- test/fixtures || {
+            echo "::error::test/fixtures drifted from the Python implementation — regenerate and review"
+            exit 1
+          }
