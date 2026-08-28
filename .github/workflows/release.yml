@@ -43,4 +43,4 @@ jobs:
             exit 1
           }
       - name: Publish
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --loglevel http
