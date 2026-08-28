@@ -7,7 +7,7 @@
   "homepage": "https://attenu.io",
   "repository": {
     "type": "git",
-    "url": "https://github.com/attenu-io/attenu-guard-ts"
+    "url": "git+https://github.com/attenu-io/attenu-guard-ts.git"
   },
   "bugs": {
     "url": "https://github.com/attenu-io/attenu-guard-ts/issues"
@@ -57,7 +57,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "attenu-guard": "./bin/attenu-guard.js"
+    "attenu-guard": "bin/attenu-guard.js"
   },
   "files": [
     "dist",
