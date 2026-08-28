@@ -1,0 +1,614 @@
+[
+ {
+  "child_narrower_than_parent": true,
+  "expected_child": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 5000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "name": "broad meet reader",
+  "parent": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "request": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  }
+ },
+ {
+  "child_narrower_than_parent": true,
+  "expected_child": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read"
+   ],
+   "ttl": 3600
+  },
+  "name": "broad meet wider_request",
+  "parent": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "request": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  }
+ },
+ {
+  "child_narrower_than_parent": true,
+  "expected_child": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 5000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "name": "reader meet broad",
+  "parent": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "request": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  }
+ },
+ {
+  "child_narrower_than_parent": true,
+  "expected_child": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "name": "wildcard_both meet wildcard_both",
+  "parent": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "request": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  }
+ },
+ {
+  "child_narrower_than_parent": true,
+  "expected_child": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": 3600
+  },
+  "name": "broad meet wildcard_both",
+  "parent": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "request": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  }
+ },
+ {
+  "child_narrower_than_parent": true,
+  "expected_child": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "name": "scoped_calls meet scoped_calls",
+  "parent": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "request": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  }
+ },
+ {
+  "child_narrower_than_parent": true,
+  "expected_child": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries",
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "name": "membership meet membership_other",
+  "parent": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "request": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  }
+ },
+ {
+  "child_narrower_than_parent": true,
+  "expected_child": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/\u0000/var/log/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "name": "membership meet incomparable_prefix",
+  "parent": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "request": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  }
+ },
+ {
+  "child_narrower_than_parent": true,
+  "expected_child": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "name": "unknown_ceiling meet unknown_ceiling",
+  "parent": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "request": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  }
+ },
+ {
+  "child_narrower_than_parent": true,
+  "expected_child": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [],
+   "ttl": 3600
+  },
+  "name": "empty meet broad",
+  "parent": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "request": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  }
+ },
+ {
+  "child_narrower_than_parent": true,
+  "expected_child": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [],
+   "ttl": 3600
+  },
+  "name": "broad meet empty",
+  "parent": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "request": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  }
+ }
+]

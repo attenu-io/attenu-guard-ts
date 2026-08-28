@@ -1,0 +1,3602 @@
+[
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "expected": true,
+  "name": "broad <= broad"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "broad <= empty"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "broad <= incomparable_prefix"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "broad <= membership"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "expected": false,
+  "name": "broad <= membership_other"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "expected": false,
+  "name": "broad <= reader"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "expected": false,
+  "name": "broad <= scoped_calls"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "expected": false,
+  "name": "broad <= unknown_ceiling"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "expected": false,
+  "name": "broad <= wider_request"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "broad <= wildcard_both"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "expected": false,
+  "name": "empty <= broad"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "expected": true,
+  "name": "empty <= empty"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "empty <= incomparable_prefix"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "empty <= membership"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "expected": false,
+  "name": "empty <= membership_other"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "expected": false,
+  "name": "empty <= reader"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "expected": false,
+  "name": "empty <= scoped_calls"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "expected": false,
+  "name": "empty <= unknown_ceiling"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "expected": false,
+  "name": "empty <= wider_request"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "expected": true,
+  "name": "empty <= wildcard_both"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "expected": false,
+  "name": "incomparable_prefix <= broad"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "incomparable_prefix <= empty"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": true,
+  "name": "incomparable_prefix <= incomparable_prefix"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "incomparable_prefix <= membership"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "expected": false,
+  "name": "incomparable_prefix <= membership_other"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "expected": false,
+  "name": "incomparable_prefix <= reader"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "expected": false,
+  "name": "incomparable_prefix <= scoped_calls"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "expected": false,
+  "name": "incomparable_prefix <= unknown_ceiling"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "expected": false,
+  "name": "incomparable_prefix <= wider_request"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "incomparable_prefix <= wildcard_both"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "expected": false,
+  "name": "membership <= broad"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "membership <= empty"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "membership <= incomparable_prefix"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": true,
+  "name": "membership <= membership"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "expected": false,
+  "name": "membership <= membership_other"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "expected": false,
+  "name": "membership <= reader"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "expected": false,
+  "name": "membership <= scoped_calls"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "expected": false,
+  "name": "membership <= unknown_ceiling"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "expected": false,
+  "name": "membership <= wider_request"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "membership <= wildcard_both"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "expected": false,
+  "name": "membership_other <= broad"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "membership_other <= empty"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "membership_other <= incomparable_prefix"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "membership_other <= membership"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "expected": true,
+  "name": "membership_other <= membership_other"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "expected": false,
+  "name": "membership_other <= reader"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "expected": false,
+  "name": "membership_other <= scoped_calls"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "expected": false,
+  "name": "membership_other <= unknown_ceiling"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "expected": false,
+  "name": "membership_other <= wider_request"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "membership_other <= wildcard_both"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "expected": false,
+  "name": "reader <= broad"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "reader <= empty"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "reader <= incomparable_prefix"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "reader <= membership"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "expected": false,
+  "name": "reader <= membership_other"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "expected": true,
+  "name": "reader <= reader"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "expected": false,
+  "name": "reader <= scoped_calls"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "expected": false,
+  "name": "reader <= unknown_ceiling"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "expected": true,
+  "name": "reader <= wider_request"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "expected": true,
+  "name": "reader <= wildcard_both"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "expected": false,
+  "name": "scoped_calls <= broad"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "scoped_calls <= empty"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "scoped_calls <= incomparable_prefix"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "scoped_calls <= membership"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "expected": false,
+  "name": "scoped_calls <= membership_other"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "expected": false,
+  "name": "scoped_calls <= reader"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "expected": true,
+  "name": "scoped_calls <= scoped_calls"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "expected": false,
+  "name": "scoped_calls <= unknown_ceiling"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "expected": false,
+  "name": "scoped_calls <= wider_request"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "scoped_calls <= wildcard_both"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "expected": false,
+  "name": "unknown_ceiling <= broad"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "unknown_ceiling <= empty"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "unknown_ceiling <= incomparable_prefix"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "unknown_ceiling <= membership"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "expected": false,
+  "name": "unknown_ceiling <= membership_other"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "expected": false,
+  "name": "unknown_ceiling <= reader"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "expected": false,
+  "name": "unknown_ceiling <= scoped_calls"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "expected": true,
+  "name": "unknown_ceiling <= unknown_ceiling"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "expected": false,
+  "name": "unknown_ceiling <= wider_request"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "unknown_ceiling <= wildcard_both"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "expected": false,
+  "name": "wider_request <= broad"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "wider_request <= empty"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "wider_request <= incomparable_prefix"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "wider_request <= membership"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "expected": false,
+  "name": "wider_request <= membership_other"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "expected": false,
+  "name": "wider_request <= reader"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "expected": false,
+  "name": "wider_request <= scoped_calls"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "expected": false,
+  "name": "wider_request <= unknown_ceiling"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "expected": true,
+  "name": "wider_request <= wider_request"
+ },
+ {
+  "a": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "wider_request <= wildcard_both"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "expected": false,
+  "name": "wildcard_both <= broad"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "expected": false,
+  "name": "wildcard_both <= empty"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/var/log/",
+     "type": "prefix"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "wildcard_both <= incomparable_prefix"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "expected": false,
+  "name": "wildcard_both <= membership"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-west",
+      "us-east"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "tokens"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 1200
+  },
+  "expected": false,
+  "name": "wildcard_both <= membership_other"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "expected": false,
+  "name": "wildcard_both <= reader"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "expected": false,
+  "name": "wildcard_both <= scoped_calls"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "expected": false,
+  "name": "wildcard_both <= unknown_ceiling"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 1000000
+    }
+   ],
+   "scopes": [
+    "crm.export",
+    "crm.read",
+    "fs.write"
+   ],
+   "ttl": 7200
+  },
+  "expected": false,
+  "name": "wildcard_both <= wider_request"
+ },
+ {
+  "a": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "b": {
+   "constraints": [],
+   "scopes": [
+    "crm.*"
+   ],
+   "ttl": null
+  },
+  "expected": true,
+  "name": "wildcard_both <= wildcard_both"
+ }
+]

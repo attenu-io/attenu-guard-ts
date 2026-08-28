@@ -1,0 +1,59 @@
+{
+ "anchor": {
+  "chain_id": "fixtures",
+  "head": "89f12e88c616fd1b43cc83901812e1720850a92ed7ca3e384bcdff57e1488f9c",
+  "kid": "sample",
+  "seq": 1,
+  "sig": "b6da4ddac85a2cdb3896e6b8e02a16b9ec96d5b2cac0a00ca77d7310931e1322",
+  "ts": 0,
+  "v": 1,
+  "verified": true
+ },
+ "chain_id": "fixtures",
+ "entries": [
+  {
+   "agent": "reader",
+   "authority": {
+    "constraints": [
+     {
+      "key": "max_rows",
+      "max": 100
+     }
+    ],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 900
+   },
+   "chain_id": "fixtures",
+   "event": "root",
+   "hash": "c70336dbf7a4c29ec8c192ce322989ff552b445b22191797841fad18a364d85f",
+   "node": "n0",
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 1,
+   "v": 1
+  },
+  {
+   "chain_id": "fixtures",
+   "context": {
+    "rows": 5000
+   },
+   "event": "allow",
+   "hash": "89f12e88c616fd1b43cc83901812e1720850a92ed7ca3e384bcdff57e1488f9c",
+   "node": "n0",
+   "prev_hash": "c70336dbf7a4c29ec8c192ce322989ff552b445b22191797841fad18a364d85f",
+   "scope": "crm.read",
+   "seq": 1,
+   "tool": "crm_query",
+   "ts": 2,
+   "v": 1
+  }
+ ],
+ "note": "offline-verifiable: attenu_guard.evidence.verify_bundle(bundle, signer)",
+ "redaction": {
+  "ok": true,
+  "violations": []
+ },
+ "v": 1
+}

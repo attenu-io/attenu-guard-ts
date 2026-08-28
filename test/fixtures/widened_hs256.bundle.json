@@ -1,0 +1,88 @@
+{
+ "anchor": {
+  "chain_id": "fixtures",
+  "head": "85b0054067d9f1056bc6b8f152566ae3561c9205f8edd78a42b90170b5f6dc54",
+  "kid": "sample",
+  "seq": 2,
+  "sig": "800b6deca2b65b89cb9a378e7ccfbb1a61fe1dae967167026474633adf51a8dd",
+  "ts": 0,
+  "v": 1,
+  "verified": true
+ },
+ "chain_id": "fixtures",
+ "entries": [
+  {
+   "agent": "orchestrator",
+   "authority": {
+    "constraints": [
+     {
+      "key": "egress",
+      "rank": "none"
+     },
+     {
+      "key": "max_rows",
+      "max": 5000
+     }
+    ],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 900
+   },
+   "chain_id": "fixtures",
+   "event": "root",
+   "hash": "f7b61415e63d114b5e802805322d709ca9587ab3006d54089b8381b50ccf73fa",
+   "node": "n0",
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 1,
+   "v": 1
+  },
+  {
+   "agent": "exporter",
+   "chain_id": "fixtures",
+   "event": "spawn",
+   "granted": {
+    "constraints": [
+     {
+      "key": "egress",
+      "rank": "any"
+     }
+    ],
+    "scopes": [
+     "crm.export",
+     "crm.read"
+    ],
+    "ttl": 900
+   },
+   "hash": "e81ee7fc1ad139ebc832766dd8c632004de9ff881eb72119c9a301939e300884",
+   "node": "n1",
+   "parent": "n0",
+   "prev_hash": "f7b61415e63d114b5e802805322d709ca9587ab3006d54089b8381b50ccf73fa",
+   "seq": 1,
+   "ts": 2,
+   "v": 1
+  },
+  {
+   "chain_id": "fixtures",
+   "context": {
+    "egress": "any"
+   },
+   "event": "allow",
+   "hash": "85b0054067d9f1056bc6b8f152566ae3561c9205f8edd78a42b90170b5f6dc54",
+   "node": "n1",
+   "prev_hash": "e81ee7fc1ad139ebc832766dd8c632004de9ff881eb72119c9a301939e300884",
+   "scope": "crm.export",
+   "seq": 2,
+   "tool": "crm_export",
+   "ts": 3,
+   "v": 1
+  }
+ ],
+ "note": "offline-verifiable: attenu_guard.evidence.verify_bundle(bundle, signer)",
+ "redaction": {
+  "ok": true,
+  "violations": []
+ },
+ "v": 1
+}

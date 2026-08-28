@@ -1,0 +1,506 @@
+[
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "context": {
+   "rows": 10
+  },
+  "expected": {
+   "allowed": true,
+   "codes": []
+  },
+  "name": "broad.permits('crm.read', {'rows': 10})",
+  "scope": "crm.read"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "context": {
+   "rows": 999999
+  },
+  "expected": {
+   "allowed": false,
+   "codes": [
+    "ceiling_exceeded"
+   ]
+  },
+  "name": "broad.permits('crm.read', {'rows': 999999})",
+  "scope": "crm.read"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "egress",
+     "rank": "any"
+    },
+    {
+     "key": "max_rows",
+     "max": 100000
+    },
+    {
+     "key": "max_spend",
+     "max": 50.0
+    }
+   ],
+   "scopes": [
+    "crm.*",
+    "mail.send"
+   ],
+   "ttl": 3600
+  },
+  "context": {},
+  "expected": {
+   "allowed": false,
+   "codes": [
+    "scope_not_granted"
+   ]
+  },
+  "name": "broad.permits('fs.write', {})",
+  "scope": "fs.write"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "context": {
+   "rows": 5000
+  },
+  "expected": {
+   "allowed": true,
+   "codes": []
+  },
+  "name": "reader.permits('crm.read', {'rows': 5000})",
+  "scope": "crm.read"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "context": {
+   "rows": 5001
+  },
+  "expected": {
+   "allowed": false,
+   "codes": [
+    "ceiling_exceeded"
+   ]
+  },
+  "name": "reader.permits('crm.read', {'rows': 5001})",
+  "scope": "crm.read"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "max_rows",
+     "max": 5000
+    }
+   ],
+   "scopes": [
+    "crm.read"
+   ],
+   "ttl": 900
+  },
+  "context": {},
+  "expected": {
+   "allowed": false,
+   "codes": [
+    "scope_not_granted"
+   ]
+  },
+  "name": "reader.permits('crm.export', {})",
+  "scope": "crm.export"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "context": {
+   "calls[web.fetch]": 4
+  },
+  "expected": {
+   "allowed": false,
+   "codes": [
+    "ceiling_exceeded"
+   ]
+  },
+  "name": "scoped_calls.permits('web.fetch', {'calls[web.fetch]': 4})",
+  "scope": "web.fetch"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "context": {
+   "calls[web.fetch]": 3
+  },
+  "expected": {
+   "allowed": true,
+   "codes": []
+  },
+  "name": "scoped_calls.permits('web.fetch', {'calls[web.fetch]': 3})",
+  "scope": "web.fetch"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "max_calls",
+     "max": 10
+    },
+    {
+     "applies_to": "web.fetch",
+     "key": "max_calls[web.fetch]",
+     "max": 3,
+     "type": "max_calls"
+    }
+   ],
+   "scopes": [
+    "web.fetch",
+    "web.search"
+   ],
+   "ttl": 600
+  },
+  "context": {
+   "calls": 11
+  },
+  "expected": {
+   "allowed": false,
+   "codes": [
+    "ceiling_exceeded"
+   ]
+  },
+  "name": "scoped_calls.permits('web.search', {'calls': 11})",
+  "scope": "web.search"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "context": {
+   "path": "/srv/data/x",
+   "region": "eu-west",
+   "table": "orders"
+  },
+  "expected": {
+   "allowed": true,
+   "codes": []
+  },
+  "name": "membership.permits('db.query', {'region': 'eu-west', 'table': 'orders', 'path': '/srv/data/x'})",
+  "scope": "db.query"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "context": {
+   "region": "us-east"
+  },
+  "expected": {
+   "allowed": false,
+   "codes": [
+    "ceiling_exceeded"
+   ]
+  },
+  "name": "membership.permits('db.query', {'region': 'us-east'})",
+  "scope": "db.query"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "context": {
+   "table": "salaries"
+  },
+  "expected": {
+   "allowed": false,
+   "codes": [
+    "ceiling_exceeded"
+   ]
+  },
+  "name": "membership.permits('db.query', {'table': 'salaries'})",
+  "scope": "db.query"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "context": {
+   "path": "/etc/passwd"
+  },
+  "expected": {
+   "allowed": false,
+   "codes": [
+    "ceiling_exceeded"
+   ]
+  },
+  "name": "membership.permits('db.query', {'path': '/etc/passwd'})",
+  "scope": "db.query"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "path",
+     "prefix": "/srv/data/",
+     "type": "prefix"
+    },
+    {
+     "key": "region",
+     "one_of": [
+      "eu-north",
+      "eu-west"
+     ],
+     "type": "allow"
+    },
+    {
+     "key": "table",
+     "not_one_of": [
+      "salaries"
+     ],
+     "type": "deny"
+    }
+   ],
+   "scopes": [
+    "db.query"
+   ],
+   "ttl": 300
+  },
+  "context": {},
+  "expected": {
+   "allowed": true,
+   "codes": []
+  },
+  "name": "membership.permits('db.query', {})",
+  "scope": "db.query"
+ },
+ {
+  "authority": {
+   "constraints": [
+    {
+     "key": "max_widgets",
+     "max": 4,
+     "type": "widgets"
+    }
+   ],
+   "scopes": [
+    "widget.spin"
+   ],
+   "ttl": 60
+  },
+  "context": {},
+  "expected": {
+   "allowed": false,
+   "codes": [
+    "unknown_constraint"
+   ]
+  },
+  "name": "unknown_ceiling.permits('widget.spin', {})",
+  "scope": "widget.spin"
+ },
+ {
+  "authority": {
+   "constraints": [],
+   "scopes": [],
+   "ttl": null
+  },
+  "context": {},
+  "expected": {
+   "allowed": false,
+   "codes": [
+    "scope_not_granted"
+   ]
+  },
+  "name": "empty.permits('anything', {})",
+  "scope": "anything"
+ }
+]

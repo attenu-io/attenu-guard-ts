@@ -1,0 +1,42 @@
+[
+ {
+  "canonical": "{}",
+  "source": "{}"
+ },
+ {
+  "canonical": "[]",
+  "source": "[]"
+ },
+ {
+  "canonical": "{\"C\":3,\"_\":4,\"a\":2,\"b\":1}",
+  "source": "{\"C\": 3, \"_\": 4, \"a\": 2, \"b\": 1}"
+ },
+ {
+  "canonical": "{\"cjk\":\"\\u76e3\\u67fb\",\"combining\":\"e\\u0301\",\"emoji\":\"\\ud83d\\ude00\",\"unicode\":\"caf\\u00e9\"}",
+  "source": "{\"cjk\": \"\\u76e3\\u67fb\", \"combining\": \"e\\u0301\", \"emoji\": \"\\ud83d\\ude00\", \"unicode\": \"caf\\u00e9\"}"
+ },
+ {
+  "canonical": "{\"control\":\"\\u0000\\u001f\\u007f\",\"escapes\":\"\\t\\n\\r\\\\\\\"\",\"solidus\":\"a/b\"}",
+  "source": "{\"control\": \"\\u0000\\u001f\\u007f\", \"escapes\": \"\\t\\n\\r\\\\\\\"\", \"solidus\": \"a/b\"}"
+ },
+ {
+  "canonical": "{\"ints\":[0,0,1,-1,100,1000000000000000,10000000000000000,100000000000000000000]}",
+  "source": "{\"ints\": [0, 0, 1, -1, 100, 1000000000000000, 10000000000000000, 100000000000000000000]}"
+ },
+ {
+  "canonical": "{\"floats\":[100.0,0.1,2.5,0.3333333333333333,-0.0,1e-05,1e-07,1e+16,1e+21,1.5e+17]}",
+  "source": "{\"floats\": [100.0, 0.1, 2.5, 0.3333333333333333, -0.0, 1e-05, 1e-07, 1e+16, 1e+21, 1.5e+17]}"
+ },
+ {
+  "canonical": "{\"false\":false,\"null\":null,\"true\":true}",
+  "source": "{\"false\": false, \"null\": null, \"true\": true}"
+ },
+ {
+  "canonical": "{\"nested\":{\"a\":{\"b\":{\"c\":[]}},\"z\":[1,{\"y\":\"x\"}]}}",
+  "source": "{\"nested\": {\"a\": {\"b\": {\"c\": []}}, \"z\": [1, {\"y\": \"x\"}]}}"
+ },
+ {
+  "canonical": "{\"key\\twith\\ttabs\":2,\"key with spaces\":1,\"\\u043a\\u043b\\u044e\\u0447\":3}",
+  "source": "{\"key\\twith\\ttabs\": 2, \"key with spaces\": 1, \"\\u043a\\u043b\\u044e\\u0447\": 3}"
+ }
+]

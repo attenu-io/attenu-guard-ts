@@ -1,0 +1,283 @@
+{
+ "bad_anchor_hs256": {
+  "with_key": {
+   "actions_checked": 2,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "FAILED",
+    "containment": true,
+    "integrity": false,
+    "monotonicity": true
+   },
+   "failures": [
+    "integrity(anchor): anchor signature invalid"
+   ],
+   "nodes": 3,
+   "ok": false
+  },
+  "without_key": {
+   "actions_checked": 2,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "not checked",
+    "containment": true,
+    "integrity": true,
+    "monotonicity": true
+   },
+   "failures": [],
+   "nodes": 3,
+   "ok": true
+  }
+ },
+ "clean_ed25519": {
+  "with_key": {
+   "actions_checked": 2,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "verified",
+    "containment": true,
+    "integrity": true,
+    "monotonicity": true
+   },
+   "failures": [],
+   "nodes": 3,
+   "ok": true
+  },
+  "without_key": {
+   "actions_checked": 2,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "not checked",
+    "containment": true,
+    "integrity": true,
+    "monotonicity": true
+   },
+   "failures": [],
+   "nodes": 3,
+   "ok": true
+  }
+ },
+ "clean_hs256": {
+  "with_key": {
+   "actions_checked": 2,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "verified",
+    "containment": true,
+    "integrity": true,
+    "monotonicity": true
+   },
+   "failures": [],
+   "nodes": 3,
+   "ok": true
+  },
+  "without_key": {
+   "actions_checked": 2,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "not checked",
+    "containment": true,
+    "integrity": true,
+    "monotonicity": true
+   },
+   "failures": [],
+   "nodes": 3,
+   "ok": true
+  }
+ },
+ "dropped_hs256": {
+  "with_key": {
+   "actions_checked": 2,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "FAILED",
+    "containment": false,
+    "integrity": false,
+    "monotonicity": true
+   },
+   "failures": [
+    "integrity: seq gap at 2 (got 3)",
+    "integrity(anchor): seq gap at 2 (got 3)",
+    "containment: allow on unknown node fixtures:n2"
+   ],
+   "nodes": 2,
+   "ok": false
+  },
+  "without_key": {
+   "actions_checked": 2,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "not checked",
+    "containment": false,
+    "integrity": false,
+    "monotonicity": true
+   },
+   "failures": [
+    "integrity: seq gap at 2 (got 3)",
+    "containment: allow on unknown node fixtures:n2"
+   ],
+   "nodes": 2,
+   "ok": false
+  }
+ },
+ "redacted_hs256": {
+  "with_key": {
+   "actions_checked": 2,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "verified",
+    "containment": true,
+    "integrity": true,
+    "monotonicity": true
+   },
+   "failures": [],
+   "nodes": 3,
+   "ok": true
+  },
+  "without_key": {
+   "actions_checked": 2,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "not checked",
+    "containment": true,
+    "integrity": true,
+    "monotonicity": true
+   },
+   "failures": [],
+   "nodes": 3,
+   "ok": true
+  }
+ },
+ "reordered_hs256": {
+  "with_key": {
+   "actions_checked": 2,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "FAILED",
+    "containment": true,
+    "integrity": false,
+    "monotonicity": true
+   },
+   "failures": [
+    "integrity: seq gap at 2 (got 3)",
+    "integrity(anchor): seq gap at 2 (got 3)"
+   ],
+   "nodes": 3,
+   "ok": false
+  },
+  "without_key": {
+   "actions_checked": 2,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "not checked",
+    "containment": true,
+    "integrity": false,
+    "monotonicity": true
+   },
+   "failures": [
+    "integrity: seq gap at 2 (got 3)"
+   ],
+   "nodes": 3,
+   "ok": false
+  }
+ },
+ "tampered_hs256": {
+  "with_key": {
+   "actions_checked": 3,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "FAILED",
+    "containment": false,
+    "integrity": false,
+    "monotonicity": true
+   },
+   "failures": [
+    "integrity: hash mismatch at seq 5",
+    "integrity(anchor): hash mismatch at seq 5",
+    "containment: allow of 'crm.read' on fixtures:n2 outside its authority ['crm.read']"
+   ],
+   "nodes": 3,
+   "ok": false
+  },
+  "without_key": {
+   "actions_checked": 3,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "not checked",
+    "containment": false,
+    "integrity": false,
+    "monotonicity": true
+   },
+   "failures": [
+    "integrity: hash mismatch at seq 5",
+    "containment: allow of 'crm.read' on fixtures:n2 outside its authority ['crm.read']"
+   ],
+   "nodes": 3,
+   "ok": false
+  }
+ },
+ "uncontained_hs256": {
+  "with_key": {
+   "actions_checked": 1,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "verified",
+    "containment": false,
+    "integrity": true,
+    "monotonicity": true
+   },
+   "failures": [
+    "containment: allow of 'crm.read' on n0 outside its authority ['crm.read']"
+   ],
+   "nodes": 1,
+   "ok": false
+  },
+  "without_key": {
+   "actions_checked": 1,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "not checked",
+    "containment": false,
+    "integrity": true,
+    "monotonicity": true
+   },
+   "failures": [
+    "containment: allow of 'crm.read' on n0 outside its authority ['crm.read']"
+   ],
+   "nodes": 1,
+   "ok": false
+  }
+ },
+ "widened_hs256": {
+  "with_key": {
+   "actions_checked": 1,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "verified",
+    "containment": true,
+    "integrity": true,
+    "monotonicity": false
+   },
+   "failures": [
+    "monotonicity: n1 not \u2286 parent n0 (child scopes ['crm.export'] not held by parent)"
+   ],
+   "nodes": 2,
+   "ok": false
+  },
+  "without_key": {
+   "actions_checked": 1,
+   "chain_id": "fixtures",
+   "checks": {
+    "anchor": "not checked",
+    "containment": true,
+    "integrity": true,
+    "monotonicity": false
+   },
+   "failures": [
+    "monotonicity: n1 not \u2286 parent n0 (child scopes ['crm.export'] not held by parent)"
+   ],
+   "nodes": 2,
+   "ok": false
+  }
+ }
+}

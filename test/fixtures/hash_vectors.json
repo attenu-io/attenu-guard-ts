@@ -1,0 +1,65 @@
+[
+ {
+  "expected_hash": "6cb4f6f208bed069214b152266be194dd30f173afcb69e21df6f432c8e54eae3",
+  "payload": {
+   "event": "root",
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 1,
+   "v": 1
+  },
+  "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+ },
+ {
+  "expected_hash": "21c84694949a15d2395fc0297e0c7aeaa5c111d9217e980ffa858d9d6b9fd660",
+  "payload": {
+   "context": {
+    "egress": "none",
+    "rows": 4200,
+    "spend": 0.5
+   },
+   "event": "allow",
+   "prev_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "scope": "crm.read",
+   "seq": 3,
+   "tool": null,
+   "ts": "2026-08-28T10:00:00Z",
+   "v": 1
+  },
+  "prev_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ },
+ {
+  "expected_hash": "dfb68e023e3fd06d3825fc818e26373936991ccec0eaaa863142e19a9f3d8648",
+  "payload": {
+   "event": "deny",
+   "prev_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "reasons": [
+    {
+     "code": "scope_not_granted",
+     "constraint": null,
+     "limit": null,
+     "message": "scope 'crm.export' not covered",
+     "requested": "crm.export"
+    }
+   ],
+   "scope": "crm.export",
+   "seq": 7,
+   "task": "r\u00e9sum\u00e9 the pipeline \ud83d\ude00",
+   "ts": 12,
+   "v": 1
+  },
+  "prev_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+ },
+ {
+  "expected_hash": "6dedec431e90bce305df04aabc3335b484feb67d7a17d3f08dd257272d41d41d",
+  "payload": {
+   "context": {},
+   "event": "empty",
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 0,
+   "v": 1
+  },
+  "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+ }
+]

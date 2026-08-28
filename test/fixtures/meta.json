@@ -1,0 +1,128 @@
+{
+ "cli": {
+  "bad_anchor_hs256": {
+   "with_key": {
+    "exit": 2,
+    "line": "integrity=False monotonicity=True containment=True anchor=FAILED nodes=3 actions_checked=2",
+    "status": "FAILED"
+   },
+   "without_key": {
+    "exit": 0,
+    "line": "integrity=True monotonicity=True containment=True anchor=not checked nodes=3 actions_checked=2",
+    "status": "OK"
+   }
+  },
+  "clean_ed25519": {
+   "with_key": {
+    "exit": 0,
+    "line": "integrity=True monotonicity=True containment=True anchor=verified nodes=3 actions_checked=2",
+    "status": "OK"
+   },
+   "without_key": {
+    "exit": 0,
+    "line": "integrity=True monotonicity=True containment=True anchor=not checked nodes=3 actions_checked=2",
+    "status": "OK"
+   }
+  },
+  "clean_hs256": {
+   "with_key": {
+    "exit": 0,
+    "line": "integrity=True monotonicity=True containment=True anchor=verified nodes=3 actions_checked=2",
+    "status": "OK"
+   },
+   "without_key": {
+    "exit": 0,
+    "line": "integrity=True monotonicity=True containment=True anchor=not checked nodes=3 actions_checked=2",
+    "status": "OK"
+   }
+  },
+  "dropped_hs256": {
+   "with_key": {
+    "exit": 2,
+    "line": "integrity=False monotonicity=True containment=False anchor=FAILED nodes=2 actions_checked=2",
+    "status": "FAILED"
+   },
+   "without_key": {
+    "exit": 2,
+    "line": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2",
+    "status": "FAILED"
+   }
+  },
+  "redacted_hs256": {
+   "with_key": {
+    "exit": 0,
+    "line": "integrity=True monotonicity=True containment=True anchor=verified nodes=3 actions_checked=2",
+    "status": "OK"
+   },
+   "without_key": {
+    "exit": 0,
+    "line": "integrity=True monotonicity=True containment=True anchor=not checked nodes=3 actions_checked=2",
+    "status": "OK"
+   }
+  },
+  "reordered_hs256": {
+   "with_key": {
+    "exit": 2,
+    "line": "integrity=False monotonicity=True containment=True anchor=FAILED nodes=3 actions_checked=2",
+    "status": "FAILED"
+   },
+   "without_key": {
+    "exit": 2,
+    "line": "integrity=False monotonicity=True containment=True anchor=not checked nodes=3 actions_checked=2",
+    "status": "FAILED"
+   }
+  },
+  "tampered_hs256": {
+   "with_key": {
+    "exit": 2,
+    "line": "integrity=False monotonicity=True containment=False anchor=FAILED nodes=3 actions_checked=3",
+    "status": "FAILED"
+   },
+   "without_key": {
+    "exit": 2,
+    "line": "integrity=False monotonicity=True containment=False anchor=not checked nodes=3 actions_checked=3",
+    "status": "FAILED"
+   }
+  },
+  "uncontained_hs256": {
+   "with_key": {
+    "exit": 2,
+    "line": "integrity=True monotonicity=True containment=False anchor=verified nodes=1 actions_checked=1",
+    "status": "FAILED"
+   },
+   "without_key": {
+    "exit": 2,
+    "line": "integrity=True monotonicity=True containment=False anchor=not checked nodes=1 actions_checked=1",
+    "status": "FAILED"
+   }
+  },
+  "widened_hs256": {
+   "with_key": {
+    "exit": 2,
+    "line": "integrity=True monotonicity=False containment=True anchor=verified nodes=2 actions_checked=1",
+    "status": "FAILED"
+   },
+   "without_key": {
+    "exit": 2,
+    "line": "integrity=True monotonicity=False containment=True anchor=not checked nodes=2 actions_checked=1",
+    "status": "FAILED"
+   }
+  }
+ },
+ "ed25519_kid": "fixture-ed25519",
+ "ed25519_private_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+ "ed25519_public_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+ "generated_by": "tools/gen_fixtures.py",
+ "hs256_kid": "sample",
+ "hs256_secret_hex": "73616d706c652d6b6579",
+ "ledger": {
+  "cli_status": "OK",
+  "entries": 9,
+  "verify_ok": true,
+  "verify_reason": null
+ },
+ "tampered_ledger": {
+  "cli_status": "TAMPERED \u2014 hash mismatch at seq 5",
+  "verify_reason": "hash mismatch at seq 5"
+ }
+}
