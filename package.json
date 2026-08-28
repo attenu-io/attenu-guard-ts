@@ -1,0 +1,89 @@
+{
+  "name": "attenu-guard",
+  "version": "0.1.0",
+  "description": "Attenu Guard for TypeScript: enforces per-agent permissions on every tool call and sub-agent handoff — a sub-agent never holds more than its parent — and writes a hash-chained audit log you verify offline. Same bundle format as the Python library.",
+  "license": "Apache-2.0",
+  "author": "Attenu",
+  "homepage": "https://attenu.io",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/attenu-io/attenu-guard-ts"
+  },
+  "bugs": {
+    "url": "https://github.com/attenu-io/attenu-guard-ts/issues"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "security",
+    "authorization",
+    "least-privilege",
+    "delegation",
+    "sub-agents",
+    "audit-log",
+    "mcp",
+    "a2a",
+    "owasp",
+    "langgraph",
+    "langchain",
+    "langgraphjs",
+    "typescript"
+  ],
+  "type": "commonjs",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    },
+    "./adapters/langgraph": {
+      "import": {
+        "types": "./dist/esm/adapters/langgraph.d.ts",
+        "default": "./dist/esm/adapters/langgraph.js"
+      },
+      "require": {
+        "types": "./dist/cjs/adapters/langgraph.d.ts",
+        "default": "./dist/cjs/adapters/langgraph.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "attenu-guard": "./bin/attenu-guard.js"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true});require('node:fs').rmSync('build',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.cjs.json && tsc -p tsconfig.esm.json && node scripts/write-module-markers.js",
+    "build:tests": "tsc -p tsconfig.test.json",
+    "pretest": "npm run build && npm run build:tests",
+    "test": "node --test build/test/*.test.js",
+    "fixtures": "python3 tools/gen_fixtures.py"
+  },
+  "devDependencies": {
+    "@langchain/core": "^1.2.9",
+    "@langchain/langgraph": "^1.4.13",
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
+  }
+}

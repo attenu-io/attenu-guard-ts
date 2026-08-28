@@ -1,0 +1,10 @@
+# `files` in package.json is the allow-list that actually governs the tarball.
+# This file is a second line of defence for anything that slips past it.
+src/
+test/
+tools/
+scripts/
+build/
+.github/
+tsconfig*.json
+*.tsbuildinfo
