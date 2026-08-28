@@ -13,7 +13,7 @@ and reads either one's output.
 
 - Zero runtime dependencies — Node's own `crypto`, nothing else
 - ESM and CommonJS builds, types included
-- Node 18 and above
+- Node 20 and above (the LangGraph.js adapter depends on `langsmith`, which needs the global WebCrypto that Node 19 introduced; Node 18 is end-of-life)
 
 ## Install
 
