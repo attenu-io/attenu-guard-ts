@@ -4,6 +4,23 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Delegation-chain verification.** `load(tokens, signer, {rootKeyIds, now})` runs the
+  Internet-Draft's Offline Verification Algorithm over a chain of Delegation Tokens and
+  returns a `VerifiedChain` whose `permits` authorises against the leaf authority. All
+  five in-scope steps are checked in the draft's order — JWS signatures with an
+  alg-confusion guard, the `par_hash` byte commitment compared in constant time,
+  `del_depth`/`del_max_depth` bounds, subsumption via `Authority.isNarrowerThan`, and the
+  time claims including `exp` monotonicity along the chain — denying on the first failure
+  with a `WireError` carrying a `WireReasonCode`. Holder binding (`cnf`/DPoP) and status-list
+  revocation, the draft's steps 6 and 7, are out of scope in both implementations.
+  `b64urlEncode`/`b64urlDecode` are exported alongside it.
+- The seven language-independent interop vectors from the Python repository are generated
+  into `test/fixtures/vectors/` and asserted here: the valid chain verifies and yields the
+  leaf authority, and each adversarial chain is rejected for exactly the reason it declares.
+
 ## [0.1.1] — 2026-08-28
 
 ### Changed

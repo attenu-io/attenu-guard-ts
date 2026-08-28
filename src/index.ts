@@ -87,8 +87,18 @@ export type {
   VerifyReport,
 } from "./evidence.js";
 
-export { Ed25519Signer, Ed25519Verifier, HS256TestSigner } from "./wire.js";
-export type { Signer } from "./wire.js";
+export {
+  Ed25519Signer,
+  Ed25519Verifier,
+  HS256TestSigner,
+  VerifiedChain,
+  WireError,
+  WireReasonCode,
+  b64urlDecode,
+  b64urlEncode,
+  load,
+} from "./wire.js";
+export type { LoadOptions, Signer, WireReasonCodeValue } from "./wire.js";
 
 export {
   RawNumber,

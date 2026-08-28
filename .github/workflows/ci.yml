@@ -64,7 +64,10 @@ jobs:
           python-version: "3.12"
       - run: npm ci
       - name: Install the Python implementation
-        run: python -m pip install --quiet "attenu-guard>=0.5" cryptography
+        # >=0.6 ships the delegation-chain interop vectors as package data
+        # (attenu_guard.vectors); tools/gen_fixtures.py copies them verbatim
+        # rather than regenerating them, so an older release cannot satisfy it.
+        run: python -m pip install --quiet "attenu-guard>=0.6" cryptography
       - name: Cross-language suite (TypeScript reads Python, Python reads TypeScript)
         run: npm test
         env:
