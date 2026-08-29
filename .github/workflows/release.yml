@@ -44,3 +44,20 @@ jobs:
           }
       - name: Publish
         run: npm publish --provenance --access public
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cut the GitHub Release from this version's CHANGELOG section
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          V="${GITHUB_REF_NAME#v}"
+          awk -v v="$V" '$0 ~ "^## \\[" v "\\]" {p=1; next} p && /^## \[/ {exit} p' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md for ${V}." > notes.md
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "attenu-guard ${V}" --notes-file notes.md

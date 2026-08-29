@@ -1,6 +1,6 @@
 {
   "name": "attenu-guard",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Attenu Guard for TypeScript: enforces per-agent permissions on every tool call and sub-agent handoff — a sub-agent never holds more than its parent — and writes a hash-chained audit log you verify offline. Same bundle format as the Python library.",
   "license": "Apache-2.0",
   "author": "Attenu",

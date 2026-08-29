@@ -170,9 +170,11 @@ export class AuditLog {
     signer: Signer,
   ): [boolean, string | null] {
     const a = anchor ?? {};
-    if (toPlain(a["c14n"]) !== "JCS") return [false, "anchor canonicalization is not JCS"];
     const body: Record<string, CJson> = {};
-    for (const k of ["v", "c14n", "chain_id", "seq", "head", "ts"]) body[k] = a[k] ?? null;
+    for (const k of ["v", "chain_id", "seq", "head", "ts"]) body[k] = a[k] ?? null;
+    for (const [key, value] of Object.entries(a)) {
+      if (key !== "kid" && key !== "sig" && key !== "verified") body[key] = value;
+    }
     const sigHex = (toPlain(a["sig"]) as string) ?? "";
     if (typeof sigHex !== "string" || !/^(?:[0-9a-fA-F]{2})*$/.test(sigHex)) {
       return [false, "anchor signature not hex"];
@@ -197,9 +199,6 @@ export class AuditLog {
     let prev = GENESIS;
     let expectedSeq = 0;
     for (const e of entries) {
-      if (toPlain(e["c14n"]) !== "JCS") {
-        return [false, `canonicalization is not JCS at seq ${expectedSeq}`];
-      }
       const seq = asNumber(e["seq"]);
       if (seq !== expectedSeq) {
         return [false, `seq gap at ${expectedSeq} (got ${formatSeq(e["seq"])})`];

@@ -6,7 +6,7 @@ rather than an assertion.
 
     python3 tools/gen_fixtures.py
 
-Requires the Python `attenu-guard` package (>=0.7, which ships the JCS interop vectors this
+Requires the Python `attenu-guard` package (>=0.7.1, which ships the JCS interop vectors this
 script copies) and `cryptography`, for the Ed25519 anchor, importable in the running
 interpreter. Deterministic: the Ed25519 key, the HMAC secret
 and every timestamp are fixed, so re-running produces identical files.
@@ -67,13 +67,13 @@ _JCS_VECTOR_NAMES = {
     "valid_jcs_big_integer.json",
     "reject_non_finite.json",
     "reject_duplicate_member.json",
-    "reject_unmarked_canonicalization.json",
+    "valid_jcs_unmarked_header.json",
 }
 _missing_jcs = _JCS_VECTOR_NAMES.difference(attenu_vectors.VECTOR_NAMES)
 if _missing_jcs:
     raise SystemExit(
         "The installed attenu-guard predates the RFC 8785 JCS vector set.\n"
-        "Upgrade with:  pip install --upgrade 'attenu-guard>=0.7'"
+        "Upgrade with:  pip install --upgrade 'attenu-guard>=0.7.1'"
     )
 
 ROOT = Path(__file__).resolve().parent.parent

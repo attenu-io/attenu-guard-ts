@@ -279,7 +279,6 @@ export const WireReasonCode = {
   MALFORMED: "malformed",
   NON_FINITE: "non_finite",
   DUPLICATE_MEMBER: "duplicate_member",
-  CANONICALIZATION_REQUIRED: "canonicalization_required",
   NON_CANONICAL: "non_canonical",
   EXPIRED: ReasonCode.EXPIRED, // "expired" — reuse, don't reinvent
 } as const;
@@ -372,12 +371,6 @@ function parseToken(token: string): ParsedToken {
   const payload = toPlain<Json>(payloadRaw);
   if (!isJsonObject(header) || !isJsonObject(payload)) {
     throw new WireError(WireReasonCode.MALFORMED, "header/payload must be JSON objects");
-  }
-  if (header["c14n"] !== "JCS") {
-    throw new WireError(
-      WireReasonCode.CANONICALIZATION_REQUIRED,
-      "token header must declare c14n='JCS'",
-    );
   }
   let canonicalHeader: string;
   let canonicalPayload: string;

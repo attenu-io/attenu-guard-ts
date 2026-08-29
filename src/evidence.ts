@@ -433,9 +433,6 @@ export function verifyBundle(bundle: Partial<Bundle>, signer: Signer | null = nu
     anchor: "not checked",
   };
   const failures: string[] = [];
-  const canonicalBundle = bundle.c14n === "JCS";
-  if (!canonicalBundle) failures.push("integrity: bundle canonicalization is not JCS");
-
   // (1) integrity: the hash chain, plus the signed anchor when a key is given.
   const [okChain, err] = AuditLog.verify(entries);
   if (!okChain) failures.push(`integrity: ${err}`);
@@ -443,9 +440,9 @@ export function verifyBundle(bundle: Partial<Bundle>, signer: Signer | null = nu
     const [okAnchor, aerr] = AuditLog.verifyAnchor(entries, anchor, signer);
     checks.anchor = okAnchor ? "verified" : "FAILED";
     if (!okAnchor) failures.push(`integrity(anchor): ${aerr}`);
-    checks.integrity = canonicalBundle && okChain && okAnchor;
+    checks.integrity = okChain && okAnchor;
   } else {
-    checks.integrity = canonicalBundle && okChain;
+    checks.integrity = okChain;
   }
 
   const { auth, parent, failures: afail } = nodeAuthorities(entries);

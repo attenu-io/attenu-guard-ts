@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { AuditLog } from "../src/audit.js";
+import { canonicalBytes } from "../src/canonical.js";
+import { AuditLog, GENESIS, hashEntry } from "../src/audit.js";
 import { exportBundle, verifyBundle } from "../src/evidence.js";
 import { HS256TestSigner } from "../src/wire.js";
 
@@ -19,22 +20,41 @@ test("ledger entries, anchors, and bundles declare JCS", () => {
   assert.equal(verifyBundle(bundle, signer).ok, true);
 });
 
-test("unmarked ledgers, anchors, and bundles fail closed", () => {
+test("c14n is informational on ledger, anchor, and bundle verification", () => {
   const log = new AuditLog();
-  log.append("root", 0, { chain_id: "jcs", node: "root" });
-  const bundle = exportBundle(log, signer) as any;
+  const original = log.append("root", 0, { chain_id: "jcs", node: "root" });
 
-  const unmarkedEntry = structuredClone(bundle);
-  delete unmarkedEntry.entries[0].c14n;
-  assert.equal(AuditLog.verify(unmarkedEntry.entries)[0], false);
+  for (const marker of [undefined, "private-label-v2"] as const) {
+    const entry: any = structuredClone(original);
+    delete entry.c14n;
+    delete entry.hash;
+    if (marker !== undefined) entry.c14n = marker;
+    entry.hash = hashEntry(GENESIS, entry);
+    assert.deepEqual(AuditLog.verify([entry]), [true, null]);
 
-  const unmarkedAnchor = structuredClone(bundle);
-  delete unmarkedAnchor.anchor.c14n;
-  assert.equal(AuditLog.verifyAnchor(unmarkedAnchor.entries, unmarkedAnchor.anchor, signer)[0], false);
+    const body: any = {
+      v: 1,
+      chain_id: "jcs",
+      seq: 0,
+      head: entry.hash,
+      ts: 0,
+    };
+    if (marker !== undefined) body.c14n = marker;
+    const anchor: any = {
+      ...body,
+      kid: signer.kid,
+      sig: signer.sign(canonicalBytes(body)).toString("hex"),
+    };
+    assert.deepEqual(AuditLog.verifyAnchor([entry], anchor, signer), [true, null]);
 
-  const unmarkedBundle = structuredClone(bundle);
-  delete unmarkedBundle.c14n;
-  const report = verifyBundle(unmarkedBundle, signer);
-  assert.equal(report.ok, false);
-  assert.ok(report.failures.some((failure) => failure.includes("canonicalization")));
+    const bundle: any = {
+      v: 1,
+      chain_id: "jcs",
+      entries: [entry],
+      anchor,
+    };
+    if (marker !== undefined) bundle.c14n = marker;
+    const report = verifyBundle(bundle, signer);
+    assert.equal(report.ok, true, report.failures.join("; "));
+  }
 });

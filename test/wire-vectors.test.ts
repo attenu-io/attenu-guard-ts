@@ -48,7 +48,7 @@ const VECTOR_NAMES = [
   "valid_jcs_big_integer",
   "reject_non_finite",
   "reject_duplicate_member",
-  "reject_unmarked_canonicalization",
+  "valid_jcs_unmarked_header",
 ] as const;
 
 const REJECT_VECTORS = VECTOR_NAMES.filter((name) => name.startsWith("reject_"));
@@ -115,6 +115,17 @@ test("all 17 published vectors score exactly as declared", () => {
     const v = vector(name);
     assert.equal(outcome(v), v.expect ?? v.expect_reject_reason, `${name}: ${v.description}`);
   }
+});
+
+test("the unmarked-header vector is JCS and verifies", () => {
+  const v = vector("valid_jcs_unmarked_header");
+  const [headerB64, payloadB64] = v.tokens[0]!.split(".");
+  const headerText = Buffer.from(headerB64!, "base64url").toString("utf8");
+  const payloadText = Buffer.from(payloadB64!, "base64url").toString("utf8");
+  assert.equal(Object.hasOwn(JSON.parse(headerText), "c14n"), false);
+  assert.equal(headerText, canonicalJson(JSON.parse(headerText)));
+  assert.equal(payloadText, canonicalJson(JSON.parse(payloadText)));
+  assert.equal(outcome(v), "accept");
 });
 
 test("every adversarial chain is rejected, for exactly the reason it declares", () => {
@@ -231,6 +242,22 @@ test("a non-JCS numeric spelling is refused before semantic checks", () => {
     j.replace('"del_max_depth":7', '"del_max_depth":7.0'),
   );
   assert.notDeepEqual(tokens, VALID.tokens);
+  assert.equal(outcome({ ...VALID, tokens }), WireReasonCode.NON_CANONICAL);
+});
+
+test("an unmarked non-JCS numeric spelling is non_canonical", () => {
+  const [headerB64, payloadB64] = VALID.tokens[0]!.split(".");
+  const header = JSON.parse(Buffer.from(headerB64!, "base64url").toString("utf8"));
+  delete header.c14n;
+  const unmarkedHeaderB64 = Buffer.from(canonicalJson(header), "utf8").toString("base64url");
+  const payload = Buffer.from(payloadB64!, "base64url")
+    .toString("utf8")
+    .replace('"del_max_depth":7', '"del_max_depth":7.0');
+  const changedPayloadB64 = Buffer.from(payload, "utf8").toString("base64url");
+  const signingInput = Buffer.from(`${unmarkedHeaderB64}.${changedPayloadB64}`, "ascii");
+  const sig = VALID_SIGNER.sign(signingInput).toString("base64url");
+  const tokens = [`${unmarkedHeaderB64}.${changedPayloadB64}.${sig}`, ...VALID.tokens.slice(1)];
+
   assert.equal(outcome({ ...VALID, tokens }), WireReasonCode.NON_CANONICAL);
 });
 
