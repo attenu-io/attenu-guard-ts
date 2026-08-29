@@ -181,7 +181,7 @@ test("redaction removes the prompt text and the bundle still verifies", () => {
 });
 
 test("strict export refuses to carry a field outside the allow-list", () => {
-  const guard = Guard.issue("a", new Authority({ scopes: ["x"], ttl: 60 }), { chainId: "leak" });
+  const guard = Guard.issue("a", new Authority({ scopes: ["test.x"], ttl: 60 }), { chainId: "leak" });
   const entries = guard.auditLog().entries;
   entries[0]!["raw_tool_args"] = { password: "hunter2" };
   const report = redactionReport(entries);
@@ -193,8 +193,8 @@ test("strict export refuses to carry a field outside the allow-list", () => {
 });
 
 test("a context allow-list catches an unvetted context key", () => {
-  const guard = Guard.issue("a", new Authority({ scopes: ["x"], ttl: 60 }), { chainId: "ctx" });
-  guard.check("x", { context: { rows: 1, customer_email: "someone@example.com" } });
+  const guard = Guard.issue("a", new Authority({ scopes: ["test.x"], ttl: 60 }), { chainId: "ctx" });
+  guard.check("test.x", { context: { rows: 1, customer_email: "someone@example.com" } });
   const report = redactionReport(guard.auditLog().entries, ["rows", "_scope"]);
   assert.equal(report.ok, false);
   assert.equal(report.violations[0]!.context_key, "customer_email");

@@ -41,6 +41,8 @@ const VECTOR_NAMES = [
   "reject_bad_signature",
   "reject_wildcard_widening",
   "reject_wildcard_boundary",
+  "reject_bare_wildcard",
+  "reject_nonterminal_wildcard",
   "valid_jcs_integral_float",
   "valid_jcs_exponent_form",
   "valid_jcs_non_ascii",
@@ -109,8 +111,8 @@ test("the valid 3-hop chain verifies, and yields the formatter's authority", () 
   assert.equal(chain.permits("mail.send").allowed, false); // held by the root, not the leaf
 });
 
-test("all 17 published vectors score exactly as declared", () => {
-  assert.equal(VECTOR_NAMES.length, 17);
+test("all 19 published vectors score exactly as declared", () => {
+  assert.equal(VECTOR_NAMES.length, 19);
   for (const name of VECTOR_NAMES) {
     const v = vector(name);
     assert.equal(outcome(v), v.expect ?? v.expect_reject_reason, `${name}: ${v.description}`);

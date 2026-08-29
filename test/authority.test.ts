@@ -50,6 +50,41 @@ const delegationCases = fixtureJson<DelegationCase[]>("delegation_cases.json");
 const subsumptionCases = fixtureJson<SubsumptionCase[]>("subsumption_cases.json");
 const permitsCases = fixtureJson<PermitsCase[]>("permits_cases.json");
 
+test("scope syntax accepts lowercase dot segments and terminal wildcards", () => {
+  const valid = [
+    "crm.read",
+    "crm.x.y.z",
+    "crm.*",
+    "crm.x.*",
+    "agent.delegate.research_agent",
+    "s3.write",
+  ];
+  assert.deepEqual([...new Authority({ scopes: valid }).scopes], valid);
+});
+
+test("scope syntax rejects bare, empty, uppercase, and glob-like forms", () => {
+  const invalid = ["", "crm", "*", "crm.re*", "*.read", "crm.*.read", "crm..read", "CRM.Read", "crm.read "];
+  for (const scope of invalid) {
+    assert.throws(() => new Authority({ scopes: [scope] }), /invalid scope/, scope);
+  }
+});
+
+test("fromWire applies the same scope validation", () => {
+  assert.throws(
+    () => Authority.fromWire({ scopes: ["*"], constraints: [], ttl: 100 }),
+    /invalid scope/,
+  );
+});
+
+test("terminal wildcards are segment-bounded and cover any depth", () => {
+  const authority = new Authority({ scopes: ["crm.*"] });
+  assert.equal(authority.coversScope("crm.read"), true);
+  assert.equal(authority.coversScope("crm.x.y.z"), true);
+  assert.equal(authority.coversScope("crm"), false);
+  assert.equal(authority.coversScope("crmx.read"), false);
+  assert.equal(new Authority({ scopes: ["crm.x.*"] }).isNarrowerThan(authority), true);
+});
+
 test("meet produces the same child authority as Python, in wire form", () => {
   assert.ok(delegationCases.length > 0);
   for (const c of delegationCases) {
@@ -143,8 +178,8 @@ test("a wildcard covers its family but not the reverse", () => {
 });
 
 test("a ceiling only ever appears or tightens across a meet", () => {
-  const parent = new Authority({ scopes: ["x"], ceilings: [new RowLimit(100)] });
-  const request = new Authority({ scopes: ["x"], ceilings: [new SpendCap(5)] });
+  const parent = new Authority({ scopes: ["test.x"], ceilings: [new RowLimit(100)] });
+  const request = new Authority({ scopes: ["test.x"], ceilings: [new SpendCap(5)] });
   const child = parent.meet(request);
   assert.equal((child.ceiling("max_rows") as RowLimit).maxRows, 100);
   assert.equal((child.ceiling("max_spend") as SpendCap).maxSpend, 5);
@@ -152,15 +187,15 @@ test("a ceiling only ever appears or tightens across a meet", () => {
 });
 
 test("an unbounded dimension is more powerful, so it is not narrower", () => {
-  const bounded = new Authority({ scopes: ["x"], ceilings: [new RowLimit(10)], ttl: 1 });
-  const unbounded = new Authority({ scopes: ["x"], ttl: 1 });
+  const bounded = new Authority({ scopes: ["test.x"], ceilings: [new RowLimit(10)], ttl: 1 });
+  const unbounded = new Authority({ scopes: ["test.x"], ttl: 1 });
   assert.ok(bounded.isNarrowerThan(unbounded));
   assert.ok(!unbounded.isNarrowerThan(bounded));
 });
 
 test("a null ttl is not narrower than a bounded one", () => {
-  const forever = new Authority({ scopes: ["x"], ttl: null });
-  const hour = new Authority({ scopes: ["x"], ttl: 3600 });
+  const forever = new Authority({ scopes: ["test.x"], ttl: null });
+  const hour = new Authority({ scopes: ["test.x"], ttl: 3600 });
   assert.ok(hour.isNarrowerThan(forever));
   assert.ok(!forever.isNarrowerThan(hour));
 });
@@ -231,6 +266,6 @@ test("a wire form round-trips through fromWire unchanged", () => {
 });
 
 test("describe is stable and readable", () => {
-  const auth = new Authority({ scopes: ["b", "a"], ceilings: [new RowLimit(5)], ttl: 60 });
-  assert.equal(auth.describe(), "scopes=[a, b] ceilings=[max_rows<=5] ttl=60");
+  const auth = new Authority({ scopes: ["test.b", "test.a"], ceilings: [new RowLimit(5)], ttl: 60 });
+  assert.equal(auth.describe(), "scopes=[test.a, test.b] ceilings=[max_rows<=5] ttl=60");
 });

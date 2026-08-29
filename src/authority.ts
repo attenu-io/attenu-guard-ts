@@ -16,7 +16,7 @@
  * proposal is only ever an input to `meet`, and `meet` can only shrink.
  *
  * `isNarrowerThan` is exactly the wire protocol's subsumption relation
- * (draft-asor-wimse-agent-delegation-chain-00), so a chain that verifies offline
+ * (draft-asor-wimse-agent-delegation-chain-01), so a chain that verifies offline
  * is one the library would have permitted, and the reverse.
  */
 
@@ -61,11 +61,24 @@ export interface AuthorityWire {
   [key: string]: CJson;
 }
 
+const SCOPE_RE = /^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*\.(?:[a-z][a-z0-9_-]*|\*)$/;
+
+function validateScope(scope: unknown): asserts scope is string {
+  if (typeof scope !== "string" || !SCOPE_RE.test(scope)) {
+    throw new TypeError(
+      `invalid scope ${JSON.stringify(scope)}: expected lowercase dot-separated segments; ` +
+        "'*' is permitted only as the complete final segment after a dot",
+    );
+  }
+}
+
 export class Authority {
   /**
-   * Permission strings, e.g. `crm.read`. Scopes support one level of prefix
-   * wildcard: `crm.*` covers `crm.read` and `crm.write`. A child requesting
-   * `crm.read` under a parent holding `crm.*` is allowed; the reverse is not.
+   * Lowercase, dot-separated permission strings, e.g. `crm.read`. A terminal
+   * prefix wildcard such as `crm.*` covers every depth below the dotted `crm.`
+   * boundary, but not bare `crm` or the adjacent namespace `crmx.read`. A child
+   * requesting `crm.read` under a parent holding `crm.*` is allowed; the reverse
+   * is not. Bare or non-terminal `*` is invalid.
    */
   readonly scopes: ReadonlySet<string>;
 
@@ -81,7 +94,9 @@ export class Authority {
   readonly ttl: number | null;
 
   constructor(init: AuthorityInit = {}) {
-    this.scopes = new Set(init.scopes ?? []);
+    const scopes = new Set(init.scopes ?? []);
+    for (const scope of scopes) validateScope(scope);
+    this.scopes = scopes;
     const byKey = new Map<string, Ceiling>();
     for (const c of init.ceilings ?? []) byKey.set(String(c.key), c);
     this.ceilings = Array.from(byKey.keys())
@@ -103,7 +118,7 @@ export class Authority {
 
   // ---- scope helpers ----------------------------------------------------
 
-  /** Does a held scope cover a requested scope? Supports one `x.*` wildcard. */
+  /** Exact match, or a terminal `x.*` prefix at the retained dot boundary. */
   static scopeCovers(held: string, requested: string): boolean {
     if (held === requested) return true;
     if (held.endsWith(".*")) return requested.startsWith(held.slice(0, -1)); // keep the dot

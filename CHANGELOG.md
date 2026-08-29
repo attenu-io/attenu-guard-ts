@@ -4,6 +4,20 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.3.0] — 2026-08-29
+
+### Changed
+- Scope values now use the same lowercase, dot-separated grammar as Python.
+  Only a complete terminal `.*` wildcard is valid; it covers any depth below
+  the segment boundary. Constructors and wire verification reject malformed
+  scope syntax.
+
+### Added
+- The two malformed-wildcard vectors from Python bring the shared interop suite
+  to 19 vectors.
+
 ## [0.2.1] — 2026-08-29
 
 ### Changed

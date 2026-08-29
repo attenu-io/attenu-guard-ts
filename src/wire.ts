@@ -9,7 +9,7 @@
  *                      `Ed25519Verifier` for anyone holding only the public half.
  *
  * The second half of the module is `load()`: the Offline Verification Algorithm
- * of draft-asor-wimse-agent-delegation-chain-00, ported from `wire.py`'s
+ * of draft-asor-wimse-agent-delegation-chain-01, ported from `wire.py`'s
  * `load()`. A Delegation Token is a compact, JWT-shaped, JWS-signed object
  * carrying one hop's `Authority` plus enough chain-linkage state (`del_depth`,
  * `del_max_depth`, `par_hash`) that an Enforcement Point can verify an entire

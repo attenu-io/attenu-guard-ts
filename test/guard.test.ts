@@ -161,33 +161,33 @@ test("an elapsed ttl stops authorizing", () => {
 });
 
 test("the chain depth ceiling holds", () => {
-  const g = Guard.issue("a", new Authority({ scopes: ["x"], ttl: 60 }), { chainId: "t", maxDepth: 2 });
-  const one = g.delegate("b", new Authority({ scopes: ["x"], ttl: 60 }), "b");
-  const two = one.delegate("c", new Authority({ scopes: ["x"], ttl: 60 }), "c");
+  const g = Guard.issue("a", new Authority({ scopes: ["test.x"], ttl: 60 }), { chainId: "t", maxDepth: 2 });
+  const one = g.delegate("b", new Authority({ scopes: ["test.x"], ttl: 60 }), "b");
+  const two = one.delegate("c", new Authority({ scopes: ["test.x"], ttl: 60 }), "c");
   assert.equal(two.wouldDelegate("d").allowed, false);
   assert.throws(
-    () => two.delegate("d", new Authority({ scopes: ["x"], ttl: 60 }), "d"),
+    () => two.delegate("d", new Authority({ scopes: ["test.x"], ttl: 60 }), "d"),
     (err: unknown) => err instanceof AuthorityError && err.reason === "max_depth",
   );
 });
 
 test("the chain fanout ceiling holds", () => {
-  const g = Guard.issue("a", new Authority({ scopes: ["x"], ttl: 60 }), { chainId: "t", maxFanout: 2 });
-  g.delegate("b", new Authority({ scopes: ["x"], ttl: 60 }), "b");
-  g.delegate("c", new Authority({ scopes: ["x"], ttl: 60 }), "c");
+  const g = Guard.issue("a", new Authority({ scopes: ["test.x"], ttl: 60 }), { chainId: "t", maxFanout: 2 });
+  g.delegate("b", new Authority({ scopes: ["test.x"], ttl: 60 }), "b");
+  g.delegate("c", new Authority({ scopes: ["test.x"], ttl: 60 }), "c");
   assert.throws(
-    () => g.delegate("d", new Authority({ scopes: ["x"], ttl: 60 }), "d"),
+    () => g.delegate("d", new Authority({ scopes: ["test.x"], ttl: 60 }), "d"),
     (err: unknown) => err instanceof AuthorityError && err.reason === "max_fanout",
   );
 });
 
 test("wouldDelegate is a pure dry-run: it consumes no fanout", () => {
-  const g = Guard.issue("a", new Authority({ scopes: ["x"], ttl: 60 }), { chainId: "t", maxFanout: 1 });
+  const g = Guard.issue("a", new Authority({ scopes: ["test.x"], ttl: 60 }), { chainId: "t", maxFanout: 1 });
   const before = g.auditLog().length;
   assert.ok(g.wouldDelegate("b").allowed);
   assert.ok(g.wouldDelegate("b").allowed);
   assert.equal(g.auditLog().length, before);
-  g.delegate("b", new Authority({ scopes: ["x"], ttl: 60 }), "b"); // the one slot
+  g.delegate("b", new Authority({ scopes: ["test.x"], ttl: 60 }), "b"); // the one slot
   assert.equal(g.wouldDelegate("c").allowed, false);
 });
 
