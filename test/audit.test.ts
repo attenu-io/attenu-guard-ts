@@ -14,7 +14,7 @@ import { AuditLog, GENESIS, hashEntry, chainIdOf } from "../src/audit.js";
 import { Authority } from "../src/authority.js";
 import { RowLimit } from "../src/ceilings.js";
 import { Guard } from "../src/guard.js";
-import { parseJson, pyJsonDumps, toPlain } from "../src/canonical.js";
+import { canonicalJson, parseJson, toPlain } from "../src/canonical.js";
 import { HS256TestSigner } from "../src/wire.js";
 import { META, fixtureJson, fixtureText } from "./helpers.js";
 
@@ -87,7 +87,7 @@ test("a log this library writes verifies, and its head advances", () => {
   assert.deepEqual([...log].length, 2);
 });
 
-test("the on-disk ledger uses the same line format Python writes", () => {
+test("the on-disk ledger is RFC 8785 JCS", () => {
   const dir = mkdtempSync(join(tmpdir(), "attenu-audit-"));
   try {
     const path = join(dir, "nested", "audit.jsonl");
@@ -97,8 +97,7 @@ test("the on-disk ledger uses the same line format Python writes", () => {
     const lines = readFileSync(path, "utf8").trimEnd().split("\n");
     assert.equal(lines.length, 2);
     for (let i = 0; i < lines.length; i++) {
-      // Python writes `json.dumps(payload, sort_keys=True)` — default separators.
-      assert.equal(lines[i], pyJsonDumps(log.entries[i]!));
+      assert.equal(lines[i], canonicalJson(log.entries[i]!));
       assert.deepEqual(toPlain(parseJson(lines[i]!)), toPlain(log.entries[i]!));
     }
     assert.deepEqual(AuditLog.verify(AuditLog.load(path)), [true, null]);

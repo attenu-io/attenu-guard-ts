@@ -4,7 +4,19 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-08-29
+
+### Changed
+- **RFC 8785 JCS is the only canonicalization format.** Delegation Tokens must
+  declare `c14n: JCS` and already carry canonical header and payload bytes.
+  Ledger entries, anchors and evidence bundles now carry the same marker and
+  use JCS for every hash and signature. There is no legacy or dual-format reader.
+- The canonicalizer now uses ECMAScript number serialization, raw Unicode and
+  UTF-16 code-unit member ordering, and rejects non-finite numbers, duplicate
+  members, lone surrogates, unsupported values and cyclic structures.
+- Cross-language fixtures now target Python `attenu-guard` 0.7 and include all
+  17 published interop vectors. The new reason codes are `non_finite`,
+  `duplicate_member`, `canonicalization_required` and `non_canonical`.
 
 ### Added
 - **Delegation-chain verification.** `load(tokens, signer, {rootKeyIds, now})` runs the
@@ -17,7 +29,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with a `WireError` carrying a `WireReasonCode`. Holder binding (`cnf`/DPoP) and status-list
   revocation, the draft's steps 6 and 7, are out of scope in both implementations.
   `b64urlEncode`/`b64urlDecode` are exported alongside it.
-- The seven language-independent interop vectors from the Python repository are generated
+- The 17 language-independent interop vectors from the Python repository are generated
   into `test/fixtures/vectors/` and asserted here: the valid chain verifies and yields the
   leaf authority, and each adversarial chain is rejected for exactly the reason it declares.
 

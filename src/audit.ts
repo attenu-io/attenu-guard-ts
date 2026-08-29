@@ -17,8 +17,8 @@ import { dirname } from "node:path";
 
 import {
   canonicalBytes,
+  canonicalJson,
   parseJson,
-  pyJsonDumps,
   toPlain,
   type CJson,
 } from "./canonical.js";
@@ -38,6 +38,7 @@ export interface Sink {
 /** A signed external commitment to a chain head. */
 export interface Anchor {
   v: number;
+  c14n: "JCS";
   chain_id: string;
   seq: number;
   head: string;
@@ -103,6 +104,7 @@ export class AuditLog {
   append(event: string, ts: number | string, fields: LedgerEntry = {}): LedgerEntry {
     const payload: LedgerEntry = {
       v: SCHEMA_VERSION,
+      c14n: "JCS",
       seq: this.seq,
       ts,
       event,
@@ -114,9 +116,7 @@ export class AuditLog {
     this.seq += 1;
     this._entries.push(payload);
     if (this.path) {
-      // Python writes the ledger with `json.dumps(payload, sort_keys=True)` —
-      // its DEFAULT separators, not the compact pair the hash is taken over.
-      appendFileSync(this.path, pyJsonDumps(payload) + "\n");
+      appendFileSync(this.path, canonicalJson(payload) + "\n");
     }
     for (const sink of this.sinks) sink.write(payload);
     return payload;
@@ -155,7 +155,7 @@ export class AuditLog {
    */
   anchor(signer: Signer, ts: number | string = 0): Anchor {
     const [seq, head] = this.head();
-    const body = { v: SCHEMA_VERSION, chain_id: this.chainIdHint(), seq, head, ts };
+    const body = { v: SCHEMA_VERSION, c14n: "JCS" as const, chain_id: this.chainIdHint(), seq, head, ts };
     return {
       ...body,
       kid: signer.kid ?? null,
@@ -170,8 +170,9 @@ export class AuditLog {
     signer: Signer,
   ): [boolean, string | null] {
     const a = anchor ?? {};
+    if (toPlain(a["c14n"]) !== "JCS") return [false, "anchor canonicalization is not JCS"];
     const body: Record<string, CJson> = {};
-    for (const k of ["v", "chain_id", "seq", "head", "ts"]) body[k] = a[k] ?? null;
+    for (const k of ["v", "c14n", "chain_id", "seq", "head", "ts"]) body[k] = a[k] ?? null;
     const sigHex = (toPlain(a["sig"]) as string) ?? "";
     if (typeof sigHex !== "string" || !/^(?:[0-9a-fA-F]{2})*$/.test(sigHex)) {
       return [false, "anchor signature not hex"];
@@ -196,6 +197,9 @@ export class AuditLog {
     let prev = GENESIS;
     let expectedSeq = 0;
     for (const e of entries) {
+      if (toPlain(e["c14n"]) !== "JCS") {
+        return [false, `canonicalization is not JCS at seq ${expectedSeq}`];
+      }
       const seq = asNumber(e["seq"]);
       if (seq !== expectedSeq) {
         return [false, `seq gap at ${expectedSeq} (got ${formatSeq(e["seq"])})`];

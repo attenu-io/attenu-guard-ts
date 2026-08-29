@@ -29,7 +29,7 @@
   "prev_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
  },
  {
-  "expected_hash": "dfb68e023e3fd06d3825fc818e26373936991ccec0eaaa863142e19a9f3d8648",
+  "expected_hash": "ed096b41ec7163ed07bf8c3cf6a2f6874141ee36c450d18ea5608dcc9a78d8db",
   "payload": {
    "event": "deny",
    "prev_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",

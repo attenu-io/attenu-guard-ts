@@ -1,14 +1,16 @@
 {
  "anchor": {
+  "c14n": "JCS",
   "chain_id": "fixtures",
-  "head": "497802415571317e03a5f1add34ce979e916fd7d1096be844a5ee808ba63ba4d",
+  "head": "4922f8c3be1b081c964e4b1c147f58322d64449235f6c0957d66c6d1decb0fab",
   "kid": "sample",
   "seq": 8,
-  "sig": "97eb556e2f42ed06e30b44b741416799d5b4cf765928a60d62155e07adc86a7d",
+  "sig": "7650b422896cce7f12852c00c997776beaec323c8e60cc092d50516b57eaffc4",
   "ts": 0,
   "v": 1,
   "verified": true
  },
+ "c14n": "JCS",
  "chain_id": "fixtures",
  "entries": [
   {
@@ -30,9 +32,10 @@
     ],
     "ttl": 3600
    },
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "event": "root",
-   "hash": "93d73e0c3644830ef8920895723bfe1758e230ea89043f9428c8e201fc2401e3",
+   "hash": "89d44064dd7ea31fe668d0ee3da4572a4e2419f795fa6f1f0f0ac5b25be734a7",
    "node": "fixtures:n0",
    "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
    "seq": 0,
@@ -41,6 +44,7 @@
   },
   {
    "agent": "reader",
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "event": "spawn",
    "granted": {
@@ -59,10 +63,10 @@
     ],
     "ttl": 900
    },
-   "hash": "03be917825416f3e20d9378473618ff8b4571e0d5f63cc8c6d3e274666201ff5",
+   "hash": "3dc709629bcf792b77188417b4d3679021bd3bbdd2407637ba6f07036af4d0c5",
    "node": "fixtures:n1",
    "parent": "fixtures:n0",
-   "prev_hash": "93d73e0c3644830ef8920895723bfe1758e230ea89043f9428c8e201fc2401e3",
+   "prev_hash": "89d44064dd7ea31fe668d0ee3da4572a4e2419f795fa6f1f0f0ac5b25be734a7",
    "requested": {
     "constraints": [
      {
@@ -86,6 +90,7 @@
   },
   {
    "agent": "analyst",
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "event": "spawn",
    "granted": {
@@ -104,10 +109,10 @@
     ],
     "ttl": 600
    },
-   "hash": "955f807a1e1ed278a291577fbef62955b5a7029b0c0def007527881400e2aa8d",
+   "hash": "40030de917f034a0964295da38263f0d2ad773e5281852627225049b6c7ce7c8",
    "node": "fixtures:n2",
    "parent": "fixtures:n1",
-   "prev_hash": "03be917825416f3e20d9378473618ff8b4571e0d5f63cc8c6d3e274666201ff5",
+   "prev_hash": "3dc709629bcf792b77188417b4d3679021bd3bbdd2407637ba6f07036af4d0c5",
    "requested": {
     "constraints": [
      {
@@ -126,14 +131,15 @@
    "v": 1
   },
   {
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "context": {
     "rows": 4200
    },
    "event": "allow",
-   "hash": "06be3d15380296dcec263625cc22c09e90c96d04eb2602d633f9f821133db512",
+   "hash": "4d68042236721da7732663e79111dc222d5d28b4b6059d342f07d0fb966e4d12",
    "node": "fixtures:n1",
-   "prev_hash": "955f807a1e1ed278a291577fbef62955b5a7029b0c0def007527881400e2aa8d",
+   "prev_hash": "40030de917f034a0964295da38263f0d2ad773e5281852627225049b6c7ce7c8",
    "scope": "crm.read",
    "seq": 3,
    "tool": "crm_query",
@@ -141,14 +147,15 @@
    "v": 1
   },
   {
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "context": {
     "rows": 120
    },
    "event": "allow",
-   "hash": "e09d7ab21dbf7d6b6485cedbe9526cf7da4fc7155432c5a7bf67caf510681d2c",
+   "hash": "6a0eb2e03139c92ff09eb69cedbf332495fa3fbbcce3da3ce29240ab2c3d6282",
    "node": "fixtures:n2",
-   "prev_hash": "06be3d15380296dcec263625cc22c09e90c96d04eb2602d633f9f821133db512",
+   "prev_hash": "4d68042236721da7732663e79111dc222d5d28b4b6059d342f07d0fb966e4d12",
    "scope": "crm.read",
    "seq": 4,
    "tool": "crm_query",
@@ -156,14 +163,15 @@
    "v": 1
   },
   {
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "context": {
     "rows": 9000
    },
    "event": "deny",
-   "hash": "868d82593d8a8de8d0724e54925dffb41082ac9f5c52479b75bc64dcc11a9f4b",
+   "hash": "a974827a765809d9d743d9db5cf560831507b7e85c32decf64951dc47871b109",
    "node": "fixtures:n2",
-   "prev_hash": "e09d7ab21dbf7d6b6485cedbe9526cf7da4fc7155432c5a7bf67caf510681d2c",
+   "prev_hash": "6a0eb2e03139c92ff09eb69cedbf332495fa3fbbcce3da3ce29240ab2c3d6282",
    "reason": "ceiling_exceeded",
    "reasons": [
     {
@@ -181,15 +189,16 @@
    "v": 1
   },
   {
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "context": {
     "egress": "any"
    },
    "disposition": "out_of_authority",
    "event": "deny",
-   "hash": "7e96cc39c3cf99279a9377a7442dec089ceac6c4d4febcbdc4f881cd48645c72",
+   "hash": "c189ab3b6de310160e77ba5d0360244d3a074ac00167461c4e53cb4889e9c77e",
    "node": "fixtures:n1",
-   "prev_hash": "868d82593d8a8de8d0724e54925dffb41082ac9f5c52479b75bc64dcc11a9f4b",
+   "prev_hash": "a974827a765809d9d743d9db5cf560831507b7e85c32decf64951dc47871b109",
    "reason": "scope_not_granted",
    "reasons": [
     {
@@ -215,20 +224,22 @@
   },
   {
    "agent": "analyst",
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "event": "done",
-   "hash": "abea0b786e10b7a5f0577238169e7e451cb2f9e8a65181dc3fca25647171ac9b",
+   "hash": "1469676f5c6854d02f0b4064c1f8e4d33f259e27cbffb8604a09281d0102f372",
    "node": "fixtures:n2",
-   "prev_hash": "7e96cc39c3cf99279a9377a7442dec089ceac6c4d4febcbdc4f881cd48645c72",
+   "prev_hash": "c189ab3b6de310160e77ba5d0360244d3a074ac00167461c4e53cb4889e9c77e",
    "seq": 7,
    "ts": 8,
    "v": 1
   },
   {
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "event": "kill",
-   "hash": "497802415571317e03a5f1add34ce979e916fd7d1096be844a5ee808ba63ba4d",
-   "prev_hash": "abea0b786e10b7a5f0577238169e7e451cb2f9e8a65181dc3fca25647171ac9b",
+   "hash": "4922f8c3be1b081c964e4b1c147f58322d64449235f6c0957d66c6d1decb0fab",
+   "prev_hash": "1469676f5c6854d02f0b4064c1f8e4d33f259e27cbffb8604a09281d0102f372",
    "revoked": [
     "fixtures:n1",
     "fixtures:n2"

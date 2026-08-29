@@ -159,10 +159,18 @@ ledger, and one bundle per tamper mode with the report Python produces for each.
 The suite reproduces all of it, and a separate test writes a ledger and bundle
 here and has the Python CLI verify them, so both directions are covered.
 
-Getting this right needs more than `JSON.stringify`: Python sorts keys, escapes
-every non-ASCII code point, and distinguishes `100` from `100.0`. A document
-that will be re-hashed is therefore read with a parser that keeps each number's
-original literal. See `src/canonical.ts`.
+Version 0.2 uses [RFC 8785 JCS](https://www.rfc-editor.org/rfc/rfc8785) for every
+signed or hashed JSON surface: Delegation Tokens, ledger entries, anchors and
+evidence bundles. Tokens must declare `"c14n":"JCS"` in the protected header,
+and their decoded header and payload bytes must already be canonical. Ledger
+entries, anchors and bundles carry the same marker. Duplicate object members,
+non-finite numbers, lone UTF-16 surrogates, unmarked tokens and non-canonical
+spellings are rejected instead of being normalized after verification.
+
+This is the only supported format. There is no 0.1 compatibility reader or
+dual-signing mode. The 17 committed interop vectors include the separating cases
+for number spelling, raw Unicode, UTF-16 member ordering, large integers,
+duplicates, non-finite values and the required marker.
 
 ## What it does not do
 

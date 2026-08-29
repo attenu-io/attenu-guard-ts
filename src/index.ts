@@ -101,17 +101,20 @@ export {
 export type { LoadOptions, Signer, WireReasonCodeValue } from "./wire.js";
 
 export {
+  CanonicalizationError,
+  DuplicateMemberError,
+  LoneSurrogateError,
+  NonFiniteNumberError,
   RawNumber,
+  UnsupportedTypeError,
   canonicalBytes,
   canonicalJson,
   compareCodePoints,
   parseJson,
-  pyJsonDumps,
   pyNumber,
-  pyString,
   sortedStrings,
   toPlain,
 } from "./canonical.js";
 export type { CJson, Json } from "./canonical.js";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";

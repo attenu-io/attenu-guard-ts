@@ -49,6 +49,7 @@ import type { Signer } from "./wire.js";
  */
 export const LEDGER_FIELDS: ReadonlySet<string> = new Set([
   "v",
+  "c14n",
   "seq",
   "ts",
   "event",
@@ -100,6 +101,7 @@ export interface RedactionReport {
 
 export interface Bundle {
   v: number;
+  c14n: "JCS";
   chain_id: string;
   entries: LedgerEntry[];
   anchor: Anchor;
@@ -163,7 +165,7 @@ export function anchorFor(
     seq = typeof rawSeq === "number" ? rawSeq : entries.length - 1;
     head = last["hash"] as string;
   }
-  const body = { v: SCHEMA_VERSION, chain_id: chainIdOf(entries), seq, head, ts };
+  const body = { v: SCHEMA_VERSION, c14n: "JCS" as const, chain_id: chainIdOf(entries), seq, head, ts };
   return { ...body, kid: signer.kid ?? null, sig: signer.sign(canonicalBytes(body)).toString("hex") };
 }
 
@@ -221,6 +223,7 @@ export function exportBundle(
   anchor.verified = AuditLog.verifyAnchor(entries, anchor as Record<string, CJson>, signer)[0];
   return {
     v: SCHEMA_VERSION,
+    c14n: "JCS",
     chain_id: chainIdOf(entries),
     entries,
     anchor,
@@ -430,6 +433,8 @@ export function verifyBundle(bundle: Partial<Bundle>, signer: Signer | null = nu
     anchor: "not checked",
   };
   const failures: string[] = [];
+  const canonicalBundle = bundle.c14n === "JCS";
+  if (!canonicalBundle) failures.push("integrity: bundle canonicalization is not JCS");
 
   // (1) integrity: the hash chain, plus the signed anchor when a key is given.
   const [okChain, err] = AuditLog.verify(entries);
@@ -438,9 +443,9 @@ export function verifyBundle(bundle: Partial<Bundle>, signer: Signer | null = nu
     const [okAnchor, aerr] = AuditLog.verifyAnchor(entries, anchor, signer);
     checks.anchor = okAnchor ? "verified" : "FAILED";
     if (!okAnchor) failures.push(`integrity(anchor): ${aerr}`);
-    checks.integrity = okChain && okAnchor;
+    checks.integrity = canonicalBundle && okChain && okAnchor;
   } else {
-    checks.integrity = okChain;
+    checks.integrity = canonicalBundle && okChain;
   }
 
   const { auth, parent, failures: afail } = nodeAuthorities(entries);

@@ -1,14 +1,16 @@
 {
  "anchor": {
+  "c14n": "JCS",
   "chain_id": "fixtures",
-  "head": "89f12e88c616fd1b43cc83901812e1720850a92ed7ca3e384bcdff57e1488f9c",
+  "head": "64dd441e4a44a54546412d2d8bc4af671dd2f631bf7abe69484a4fd31b9337c2",
   "kid": "sample",
   "seq": 1,
-  "sig": "b6da4ddac85a2cdb3896e6b8e02a16b9ec96d5b2cac0a00ca77d7310931e1322",
+  "sig": "6cf900482e01798680876758fc280d8bd5b1bb200f20e27bab66a140b02a32d6",
   "ts": 0,
   "v": 1,
   "verified": true
  },
+ "c14n": "JCS",
  "chain_id": "fixtures",
  "entries": [
   {
@@ -25,9 +27,10 @@
     ],
     "ttl": 900
    },
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "event": "root",
-   "hash": "c70336dbf7a4c29ec8c192ce322989ff552b445b22191797841fad18a364d85f",
+   "hash": "87ce576cac8537a94c2dc2d722a57b8e1d9504bc27340fdca02dbbc77d69d3f1",
    "node": "n0",
    "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
    "seq": 0,
@@ -35,14 +38,15 @@
    "v": 1
   },
   {
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "context": {
     "rows": 5000
    },
    "event": "allow",
-   "hash": "89f12e88c616fd1b43cc83901812e1720850a92ed7ca3e384bcdff57e1488f9c",
+   "hash": "64dd441e4a44a54546412d2d8bc4af671dd2f631bf7abe69484a4fd31b9337c2",
    "node": "n0",
-   "prev_hash": "c70336dbf7a4c29ec8c192ce322989ff552b445b22191797841fad18a364d85f",
+   "prev_hash": "87ce576cac8537a94c2dc2d722a57b8e1d9504bc27340fdca02dbbc77d69d3f1",
    "scope": "crm.read",
    "seq": 1,
    "tool": "crm_query",

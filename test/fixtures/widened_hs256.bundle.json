@@ -1,14 +1,16 @@
 {
  "anchor": {
+  "c14n": "JCS",
   "chain_id": "fixtures",
-  "head": "85b0054067d9f1056bc6b8f152566ae3561c9205f8edd78a42b90170b5f6dc54",
+  "head": "ef9dd19c9bb797f6b21b0dfc8d1ecf1132d665716c584b96ba660ca2c9f803c6",
   "kid": "sample",
   "seq": 2,
-  "sig": "800b6deca2b65b89cb9a378e7ccfbb1a61fe1dae967167026474633adf51a8dd",
+  "sig": "3791387d7ae287d7fb9452e944d8aa8b50f6d3afd48f29e4eb34e9e3318061ad",
   "ts": 0,
   "v": 1,
   "verified": true
  },
+ "c14n": "JCS",
  "chain_id": "fixtures",
  "entries": [
   {
@@ -29,9 +31,10 @@
     ],
     "ttl": 900
    },
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "event": "root",
-   "hash": "f7b61415e63d114b5e802805322d709ca9587ab3006d54089b8381b50ccf73fa",
+   "hash": "b88e066beed8c7c09503dae3f5bb4e92c9d999c957320186d0154431778dfeed",
    "node": "n0",
    "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
    "seq": 0,
@@ -40,6 +43,7 @@
   },
   {
    "agent": "exporter",
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "event": "spawn",
    "granted": {
@@ -55,23 +59,24 @@
     ],
     "ttl": 900
    },
-   "hash": "e81ee7fc1ad139ebc832766dd8c632004de9ff881eb72119c9a301939e300884",
+   "hash": "e4aa45bd9f307ec7ecdd9a12fb7d687c393705ece9d15b211ae3a0fca6a446c5",
    "node": "n1",
    "parent": "n0",
-   "prev_hash": "f7b61415e63d114b5e802805322d709ca9587ab3006d54089b8381b50ccf73fa",
+   "prev_hash": "b88e066beed8c7c09503dae3f5bb4e92c9d999c957320186d0154431778dfeed",
    "seq": 1,
    "ts": 2,
    "v": 1
   },
   {
+   "c14n": "JCS",
    "chain_id": "fixtures",
    "context": {
     "egress": "any"
    },
    "event": "allow",
-   "hash": "85b0054067d9f1056bc6b8f152566ae3561c9205f8edd78a42b90170b5f6dc54",
+   "hash": "ef9dd19c9bb797f6b21b0dfc8d1ecf1132d665716c584b96ba660ca2c9f803c6",
    "node": "n1",
-   "prev_hash": "e81ee7fc1ad139ebc832766dd8c632004de9ff881eb72119c9a301939e300884",
+   "prev_hash": "e4aa45bd9f307ec7ecdd9a12fb7d687c393705ece9d15b211ae3a0fca6a446c5",
    "scope": "crm.export",
    "seq": 2,
    "tool": "crm_export",
