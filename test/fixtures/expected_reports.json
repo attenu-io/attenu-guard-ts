@@ -5,9 +5,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "FAILED",
+    "chain_id": true,
     "containment": true,
     "integrity": false,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [
     "integrity(anchor): anchor signature invalid"
@@ -20,9 +22,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "not checked",
+    "chain_id": true,
     "containment": true,
     "integrity": true,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [],
    "nodes": 3,
@@ -35,9 +39,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "verified",
+    "chain_id": true,
     "containment": true,
     "integrity": true,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [],
    "nodes": 3,
@@ -48,9 +54,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "not checked",
+    "chain_id": true,
     "containment": true,
     "integrity": true,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [],
    "nodes": 3,
@@ -63,9 +71,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "verified",
+    "chain_id": true,
     "containment": true,
     "integrity": true,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [],
    "nodes": 3,
@@ -76,9 +86,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "not checked",
+    "chain_id": true,
     "containment": true,
     "integrity": true,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [],
    "nodes": 3,
@@ -91,9 +103,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "FAILED",
+    "chain_id": true,
     "containment": false,
     "integrity": false,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [
     "integrity: seq gap at 2 (got 3)",
@@ -108,9 +122,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "not checked",
+    "chain_id": true,
     "containment": false,
     "integrity": false,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [
     "integrity: seq gap at 2 (got 3)",
@@ -126,9 +142,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "verified",
+    "chain_id": true,
     "containment": true,
     "integrity": true,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [],
    "nodes": 3,
@@ -139,9 +157,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "not checked",
+    "chain_id": true,
     "containment": true,
     "integrity": true,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [],
    "nodes": 3,
@@ -154,9 +174,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "FAILED",
+    "chain_id": true,
     "containment": true,
     "integrity": false,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [
     "integrity: seq gap at 2 (got 3)",
@@ -170,9 +192,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "not checked",
+    "chain_id": true,
     "containment": true,
     "integrity": false,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [
     "integrity: seq gap at 2 (got 3)"
@@ -187,9 +211,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "FAILED",
+    "chain_id": true,
     "containment": false,
     "integrity": false,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [
     "integrity: hash mismatch at seq 5",
@@ -204,9 +230,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "not checked",
+    "chain_id": true,
     "containment": false,
     "integrity": false,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [
     "integrity: hash mismatch at seq 5",
@@ -222,9 +250,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "verified",
+    "chain_id": true,
     "containment": false,
     "integrity": true,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [
     "containment: allow of 'crm.read' on n0 outside its authority ['crm.read']"
@@ -237,9 +267,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "not checked",
+    "chain_id": true,
     "containment": false,
     "integrity": true,
-    "monotonicity": true
+    "monotonicity": true,
+    "version": true
    },
    "failures": [
     "containment: allow of 'crm.read' on n0 outside its authority ['crm.read']"
@@ -254,9 +286,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "verified",
+    "chain_id": true,
     "containment": true,
     "integrity": true,
-    "monotonicity": false
+    "monotonicity": false,
+    "version": true
    },
    "failures": [
     "monotonicity: n1 not \u2286 parent n0 (child scopes ['crm.export'] not held by parent)"
@@ -269,9 +303,11 @@
    "chain_id": "fixtures",
    "checks": {
     "anchor": "not checked",
+    "chain_id": true,
     "containment": true,
     "integrity": true,
-    "monotonicity": false
+    "monotonicity": false,
+    "version": true
    },
    "failures": [
     "monotonicity: n1 not \u2286 parent n0 (child scopes ['crm.export'] not held by parent)"

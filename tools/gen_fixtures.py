@@ -115,8 +115,8 @@ def canonical_vectors() -> list[dict]:
         {"b": 1, "a": 2, "C": 3, "_": 4},
         {"unicode": "café", "emoji": "😀", "cjk": "監査", "combining": "é"},
         {"control": "\x00\x1f\x7f", "escapes": '\t\n\r\\"', "solidus": "a/b"},
-        {"ints": [0, -0, 1, -1, 100, 10**15, 10**16, 10**20]},
-        {"floats": [100.0, 0.1, 2.5, 1 / 3, -0.0, 1e-5, 1e-7, 1e16, 1e21, 1.5e17]},
+        {"ints": [0, -0, 1, -1, 100, 10**15, 2**53 - 1]},  # values beyond ±(2^53−1) are rejected since 0.8.1
+        {"floats": [100.0, 0.1, 2.5, 1 / 3, -0.0, 1e-5, 1e-7, 9e15]},  # integral floats beyond the safe range are rejected since 0.8.1
         {"null": None, "true": True, "false": False},
         {"nested": {"z": [1, {"y": "x"}], "a": {"b": {"c": []}}}},
         {"key with spaces": 1, "key\twith\ttabs": 2, "ключ": 3},

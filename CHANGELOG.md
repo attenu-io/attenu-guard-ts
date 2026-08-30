@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-08-30
+
 ### Fixed
 - Integers beyond the RFC 8785 safe range (±(2**53-1)) are now rejected — at canonicalization, at
   `RowLimit`/`SpendCap`/`CallLimit` construction, and by `load` (as `malformed`) — instead of
