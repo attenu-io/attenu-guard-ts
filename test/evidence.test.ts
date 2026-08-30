@@ -8,9 +8,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { Authority } from "../src/authority.js";
+import { GENESIS, hashEntry } from "../src/audit.js";
+import { canonicalBytes } from "../src/canonical.js";
 import { RowLimit } from "../src/ceilings.js";
 import {
   EvidenceLeakError,
+  anchorFor,
   delegationGraph,
   denials,
   exportBundle,
@@ -22,6 +25,17 @@ import {
 import { Guard } from "../src/guard.js";
 import { Ed25519Signer, Ed25519Verifier, HS256TestSigner, type Signer } from "../src/wire.js";
 import { META, fixtureText } from "./helpers.js";
+
+/** Re-sign an anchor object over its own body after mutating a field — an HONEST anchor for
+ * whatever it now says, so the resulting failure isolates the check under test rather than also
+ * tripping a signature failure. */
+function resign(anchor: Record<string, unknown>, signer: Signer): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(anchor)) {
+    if (k !== "kid" && k !== "sig" && k !== "verified") body[k] = v;
+  }
+  return { ...anchor, sig: signer.sign(canonicalBytes(body as any)).toString("hex") };
+}
 
 interface ExpectedReport {
   ok: boolean;
@@ -165,9 +179,65 @@ test("a bundle this library exports verifies here and reports no leak", () => {
     monotonicity: true,
     containment: true,
     anchor: "verified",
+    version: true,
+    chain_id: true,
   });
   assert.equal(bundle.redaction.ok, true);
   assert.equal(bundle.anchor.verified, true);
+});
+
+test("bundle version and chain identity each fail independently", () => {
+  const guard = Guard.issue(
+    "orchestrator",
+    new Authority({ scopes: ["crm.*"], ceilings: [new RowLimit(1000)], ttl: 3600 }),
+    { chainId: "vc-test", task: "quarterly review" },
+  );
+  const reader = guard.delegate(
+    "reader",
+    new Authority({ scopes: ["crm.read"], ceilings: [new RowLimit(10)], ttl: 60 }),
+    "read the pipeline",
+  );
+  reader.check("crm.read", { context: { rows: 5 } });
+  const good = exportBundle(guard.auditLog(), hs256);
+
+  // (1) UNSUPPORTED VERSION: a bundle declaring a schema version this build doesn't know.
+  const r1 = verifyBundle({ ...good, v: 999 }, hs256);
+  assert.equal(r1.checks.version, false);
+  assert.equal(r1.ok, false);
+  assert.ok(r1.failures.some((f) => f.startsWith("unsupported_version:")), r1.failures.join("; "));
+
+  // (2) ANCHOR VERSION MISMATCH: an honestly-signed anchor for a DIFFERENT version than the bundle.
+  const anchorV = resign({ ...good.anchor, v: 2 }, hs256);
+  const r2 = verifyBundle({ ...good, anchor: anchorV as any }, hs256);
+  assert.equal(r2.checks.version, false);
+  assert.equal(r2.ok, false);
+  assert.ok(r2.failures.some((f) => f.startsWith("anchor_version_mismatch:")), r2.failures.join("; "));
+
+  // (3) CHAIN_ID MISMATCH (entries): an entry claims a different chain than the bundle declares,
+  //     re-hashed and re-anchored honestly so only the chain_id check is isolated.
+  const entries3 = good.entries.map((e) => ({ ...e }));
+  entries3[1]!["chain_id"] = "other-chain";
+  let prev = GENESIS;
+  for (const e of entries3) {
+    e["prev_hash"] = prev;
+    const payload: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(e)) if (k !== "hash") payload[k] = v;
+    e["hash"] = hashEntry(prev, payload as any);
+    prev = e["hash"] as string;
+  }
+  const anchor3 = anchorFor(entries3, hs256);
+  const r3 = verifyBundle({ ...good, entries: entries3, anchor: anchor3 }, hs256);
+  assert.equal(r3.checks.integrity, true);
+  assert.equal(r3.checks.chain_id, false);
+  assert.equal(r3.ok, false);
+  assert.ok(r3.failures.some((f) => f.startsWith("chain_id_mismatch:")), r3.failures.join("; "));
+
+  // (4) CHAIN_ID MISMATCH (anchor): an honestly-signed anchor for a DIFFERENT chain than the entries.
+  const anchorC = resign({ ...good.anchor, chain_id: "other-chain" }, hs256);
+  const r4 = verifyBundle({ ...good, anchor: anchorC as any }, hs256);
+  assert.equal(r4.checks.chain_id, false);
+  assert.equal(r4.ok, false);
+  assert.ok(r4.failures.some((f) => f.startsWith("chain_id_mismatch:")), r4.failures.join("; "));
 });
 
 test("redaction removes the prompt text and the bundle still verifies", () => {

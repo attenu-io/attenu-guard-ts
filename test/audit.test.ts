@@ -14,7 +14,7 @@ import { AuditLog, GENESIS, hashEntry, chainIdOf } from "../src/audit.js";
 import { Authority } from "../src/authority.js";
 import { RowLimit } from "../src/ceilings.js";
 import { Guard } from "../src/guard.js";
-import { canonicalJson, parseJson, toPlain } from "../src/canonical.js";
+import { canonicalBytes, canonicalJson, parseJson, toPlain } from "../src/canonical.js";
 import { HS256TestSigner } from "../src/wire.js";
 import { META, fixtureJson, fixtureText } from "./helpers.js";
 
@@ -141,6 +141,23 @@ test("an anchor commits to the head and catches a consistent rewrite", () => {
   const [ok, reason] = AuditLog.verifyAnchor(rewritten, anchor as any, signer);
   assert.equal(ok, false);
   assert.equal(reason, "anchor head does not match the ledger head (ledger rewritten?)");
+});
+
+test("an anchor for a different chain than the entries is refused", () => {
+  const signer = new HS256TestSigner(Buffer.from("real-key"), "k1");
+  const log = new AuditLog();
+  log.append("root", 1, { chain_id: "c", node: "n0" });
+  const anchor = log.anchor(signer, 0) as Record<string, any>;
+  // An HONESTLY-signed anchor for a DIFFERENT chain than the one the entries belong to.
+  const wrongChain: Record<string, any> = { ...anchor, chain_id: "some-other-chain" };
+  const body: Record<string, any> = {};
+  for (const [k, v] of Object.entries(wrongChain)) {
+    if (k !== "kid" && k !== "sig" && k !== "verified") body[k] = v;
+  }
+  wrongChain["sig"] = signer.sign(canonicalBytes(body)).toString("hex");
+  const [ok, reason] = AuditLog.verifyAnchor(log.entries, wrongChain, signer);
+  assert.equal(ok, false);
+  assert.match(reason ?? "", /chain_id/);
 });
 
 test("a non-hex or invalid anchor signature is refused", () => {

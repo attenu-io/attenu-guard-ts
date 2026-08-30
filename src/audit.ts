@@ -187,6 +187,9 @@ export class AuditLog {
     const [ok, err] = AuditLog.verify(entries);
     if (!ok) return [false, err];
     if (entries.length === 0) return [asNumber(a["seq"]) === -1, null];
+    if (toPlain(a["chain_id"]) !== firstChainId(entries)) {
+      return [false, "anchor chain_id does not match the ledger entries"];
+    }
     const last = entries[entries.length - 1]!;
     if (last["hash"] !== toPlain(a["head"]) || asNumber(last["seq"]) !== asNumber(a["seq"])) {
       return [false, "anchor head does not match the ledger head (ledger rewritten?)"];
@@ -243,4 +246,18 @@ export function chainIdOf(entries: readonly LedgerEntry[]): string {
     if (typeof id === "string" && id) return id;
   }
   return "chain";
+}
+
+/**
+ * The first `chain_id` any entry carries, or `null` if none do. Unlike
+ * `chainIdOf` (which defaults to `"chain"` for display/anchoring purposes),
+ * `verifyAnchor` needs to know whether the entries genuinely assert a chain
+ * identity at all, so a missing one is `null`, not a fabricated default.
+ */
+function firstChainId(entries: readonly LedgerEntry[]): string | null {
+  for (const e of entries) {
+    const id = toPlain(e["chain_id"]);
+    if (typeof id === "string" && id) return id;
+  }
+  return null;
 }
