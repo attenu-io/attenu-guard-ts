@@ -11,6 +11,63 @@ export class NonFiniteNumberError extends CanonicalizationError {}
 export class LoneSurrogateError extends CanonicalizationError {}
 export class UnsupportedTypeError extends CanonicalizationError {}
 
+/**
+ * An integer's magnitude exceeds what binary64 can represent exactly.
+ *
+ * RFC 8785 numbers ARE IEEE 754 doubles: every JCS number, integer or not, is
+ * rendered from a `number`, which JavaScript already stores as a double — so
+ * an integer past ±(2**53-1) may already have collided with its neighbour
+ * before canonicalization ever runs (`9007199254740992 === 9007199254740993`
+ * is `true`). Unlike Python, JS has no separate arbitrary-precision integer
+ * type to fall back on, so the only safe rule is the same one: reject rather
+ * than silently render a value that may not be the one the caller meant.
+ */
+export class UnsafeIntegerError extends CanonicalizationError {}
+
+/**
+ * The largest (and, negated, the smallest) integer magnitude a binary64
+ * double represents exactly. Every integer strictly beyond this range raises
+ * `UnsafeIntegerError` instead of being canonicalized.
+ */
+export const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER; // 9007199254740991
+const MAX_SAFE_INTEGER_BIGINT = 9007199254740991n;
+
+function checkSafeInteger(value: number): void {
+  if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+    throw new UnsafeIntegerError(
+      `integer ${value} exceeds the safe range ±${MAX_SAFE_INTEGER} for a binary64 ` +
+        "signing surface (RFC 8785 numbers are IEEE 754 doubles)",
+    );
+  }
+}
+
+/**
+ * Does `raw` look like a bare decimal integer literal (no `.`, `e`, or `E`)?
+ * Only such literals can carry MORE precision than the double they parse
+ * into, so only they need checking against the original text rather than the
+ * already-rounded value.
+ */
+function isIntegerLiteralText(raw: string): boolean {
+  return /^-?\d+$/.test(raw);
+}
+
+/**
+ * Check a parsed number's ORIGINAL source text, before the double it parsed
+ * into (which may already have silently rounded two different literals to the
+ * same value) is used for anything.
+ */
+function checkSafeIntegerLiteral(raw: string): void {
+  if (!isIntegerLiteralText(raw)) return;
+  const n = BigInt(raw);
+  const magnitude = n < 0n ? -n : n;
+  if (magnitude > MAX_SAFE_INTEGER_BIGINT) {
+    throw new UnsafeIntegerError(
+      `integer ${raw} exceeds the safe range ±${MAX_SAFE_INTEGER} for a binary64 ` +
+        "signing surface (RFC 8785 numbers are IEEE 754 doubles)",
+    );
+  }
+}
+
 /** Raised while parsing when an object repeats a member name. */
 export class DuplicateMemberError extends SyntaxError {
   constructor(readonly member: string) {
@@ -110,6 +167,7 @@ function jcsNumber(value: number): string {
   if (!Number.isFinite(value)) {
     throw new NonFiniteNumberError("non-finite numbers are not permitted");
   }
+  checkSafeInteger(value);
   return JSON.stringify(value);
 }
 
@@ -120,7 +178,14 @@ function unsupported(value: unknown): never {
 
 function serialize(value: unknown, active: WeakSet<object>): string {
   if (value === null) return "null";
-  if (value instanceof RawNumber) return jcsNumber(value.value);
+  if (value instanceof RawNumber) {
+    // Check the ORIGINAL text first: `Number(raw)` may already have rounded
+    // two different out-of-range literals to the identical double, so the
+    // rounded `.value` alone cannot always be trusted to catch what the wire
+    // actually said.
+    checkSafeIntegerLiteral(value.raw);
+    return jcsNumber(value.value);
+  }
   switch (typeof value) {
     case "boolean":
       return value ? "true" : "false";

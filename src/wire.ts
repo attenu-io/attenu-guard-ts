@@ -46,6 +46,7 @@ import {
   DuplicateMemberError,
   NonFiniteNumberError,
   RawNumber,
+  UnsafeIntegerError,
   canonicalJson,
   parseJson,
   toPlain,
@@ -380,6 +381,13 @@ function parseToken(token: string): ParsedToken {
   } catch (e) {
     if (e instanceof NonFiniteNumberError) {
       throw new WireError(WireReasonCode.NON_FINITE, e.message);
+    }
+    // Mirrors non-finite handling above: an integer past the safe binary64
+    // range is a malformed claim, not merely a non-canonical byte form — it
+    // cannot be represented at all, safely, so it is rejected before
+    // verification rather than compared byte-for-byte.
+    if (e instanceof UnsafeIntegerError) {
+      throw new WireError(WireReasonCode.MALFORMED, e.message);
     }
     if (e instanceof CanonicalizationError) {
       throw new WireError(WireReasonCode.NON_CANONICAL, e.message);

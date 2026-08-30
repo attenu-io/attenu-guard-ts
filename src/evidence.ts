@@ -99,6 +99,9 @@ export interface RedactionReport {
   violations: RedactionViolation[];
 }
 
+/** Bundle schema versions this build knows how to verify. */
+export const SUPPORTED_BUNDLE_VERSIONS: ReadonlySet<number> = new Set([SCHEMA_VERSION]);
+
 export interface Bundle {
   v: number;
   c14n: "JCS";
@@ -402,6 +405,16 @@ export interface VerifyChecks {
   monotonicity: boolean;
   containment: boolean;
   anchor: "not checked" | "verified" | "FAILED";
+  version: boolean;
+  chain_id: boolean;
+}
+
+/** Python-style repr for the small set of value types these failure messages carry. */
+function pyRepr(value: Json): string {
+  if (value === null) return "None";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string") return `'${value}'`;
+  return JSON.stringify(value);
 }
 
 export interface VerifyReport {
@@ -426,13 +439,49 @@ export interface VerifyReport {
 export function verifyBundle(bundle: Partial<Bundle>, signer: Signer | null = null): VerifyReport {
   const entries = bundle.entries ?? [];
   const anchor = (bundle.anchor ?? {}) as Record<string, CJson>;
+  const anchorPresent = Object.keys(anchor).length > 0;
   const checks: VerifyChecks = {
     integrity: false,
     monotonicity: false,
     containment: false,
     anchor: "not checked",
+    version: false,
+    chain_id: false,
   };
   const failures: string[] = [];
+
+  // (0) version: the bundle must declare a schema version this build understands, and — when
+  // an anchor is present — the anchor must be anchoring THAT version, not a different one.
+  const bundleV = toPlain(bundle.v as CJson | undefined) as Json;
+  let versionOk = typeof bundleV === "number" && SUPPORTED_BUNDLE_VERSIONS.has(bundleV);
+  if (!versionOk) {
+    const supported = Array.from(SUPPORTED_BUNDLE_VERSIONS).sort((a, b) => a - b);
+    failures.push(`unsupported_version: bundle v=${pyRepr(bundleV)} not in [${supported.join(", ")}]`);
+  }
+  const anchorV = toPlain(anchor["v"]) as Json;
+  if (anchorPresent && anchorV !== bundleV) {
+    versionOk = false;
+    failures.push(`anchor_version_mismatch: anchor v=${pyRepr(anchorV)} != bundle v=${pyRepr(bundleV)}`);
+  }
+  checks.version = versionOk;
+
+  // (0b) chain identity: the bundle, every entry, and — when an anchor is present — the anchor
+  // must all name the SAME chain. Without this a correctly-signed, internally-consistent bundle
+  // for a DIFFERENT chain could be handed to a verifier who believes it is checking this one.
+  const bundleChainId = orNull(bundle.chain_id as CJson | undefined);
+  const entriesOk = entries.every((e) => orNull(e["chain_id"]) === bundleChainId);
+  if (!entriesOk) {
+    failures.push(`chain_id_mismatch: an entry does not carry chain_id=${pyRepr(bundleChainId)}`);
+  }
+  const anchorChainId = orNull(anchor["chain_id"]);
+  const anchorChainOk = !anchorPresent || anchorChainId === bundleChainId;
+  if (!anchorChainOk) {
+    failures.push(
+      `chain_id_mismatch: anchor chain_id=${pyRepr(anchorChainId)} != bundle chain_id=${pyRepr(bundleChainId)}`,
+    );
+  }
+  checks.chain_id = entriesOk && anchorChainOk;
+
   // (1) integrity: the hash chain, plus the signed anchor when a key is given.
   const [okChain, err] = AuditLog.verify(entries);
   if (!okChain) failures.push(`integrity: ${err}`);
@@ -491,7 +540,12 @@ export function verifyBundle(bundle: Partial<Bundle>, signer: Signer | null = nu
   checks.containment = contained;
 
   const ok =
-    checks.integrity && checks.monotonicity && checks.containment && failures.length === 0;
+    checks.integrity &&
+    checks.monotonicity &&
+    checks.containment &&
+    checks.version &&
+    checks.chain_id &&
+    failures.length === 0;
   return {
     ok,
     checks,

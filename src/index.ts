@@ -67,6 +67,7 @@ export type { StrikeMode, StrikePolicyInit } from "./strikes.js";
 export {
   EvidenceLeakError,
   LEDGER_FIELDS,
+  SUPPORTED_BUNDLE_VERSIONS,
   anchorFor,
   delegationGraph,
   denials,
@@ -104,8 +105,10 @@ export {
   CanonicalizationError,
   DuplicateMemberError,
   LoneSurrogateError,
+  MAX_SAFE_INTEGER,
   NonFiniteNumberError,
   RawNumber,
+  UnsafeIntegerError,
   UnsupportedTypeError,
   canonicalBytes,
   canonicalJson,
