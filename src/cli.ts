@@ -94,6 +94,10 @@ export function main(argv: string[] = process.argv.slice(2)): number {
     return 1;
   }
   const [cmd, ...rest] = argv;
+  if (cmd === "-h" || cmd === "--help" || rest.some((a) => a === "-h" || a === "--help")) {
+    process.stdout.write(USAGE);
+    return 0;
+  }
   if (cmd === "verify" && rest.length > 0) return verify(rest);
   process.stdout.write(USAGE);
   return 1;

@@ -75,3 +75,11 @@ test("no arguments prints usage and exits 1", () => {
   const unknown = run(["frobnicate", "x"]);
   assert.equal(unknown.status, 1);
 });
+
+test("--help, -h and verify --help print usage and exit 0", () => {
+  for (const args of [["--help"], ["-h"], ["verify", "--help"]]) {
+    const { stdout, status } = run(args);
+    assert.match(stdout, /attenu-guard verify/);
+    assert.equal(status, 0, `${JSON.stringify(args)} exited ${status}`);
+  }
+});
