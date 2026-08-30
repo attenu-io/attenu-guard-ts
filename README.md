@@ -66,6 +66,12 @@ run; the anchor is reported as `not checked`, and `ok` then means *consistent*
 rather than *verified* — a consistent full rewrite by someone holding the signing
 key cannot be excluded without the key.
 
+> **Want to try this before wiring it in?** The repo ships a sample: from a clone,
+> `npx attenu-guard@latest verify test/fixtures/clean_ed25519.bundle.json --pubkey d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a`
+> prints the same `anchor=verified` / `OK` result shown above. For the three-bundle
+> version — clean, tampered, widened, each a different kind of failure — see the
+> [Python library's walkthrough](https://github.com/attenu-io/attenu-guard/blob/main/examples/verify/README.md).
+
 ## Guard a delegation chain
 
 ```ts
