@@ -76,6 +76,24 @@ test("fromWire applies the same scope validation", () => {
   );
 });
 
+test("RowLimit, SpendCap, and CallLimit reject a bound outside the safe integer range", () => {
+  const MAX = Number.MAX_SAFE_INTEGER; // 2**53-1
+  // Accepted at the boundary.
+  assert.doesNotThrow(() => new RowLimit(MAX));
+  assert.doesNotThrow(() => new SpendCap(MAX));
+  assert.doesNotThrow(() => new CallLimit(MAX));
+  assert.doesNotThrow(() => new CallLimit(MAX, "web.*"));
+  // Rejected one past it, same error class the scope validator uses.
+  for (const value of [MAX + 1, -(MAX + 1)]) {
+    assert.throws(() => new RowLimit(value), TypeError, String(value));
+    assert.throws(() => new SpendCap(value), TypeError, String(value));
+    assert.throws(() => new CallLimit(value), TypeError, String(value));
+    assert.throws(() => new CallLimit(value, "web.*"), TypeError, String(value));
+  }
+  // A non-integer (fractional) spend cap is never flagged, no matter its magnitude class.
+  assert.doesNotThrow(() => new SpendCap(1.5));
+});
+
 test("terminal wildcards are segment-bounded and cover any depth", () => {
   const authority = new Authority({ scopes: ["crm.*"] });
   assert.equal(authority.coversScope("crm.read"), true);

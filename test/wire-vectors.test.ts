@@ -247,6 +247,27 @@ test("a non-JCS numeric spelling is refused before semantic checks", () => {
   assert.equal(outcome({ ...VALID, tokens }), WireReasonCode.NON_CANONICAL);
 });
 
+test("an integer beyond the safe range is refused as malformed, mirroring non-finite", () => {
+  // 2**53: one magnitude past the largest integer a binary64 double
+  // represents exactly. On the wire this collides with its neighbours once
+  // canonicalized, so it is rejected before verification rather than
+  // compared byte-for-byte (which is why this is `malformed`, not
+  // `non_canonical` — the value cannot be safely represented at all).
+  const tokens = tamper(VALID.tokens, 0, (j) =>
+    j.replace('"del_max_depth":7', '"del_max_depth":9007199254740992'),
+  );
+  assert.notDeepEqual(tokens, VALID.tokens);
+  assert.equal(outcome({ ...VALID, tokens }), WireReasonCode.MALFORMED);
+});
+
+test("the largest safe integer (2**53-1) still verifies", () => {
+  const tokens = tamper(VALID.tokens, 0, (j) =>
+    j.replace('"del_max_depth":7', '"del_max_depth":9007199254740991'),
+  );
+  assert.notDeepEqual(tokens, VALID.tokens);
+  assert.equal(outcome({ ...VALID, tokens }), "accept");
+});
+
 test("an unmarked non-JCS numeric spelling is non_canonical", () => {
   const [headerB64, payloadB64] = VALID.tokens[0]!.split(".");
   const header = JSON.parse(Buffer.from(headerB64!, "base64url").toString("utf8"));

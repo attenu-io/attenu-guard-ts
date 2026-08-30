@@ -15,8 +15,26 @@
  * silently dropped.
  */
 
-import { compareCodePoints, pyNumber, toPlain, type CJson, type Json } from "./canonical.js";
+import { MAX_SAFE_INTEGER, compareCodePoints, pyNumber, toPlain, type CJson, type Json } from "./canonical.js";
 import { Decision, Reason, ReasonCode } from "./reasons.js";
+
+/**
+ * Reject a ceiling bound whose magnitude can't survive the signing surface
+ * intact. RFC 8785 numbers are binary64: an int past ±(2**53-1) can collide
+ * with a neighbouring integer once canonicalized (see
+ * `canonical.UnsafeIntegerError`), so a ceiling built from one would silently
+ * admit or deny a different value than the one the caller constructed. Fail
+ * at construction, not at signing — mirrors `authority.ts`'s scope validator,
+ * which also throws `TypeError`.
+ */
+function validateSafeNumber(key: string, value: number): void {
+  if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+    throw new TypeError(
+      `${key} value ${value} exceeds the safe integer range ±${MAX_SAFE_INTEGER} for a ` +
+        "binary64 signing surface (RFC 8785)",
+    );
+  }
+}
 
 /** A request context: the quantities and attributes a call declares. */
 export type Context = Record<string, Json>;
@@ -119,7 +137,9 @@ function strOf(value: Json): string {
 export class RowLimit implements Ceiling {
   readonly key = "max_rows";
   readonly ctxField = "rows";
-  constructor(readonly maxRows: number) {}
+  constructor(readonly maxRows: number) {
+    validateSafeNumber("max_rows", maxRows);
+  }
 
   permits(ctx: Context): Decision {
     const n = ctx["rows"];
@@ -158,7 +178,9 @@ export class RowLimit implements Ceiling {
 export class SpendCap implements Ceiling {
   readonly key = "max_spend";
   readonly ctxField = "spend";
-  constructor(readonly maxSpend: number) {}
+  constructor(readonly maxSpend: number) {
+    validateSafeNumber("max_spend", maxSpend);
+  }
 
   permits(ctx: Context): Decision {
     const n = ctx["spend"];
@@ -213,6 +235,7 @@ export class CallLimit implements Ceiling {
     readonly maxCalls: number,
     readonly appliesTo: string | null = null,
   ) {
+    validateSafeNumber("max_calls", maxCalls);
     this.key = appliesTo ? `max_calls[${appliesTo}]` : "max_calls";
     this.ctxField = appliesTo ? `calls[${appliesTo}]` : "calls";
   }

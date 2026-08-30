@@ -6,6 +6,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Integers beyond the RFC 8785 safe range (±(2**53-1)) are now rejected — at canonicalization, at
+  `RowLimit`/`SpendCap`/`CallLimit` construction, and by `load` (as `malformed`) — instead of
+  silently colliding with a neighbouring integer once serialized as a double. The interop suite
+  will show 20 vectors, and `valid_jcs_big_integer`/`valid_jcs_exponent_form` will pin different
+  values, once the Python package ships them; until then the affected interop assertions are a
+  known, expected failure (see the README note on `npm run fixtures`).
+
 ## [0.3.0] — 2026-08-29
 
 ### Changed
