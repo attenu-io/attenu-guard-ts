@@ -84,6 +84,21 @@ import { randomBytes } from "node:crypto";
 import type { StrikePolicy } from "./strikes.js";
 
 /**
+ * Capture modes that promise a terminal observation of the body — the only ones a call should
+ * ever be registered PENDING for. `Capture.PRE_HOOK_ONLY` (the Guard's own default for a bare
+ * v2 `check()`, and any adapter's explicit choice) is honest about NOT observing completion —
+ * nothing will ever call `recordOutcome` for it, so treating it as pending would wedge
+ * `complete()` forever (mirrors the Python D14 fix, guard.py `_TERMINAL_CAPTURES`). The offline
+ * verifier already treats a missing `PRE_HOOK_ONLY` outcome as merely `unobserved`
+ * (evidence.ts); runtime pending-tracking now agrees.
+ */
+const TERMINAL_CAPTURES: ReadonlySet<string> = new Set([
+  Capture.WRAPPER_SYNC,
+  Capture.WRAPPER_ASYNC,
+  Capture.FRAMEWORK_POST_HOOK,
+]);
+
+/**
  * Thrown only by `enforce`. Carries the full `Decision`, so a caller can branch
  * on `err.decision.reasons[0].code` instead of parsing a message string.
  */
@@ -685,7 +700,9 @@ export class Guard {
     } catch (exc) {
       if (exc instanceof CommittedAuditError) {
         const decisionWithId = Guard.attachCallId(decision, callId);
-        if (isV2 && decision.allowed) this.chain.registerPending(nid, callId!);
+        if (isV2 && decision.allowed && TERMINAL_CAPTURES.has(extra["capture"] as string)) {
+          this.chain.registerPending(nid, callId!);
+        }
         exc.decision = decisionWithId;
       } else if (decision.allowed) {
         for (const c of filled) this.chain.uncountCall(nid, c.meterKey ?? "*");
@@ -694,8 +711,12 @@ export class Guard {
     }
 
     decision = Guard.attachCallId(decision, callId);
-    // 5. register pending (allows only).
-    if (isV2 && decision.allowed) this.chain.registerPending(nid, callId!);
+    // 5. register pending (allows only, and only for a capture that promises a terminal
+    //    observation -- a PRE_HOOK_ONLY allow is never going to get a recordOutcome() call, by
+    //    construction, so it must never sit in complete()'s pending set).
+    if (isV2 && decision.allowed && TERMINAL_CAPTURES.has(extra["capture"] as string)) {
+      this.chain.registerPending(nid, callId!);
+    }
     // 6. fall through to strike-policy handling, then return.
 
     if (

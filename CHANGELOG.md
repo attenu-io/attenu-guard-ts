@@ -6,6 +6,23 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **D14 — `Guard.check()` registered a `PRE_HOOK_ONLY` allow as pending, wedging `complete()`
+  forever.** Mirrors the fix landing in the Python `attenu-guard` reference implementation
+  (`guard.py`, same defect, same root cause): `registerPending` ran unconditionally for every
+  `schemaVersion: 2` allow, in both the normal commit path and the `CommittedAuditError` path,
+  with no regard for `capture`. A bare `check()` (or any explicit `capture: Capture.PRE_HOOK_ONLY`)
+  is an honest promise of NO terminal observation — nothing is ever going to call `recordOutcome`
+  for it — yet it was registered pending exactly like a `WRAPPER_SYNC`/`WRAPPER_ASYNC`/
+  `FRAMEWORK_POST_HOOK` allow, so `complete()` refused forever for a node with only
+  `PRE_HOOK_ONLY` calls. The offline verifier already treated a missing `PRE_HOOK_ONLY` outcome
+  as merely `unobserved` (`evidence.ts`'s execution-binding report), so runtime and offline
+  semantics disagreed. Fixed: a call is now registered pending only when its capture is one of
+  `WRAPPER_SYNC`/`WRAPPER_ASYNC`/`FRAMEWORK_POST_HOOK` — in both the normal path and the
+  `CommittedAuditError` path. A bare/`PRE_HOOK_ONLY` allow never enters the pending set, so
+  `complete()` finalizes immediately, and the verifier's `unobserved` classification for it now
+  matches the runtime's own view.
+
 ## [0.4.0] — 2026-08-31
 
 ### Added

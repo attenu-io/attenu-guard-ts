@@ -132,14 +132,15 @@ test("CommittedAuditError carries the entry and the decision", () => {
   const g = v2Root();
   g.auditLog().sinks = [new ExplodingSink()];
   assert.throws(
-    () => g.check("crm.read", { context: { rows: 1 } }),
+    () => g.check("crm.read", { context: { rows: 1 }, capture: Capture.WRAPPER_SYNC, adapter: adapterInfo() }),
     (err: unknown) => {
       assert.ok(err instanceof CommittedAuditError);
       const decision = err.decision!;
       assert.ok(decision.allowed);
       assert.notEqual(decision.callId, null);
       assert.equal(err.entry["call_id"], decision.callId);
-      // spec: "the guard registers an allowed call as pending before raising"
+      // spec: "the guard registers an allowed call as pending before raising" -- for a capture
+      // that promises terminal observation; see the PRE_HOOK_ONLY-never-pending tests below
       const chain = (g as any).chain;
       assert.ok(chain.pendingFor(g.nodeId).includes(decision.callId));
       return true;
@@ -278,7 +279,7 @@ test("a pre-commit canonicalization failure in check() restores meters and propa
 
 test("a recordOutcome pre-commit failure leaves the callId unresolved", () => {
   const g = v2Root();
-  const d = g.check("crm.read");
+  const d = g.check("crm.read", { capture: Capture.WRAPPER_SYNC, adapter: adapterInfo() });
   const badReceipt = { type: "\ud800", ref: "x", digest: HEX64 };
   assert.throws(
     () => g.recordOutcome(d.callId!, BodyState.RETURNED, { durationMs: 1, receipt: badReceipt }),
@@ -331,10 +332,10 @@ test("capture and adapter land on the allow entry only", () => {
 // pending / complete() / kill's pendingAtKill
 // =============================================================================================
 
-test("only allow enters the pending set", () => {
+test("only a terminal-capture allow enters the pending set", () => {
   const g = v2Root();
-  const allow = g.check("crm.read");
-  const deny = g.check("pay.transfer");
+  const allow = g.check("crm.read", { capture: Capture.WRAPPER_ASYNC, adapter: adapterInfo() });
+  const deny = g.check("pay.transfer", { capture: Capture.WRAPPER_ASYNC, adapter: adapterInfo() });
   const chain = (g as any).chain;
   assert.ok(chain.pendingFor(g.nodeId).includes(allow.callId));
   assert.equal(chain.pendingFor(g.nodeId).includes(deny.callId), false);
@@ -342,7 +343,7 @@ test("only allow enters the pending set", () => {
 
 test("complete refuses while pending and reports the callIds", () => {
   const g = v2Root();
-  const d = g.check("crm.read");
+  const d = g.check("crm.read", { capture: Capture.WRAPPER_ASYNC, adapter: adapterInfo() });
   const cr = g.complete();
   assert.ok(cr instanceof CompletionResult); // a schemaVersion: 2 chain always gets a CompletionResult
   const cr2 = cr as CompletionResult;
@@ -353,7 +354,7 @@ test("complete refuses while pending and reports the callIds", () => {
 
 test("complete succeeds once the outcome is recorded", () => {
   const g = v2Root();
-  const d = g.check("crm.read");
+  const d = g.check("crm.read", { capture: Capture.WRAPPER_ASYNC, adapter: adapterInfo() });
   g.recordOutcome(d.callId!, BodyState.RETURNED, { durationMs: 5 });
   const cr = g.complete() as CompletionResult;
   assert.equal(cr.completed, true);
@@ -362,7 +363,7 @@ test("complete succeeds once the outcome is recorded", () => {
 
 test("kill snapshots pending without clearing, and a late outcome is accepted", () => {
   const g = v2Root();
-  const d = g.check("crm.read");
+  const d = g.check("crm.read", { capture: Capture.WRAPPER_ASYNC, adapter: adapterInfo() });
   g.revoke();
   const killEntry = eventsOf(g, "kill")[0]!;
   assert.deepEqual(killEntry["pending_at_kill"], [d.callId]);
@@ -373,6 +374,52 @@ test("kill snapshots pending without clearing, and a late outcome is accepted", 
   const entry = g.recordOutcome(d.callId!, BodyState.RETURNED, { durationMs: 3 });
   assert.equal(entry["event"], "outcome");
   assert.equal(chain.pendingFor(g.nodeId).includes(d.callId), false);
+});
+
+// -----------------------------------------------------------------------------------------------
+// D14 (mirrors the Python fix, guard.py): a bare v2 check() -- or any explicit
+// capture: Capture.PRE_HOOK_ONLY -- promises no terminal observation (the Guard itself stamps
+// this default per check()'s own doc comment), so it must never be registered pending. Before
+// this fix, guard.ts unconditionally called registerPending() for every v2 allow regardless of
+// capture: an adapter's default (no-attestation) mode would authorize correctly and then wedge
+// complete() forever, since nothing was ever going to call recordOutcome() for it. The offline
+// verifier already treated a missing PRE_HOOK_ONLY outcome as merely `unobserved` (evidence.ts)
+// -- this closes the runtime/offline disagreement.
+// -----------------------------------------------------------------------------------------------
+test("a bare check never enters pending, and complete finalizes immediately", () => {
+  const g = v2Root();
+  const d = g.check("crm.read"); // no capture -- the Guard's own PRE_HOOK_ONLY default
+  const chain = (g as any).chain;
+  assert.equal(chain.pendingFor(g.nodeId).includes(d.callId), false);
+  const cr = g.complete() as CompletionResult;
+  assert.equal(cr.completed, true);
+  assert.deepEqual(cr.pendingCallIds, []);
+  assert.equal(g.isComplete, true);
+});
+
+test("an explicit pre_hook_only capture also never enters pending", () => {
+  const g = v2Root();
+  const d = g.check("crm.read", { capture: Capture.PRE_HOOK_ONLY, adapter: adapterInfo() });
+  const chain = (g as any).chain;
+  assert.equal(chain.pendingFor(g.nodeId).includes(d.callId), false);
+  assert.ok(g.complete());
+});
+
+test("a bare check then complete verifies as unobserved, not unaccounted", () => {
+  // The runtime fix (nothing pending, so complete() finalizes true) must agree with the offline
+  // verifier's own, pre-existing treatment of a PRE_HOOK_ONLY allow with no outcome: `unobserved`
+  // (honestly promised nothing), never `unaccounted` (promised, never delivered) -- and a
+  // finalized node with only unobserved calls must never escalate to `failed`.
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  const d = g.check("crm.read");
+  const cr = g.complete();
+  assert.ok(cr);
+  const rep = verifyBundle(bundleFor(g, signer), signer);
+  const eb = rep.execution_binding as any;
+  assert.equal(eb.per_call[d.callId!], "unobserved");
+  assert.equal(eb.per_node_lifecycle[g.nodeId], "finalized");
+  assert.equal(eb.aggregate, "incomplete"); // spec: any unobserved call keeps it out of "clean"
 });
 
 test("kill with nothing pending still writes an empty list", () => {
