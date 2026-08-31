@@ -35,6 +35,22 @@
  * this adapter does not prescribe which. It guarantees only that the tool body
  * never executes on a denial.
  *
+ * ## Execution binding (0.9.0, reference wiring for this adapter)
+ *
+ * When `guard`'s chain was issued with `schemaVersion: 2` (see `Guard.issue`), `guardNode` also
+ * passes `capture`/`adapter`/`authorizedParams` to `check` and calls `guard.recordOutcome` once
+ * the wrapped callable finishes — `Capture.WRAPPER_ASYNC` when `fn` is a genuine `async function`
+ * (`fn.constructor.name === "AsyncFunction"`, the same test Python's `inspect.iscoroutinefunction`
+ * makes), `Capture.WRAPPER_SYNC` otherwise. `authorizedParams`/`invokedParams` are
+ * `{args: [...]}` built from exactly what the wrapped callable is called with — JavaScript has no
+ * separate `kwargs`, so unlike the Python adapter's `{args, kwargs}` this carries only `args`; a
+ * LangGraph.js node in any case receives one state object, not Python's `(*args, **kwargs)`. They
+ * are unchanged between the two observations here, since this decorator itself never mutates
+ * them; a framework that DOES mutate arguments between authorization and invocation is where a
+ * real substitution would become visible. On a `schemaVersion: 1` chain (the default), this
+ * adapter behaves exactly as it did before 0.9.0: no `capture`/`authorizedParams`, no
+ * `recordOutcome` call. Every other framework adapter is unchanged in this release.
+ *
  * ## Delegation
  *
  * Handing work to a sub-agent is the delegation moment. `delegateTo` mints the
@@ -50,10 +66,12 @@
  *     const tools = guardTools(researcher, [crmQuery], { scopes: { crm_query: "crm.read" } });
  */
 
-import { AuthorityDenied, type Guard } from "../guard.js";
+import { AuthorityDenied, type AdapterInfo, type Guard } from "../guard.js";
 import type { Authority } from "../authority.js";
+import type { Json } from "../canonical.js";
 import type { Context } from "../ceilings.js";
-import type { Decision } from "../reasons.js";
+import { BodyState, Capture, type Decision } from "../reasons.js";
+import { VERSION } from "../index.js";
 
 /** Options shared by every guarded wrapper. */
 export interface GuardOptions {
@@ -78,6 +96,18 @@ export type GuardedNode<F extends (...args: any[]) => any> = F & {
   readonly unwrapped: F;
 };
 
+/** `{args: [...]}` — see the module doc comment's "Execution binding" section for why no `kwargs`. */
+function argsParams(args: readonly unknown[]): Json {
+  return { args: [...args] } as unknown as Json;
+}
+
+/** The class/constructor name of a thrown value — JavaScript's nearest analogue of Python's `type(exc).__name__`. */
+function errorCodeOf(exc: unknown): string {
+  if (exc instanceof Error) return exc.constructor.name || "Error";
+  if (exc === null) return "null";
+  return typeof exc === "object" ? "object" : typeof exc;
+}
+
 /**
  * Wrap a callable so every call is authorized through `guard` first.
  *
@@ -85,7 +115,9 @@ export type GuardedNode<F extends (...args: any[]) => any> = F & {
  * `guard.check(toolScope, {context, tool})`. On a denial this throws
  * `AuthorityDenied` and the wrapped callable is NEVER invoked. Otherwise it
  * calls through with the original arguments and returns the result unchanged —
- * including a promise, which is passed along untouched.
+ * including a promise, which is passed along untouched. On a `schemaVersion: 2`
+ * guard, also binds the call's outcome via `guard.recordOutcome` — see the
+ * module doc comment's "Execution binding" section.
  *
  * Use the Guard for the SPECIFIC agent this callable belongs to, not the
  * orchestrator's broader one, so a denial reflects that node's real, narrowed
@@ -98,18 +130,77 @@ export function guardNode<F extends (...args: any[]) => any>(
   options: GuardOptions = {},
 ): GuardedNode<F> {
   const resolvedTool = options.tool !== undefined ? options.tool : (fn.name || null);
+  const isAsync = fn.constructor.name === "AsyncFunction";
+  const capture = isAsync ? Capture.WRAPPER_ASYNC : Capture.WRAPPER_SYNC;
+  const adapterInfo: AdapterInfo = {
+    module: "attenu-guard/adapters/langgraph",
+    version: VERSION,
+    hookPath: `guardNode:${fn.name || toolScope}`,
+  };
 
-  const wrapped = function (this: unknown, ...args: any[]) {
+  function check(args: unknown[]): { decision: Decision; v2: boolean } {
     const context: Context = options.contextFn ? options.contextFn(...args) : {};
+    const v2 = guard.schemaVersion === 2;
     const decision = guard.check(toolScope, {
       context,
       tool: resolvedTool,
       disposition: options.disposition ?? null,
       metered: options.metered ?? false,
+      ...(v2 ? { capture, adapter: adapterInfo, authorizedParams: argsParams(args) } : {}),
     });
     if (!decision.allowed) throw new AuthorityDenied(decision);
-    return fn.apply(this, args);
-  } as GuardedNode<F>;
+    return { decision, v2 };
+  }
+
+  const wrapped = (
+    isAsync
+      ? async function (this: unknown, ...args: any[]) {
+          const { decision, v2 } = check(args);
+          const start = performance.now();
+          try {
+            const result = await fn.apply(this, args);
+            if (v2) {
+              guard.recordOutcome(decision.callId!, BodyState.RETURNED, {
+                invokedParams: argsParams(args),
+                durationMs: Math.round(performance.now() - start),
+              });
+            }
+            return result;
+          } catch (exc) {
+            if (v2) {
+              guard.recordOutcome(decision.callId!, BodyState.RAISED, {
+                errorCode: errorCodeOf(exc),
+                invokedParams: argsParams(args),
+                durationMs: Math.round(performance.now() - start),
+              });
+            }
+            throw exc;
+          }
+        }
+      : function (this: unknown, ...args: any[]) {
+          const { decision, v2 } = check(args);
+          const start = performance.now();
+          try {
+            const result = fn.apply(this, args);
+            if (v2) {
+              guard.recordOutcome(decision.callId!, BodyState.RETURNED, {
+                invokedParams: argsParams(args),
+                durationMs: Math.round(performance.now() - start),
+              });
+            }
+            return result;
+          } catch (exc) {
+            if (v2) {
+              guard.recordOutcome(decision.callId!, BodyState.RAISED, {
+                errorCode: errorCodeOf(exc),
+                invokedParams: argsParams(args),
+                durationMs: Math.round(performance.now() - start),
+              });
+            }
+            throw exc;
+          }
+        }
+  ) as GuardedNode<F>;
 
   Object.defineProperties(wrapped, {
     name: { value: fn.name, configurable: true },
@@ -163,6 +254,8 @@ export interface GuardToolOptions extends GuardOptions {
   onDenied?: (decision: Decision, input: any) => any;
 }
 
+type CheckToolOutcome = { decision: Decision; v2: boolean } | { denied: unknown };
+
 /**
  * Return a stand-in for `tool` whose `invoke` authorizes through `guard` before
  * the tool body runs. Everything else — `name`, `description`, `schema`, any
@@ -172,7 +265,12 @@ export interface GuardToolOptions extends GuardOptions {
  * The context function receives the raw invoke arguments. `ToolNode` passes a
  * tool call object, so the arguments the model proposed are at `input.args`;
  * a direct `tool.invoke({...})` passes them at the top level. `toolArgs` below
- * reads either shape.
+ * reads either shape — and, on a `schemaVersion: 2` guard, is also what
+ * `authorizedParams`/`invokedParams` are built from: this adapter's closest analogue
+ * of "the exact tool-call JSON object" the execution-binding spec names (see the
+ * module doc comment's "Execution binding" section; this is the one construct in
+ * this adapter that wraps a tool BODY, so it is the reference wiring for
+ * `recordOutcome`, mirroring `guardNode` above).
  */
 export function guardTool<T extends ToolLike>(
   guard: Guard,
@@ -181,21 +279,82 @@ export function guardTool<T extends ToolLike>(
 ): T {
   const scope = options.scope ?? tool.name;
   const label = options.tool !== undefined ? options.tool : tool.name;
+  const isAsync = tool.invoke.constructor.name === "AsyncFunction";
+  const capture = isAsync ? Capture.WRAPPER_ASYNC : Capture.WRAPPER_SYNC;
+  const adapterInfo: AdapterInfo = {
+    module: "attenu-guard/adapters/langgraph",
+    version: VERSION,
+    hookPath: `guardTool:${tool.name}`,
+  };
 
-  const guardedInvoke = (input: any, config?: any) => {
+  function check(input: any, config: any): CheckToolOutcome {
     const context: Context = options.contextFn ? options.contextFn(input, config) : {};
+    const v2 = guard.schemaVersion === 2;
     const decision = guard.check(scope, {
       context,
       tool: label,
       disposition: options.disposition ?? null,
       metered: options.metered ?? false,
+      ...(v2 ? { capture, adapter: adapterInfo, authorizedParams: toolArgs(input) as unknown as Json } : {}),
     });
     if (!decision.allowed) {
-      if (options.onDenied) return options.onDenied(decision, input);
+      if (options.onDenied) return { denied: options.onDenied(decision, input) };
       throw new AuthorityDenied(decision);
     }
-    return tool.invoke(input, config);
-  };
+    return { decision, v2 };
+  }
+
+  const guardedInvoke = isAsync
+    ? async (input: any, config?: any) => {
+        const outcome = check(input, config);
+        if ("denied" in outcome) return outcome.denied;
+        const { decision, v2 } = outcome;
+        const start = performance.now();
+        try {
+          const result = await tool.invoke(input, config);
+          if (v2) {
+            guard.recordOutcome(decision.callId!, BodyState.RETURNED, {
+              invokedParams: toolArgs(input) as unknown as Json,
+              durationMs: Math.round(performance.now() - start),
+            });
+          }
+          return result;
+        } catch (exc) {
+          if (v2) {
+            guard.recordOutcome(decision.callId!, BodyState.RAISED, {
+              errorCode: errorCodeOf(exc),
+              invokedParams: toolArgs(input) as unknown as Json,
+              durationMs: Math.round(performance.now() - start),
+            });
+          }
+          throw exc;
+        }
+      }
+    : (input: any, config?: any) => {
+        const outcome = check(input, config);
+        if ("denied" in outcome) return outcome.denied;
+        const { decision, v2 } = outcome;
+        const start = performance.now();
+        try {
+          const result = tool.invoke(input, config);
+          if (v2) {
+            guard.recordOutcome(decision.callId!, BodyState.RETURNED, {
+              invokedParams: toolArgs(input) as unknown as Json,
+              durationMs: Math.round(performance.now() - start),
+            });
+          }
+          return result;
+        } catch (exc) {
+          if (v2) {
+            guard.recordOutcome(decision.callId!, BodyState.RAISED, {
+              errorCode: errorCodeOf(exc),
+              invokedParams: toolArgs(input) as unknown as Json,
+              durationMs: Math.round(performance.now() - start),
+            });
+          }
+          throw exc;
+        }
+      };
 
   return new Proxy(tool, {
     get(target, prop, receiver) {
