@@ -7,8 +7,10 @@
     "anchor": "FAILED",
     "chain_id": true,
     "containment": true,
+    "expected_anchor": "not checked",
     "integrity": false,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [
@@ -24,8 +26,10 @@
     "anchor": "not checked",
     "chain_id": true,
     "containment": true,
+    "expected_anchor": "not checked",
     "integrity": true,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [],
@@ -41,8 +45,10 @@
     "anchor": "verified",
     "chain_id": true,
     "containment": true,
+    "expected_anchor": "not checked",
     "integrity": true,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [],
@@ -56,8 +62,10 @@
     "anchor": "not checked",
     "chain_id": true,
     "containment": true,
+    "expected_anchor": "not checked",
     "integrity": true,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [],
@@ -73,8 +81,10 @@
     "anchor": "verified",
     "chain_id": true,
     "containment": true,
+    "expected_anchor": "not checked",
     "integrity": true,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [],
@@ -88,8 +98,10 @@
     "anchor": "not checked",
     "chain_id": true,
     "containment": true,
+    "expected_anchor": "not checked",
     "integrity": true,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [],
@@ -105,8 +117,10 @@
     "anchor": "FAILED",
     "chain_id": true,
     "containment": false,
+    "expected_anchor": "not checked",
     "integrity": false,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [
@@ -124,8 +138,10 @@
     "anchor": "not checked",
     "chain_id": true,
     "containment": false,
+    "expected_anchor": "not checked",
     "integrity": false,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [
@@ -144,8 +160,10 @@
     "anchor": "verified",
     "chain_id": true,
     "containment": true,
+    "expected_anchor": "not checked",
     "integrity": true,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [],
@@ -159,8 +177,10 @@
     "anchor": "not checked",
     "chain_id": true,
     "containment": true,
+    "expected_anchor": "not checked",
     "integrity": true,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [],
@@ -176,8 +196,10 @@
     "anchor": "FAILED",
     "chain_id": true,
     "containment": true,
+    "expected_anchor": "not checked",
     "integrity": false,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [
@@ -194,8 +216,10 @@
     "anchor": "not checked",
     "chain_id": true,
     "containment": true,
+    "expected_anchor": "not checked",
     "integrity": false,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [
@@ -213,8 +237,10 @@
     "anchor": "FAILED",
     "chain_id": true,
     "containment": false,
+    "expected_anchor": "not checked",
     "integrity": false,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [
@@ -232,8 +258,10 @@
     "anchor": "not checked",
     "chain_id": true,
     "containment": false,
+    "expected_anchor": "not checked",
     "integrity": false,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [
@@ -252,8 +280,10 @@
     "anchor": "verified",
     "chain_id": true,
     "containment": false,
+    "expected_anchor": "not checked",
     "integrity": true,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [
@@ -269,8 +299,10 @@
     "anchor": "not checked",
     "chain_id": true,
     "containment": false,
+    "expected_anchor": "not checked",
     "integrity": true,
     "monotonicity": true,
+    "root": true,
     "version": true
    },
    "failures": [
@@ -288,8 +320,10 @@
     "anchor": "verified",
     "chain_id": true,
     "containment": true,
+    "expected_anchor": "not checked",
     "integrity": true,
     "monotonicity": false,
+    "root": true,
     "version": true
    },
    "failures": [
@@ -305,8 +339,10 @@
     "anchor": "not checked",
     "chain_id": true,
     "containment": true,
+    "expected_anchor": "not checked",
     "integrity": true,
     "monotonicity": false,
+    "root": true,
     "version": true
    },
    "failures": [

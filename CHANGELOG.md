@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-31
+
 ### Added
 - **Execution binding**, opt-in per chain via `Guard.issue(agentId, authority, {schemaVersion: 2})`
   (schema version 1 is unchanged and remains the default): `check`/`recordDenial` now allocate a
