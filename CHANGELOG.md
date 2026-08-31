@@ -187,8 +187,57 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `CommittedAuditError` path. A bare/`PRE_HOOK_ONLY` allow never enters the pending set, so
   `complete()` finalizes immediately, and the verifier's `unobserved` classification for it now
   matches the runtime's own view.
-
-## [0.4.0] — 2026-08-31
+- **Re-gate correction (HIGH): `freeze()` still executed attacker-controlled code BEFORE
+  authorization, on three separate exotic-value paths, all reproduced directly before this fix.**
+  (1) A `Proxy` is not inert under reflection: `Object.getPrototypeOf`, `Object.keys`, and
+  `Object.getOwnPropertyDescriptor` are each real, user-definable traps — walking an ordinary
+  Proxy through the property-descriptor logic fired four of them before authorization was ever
+  decided, and `Array.isArray` on a REVOKED Proxy throws `TypeError` outright rather than
+  degrading cleanly. (2) The bottom fallback still called `String(value)` for anything not a
+  plain object/array — a boxed primitive (`new Number(...)`) with a hostile `Symbol.toPrimitive`,
+  or a `TypedArray` with a hostile own `toString`, each ran attacker code exactly once per
+  snapshot. (3) No general safety net: an unanticipated reflection failure would have propagated
+  an exception out of a snapshot taken before authorization, rather than degrading. None of this
+  was an aliasing or authorization-bypass defect — ordinary frozen/accessor-only objects never
+  leaked references, and policy evaluation still fully controlled whether the wrapped body ran —
+  the defect was pre-authorization code execution and exception propagation. Fixed: `freeze()`
+  now recognizes a Proxy FIRST, via `util.types.isProxy` (an internal engine-slot check that
+  invokes nothing, live or revoked — verified directly), before `Array.isArray` or any other
+  reflection; every value that is not a safe JSON primitive and not a plain object/array (a
+  Proxy, a boxed primitive, a TypedArray/`ArrayBuffer`/`SharedArrayBuffer`/`DataView`, a
+  `Map`/`Set`/`Date`/`RegExp`, a function, a `Symbol`, a `BigInt`, or anything else) becomes the
+  new `FREEZE_UNSUPPORTED` sentinel instead of a string — never `String()`, never any other
+  protocol; the whole reflective walk runs inside one `try`/`catch`, degrading any other
+  reflection failure the same way. `paramsHashReason: "unsupported"` for the whole call, never a
+  partial commitment — the same degradation this library already uses for an out-of-domain
+  number, not a new failure mode.
+- **Re-gate correction (MEDIUM): `"<accessor>"` was a real commitment collision, and so was
+  `"<circular>"` by the identical reasoning.** Two real wrapper calls — one with an enumerable
+  getter, one with the literal string `"<accessor>"` as an ordinary value — produced the
+  IDENTICAL `authorizedParamsHash`, reproduced directly: an evidence-integrity ambiguity in a
+  supposedly cryptographic commitment (two materially different inputs, one commitment), even
+  though the getter itself correctly stayed uninvoked and this was never an authorization
+  bypass. Audited the sibling sentinel `"<circular>"` for the exact same collision class rather
+  than leaving it unexamined — it has the identical problem (a genuinely circular object and a
+  plain object holding the literal string `"<circular>"` produce the same commitment); there is
+  no reason a cycle's position makes the collision infeasible, so it gets the same fix. Both an
+  accessor property and a genuine cycle now become `FREEZE_UNSUPPORTED` (above) — the same
+  private `Symbol` every other unrepresentable value degrades to, which cannot equal any real
+  call argument by construction. Regression test added: zero getter calls, no hash,
+  `params_hash_reason: "unsupported"`; plus a direct test that a real getter-bearing object and
+  the old literal-string sentinel no longer freeze to the same shape.
+- **Re-gate correction (MEDIUM): `interop-next`'s "is 0.10.x published yet?" check failed OPEN.**
+  `set -eu` alone does not catch a failing `pip index versions` inside an
+  `if PIPE | grep -q ...; then` compound command — a compound `if` condition is exempt from
+  `set -e` by design, and without `pipefail` a pipeline's exit status is its LAST command's
+  only. Reproduced directly: a simulated exit 42 from the query flowed straight through to
+  `published=false`, the same output as "0.10.x genuinely does not exist yet" — a PyPI outage
+  silently read as a fact about what has been released, with the step still exiting 0. Fixed by
+  extracting the check into `tools/check-next-python-published.sh`, which captures the query's
+  exit code in its own statement (not inside an `if`) and exits non-zero — without ever printing
+  `false` — before reaching the match logic. Added a probe step to `ci.yml`'s `interop-next` job,
+  run on every CI invocation, that points the script at a stub `python3` simulating a query
+  failure and asserts the script fails rather than reporting `false`.
 
 ### Added
 - **Execution binding**, opt-in per chain via `Guard.issue(agentId, authority, {schemaVersion: 2})`

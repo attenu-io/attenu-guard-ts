@@ -129,12 +129,18 @@
  *     const tools = guardTools(researcher, [crmQuery], { scopes: { crm_query: "crm.read" } });
  */
 
+import { types as nodeUtilTypes } from "node:util";
+
 import { AuthorityDenied, type AdapterInfo, type Guard } from "../guard.js";
 import type { Authority } from "../authority.js";
 import type { Json } from "../canonical.js";
 import type { Context } from "../ceilings.js";
 import { BodyState, Capture, type Decision } from "../reasons.js";
 import { VERSION } from "../version.js";
+
+// `node:util`'s own Proxy check -- an internal engine-slot test, not a trapped operation (see
+// `freeze()`'s doc comment). Aliased for a short, self-explanatory call site.
+const isProxy = nodeUtilTypes.isProxy;
 
 /** Options shared by every guarded wrapper. */
 export interface GuardOptions {
@@ -160,41 +166,104 @@ export type GuardedNode<F extends (...args: any[]) => any> = F & {
 };
 
 /**
+ * A private, freeze()-only sentinel for "could not be represented as a JSON leaf" — a Proxy, an
+ * accessor property, a genuine cycle, a boxed primitive, a TypedArray, a function, or anything
+ * else this module does not know how to rebuild as plain JSON. NEVER a JSON-representable
+ * value (a string, `null`, …): a second release-gate finding showed a literal string sentinel
+ * (`"<accessor>"`) genuinely COLLIDES — a real getter-bearing object and a plain object holding
+ * the literal string `"<accessor>"` produced the IDENTICAL `authorizedParamsHash`, an
+ * evidence-integrity ambiguity in a supposedly cryptographic commitment (two materially
+ * different inputs, one commitment). A fresh, private `Symbol` cannot equal any real call
+ * argument, so it cannot collide with one — and it makes the SAME degradation apply uniformly
+ * everywhere this function cannot represent something, rather than inventing a new
+ * JSON-shaped sentinel (with its own collision risk) per case.
+ *
+ * Declared as `Json` even though a `Symbol` is not one — a deliberate escape from that type's
+ * nominal domain, not an oversight: `canonical.ts`'s own JCS `serialize()` already runtime-checks
+ * `typeof` for exactly this reason (its switch handles `"undefined"`/`"bigint"`/`"symbol"`/
+ * `"function"` despite `CJson`'s declared type not admitting any of them either), because the
+ * type system cannot fully describe this module's actual runtime domain. Once this sentinel
+ * reaches `params.ts`'s `commit()` — inside a plain object or array, same as any other frozen
+ * leaf — `canonicalBytes` hits that `"symbol"` case, throws `UnsupportedTypeError`, and `commit()`
+ * turns that into `paramsHashReason: "unsupported"` for the WHOLE params value, never a partial
+ * or per-field one: there is no such thing as "this one nested field is unsupported," only
+ * "this whole call's arguments are, or are not, representable."
+ *
+ * Exported for the same reason `freeze` itself is: not part of this adapter's semantic
+ * contract, but its own tests need to assert directly that a given leaf became this exact
+ * sentinel (by identity — nothing else can equal it) rather than inferring it indirectly.
+ */
+export const FREEZE_UNSUPPORTED = Symbol("attenu-guard:freeze-unsupported") as unknown as Json;
+const UNSUPPORTED = FREEZE_UNSUPPORTED;
+
+/**
  * A genuinely immutable, fully decoupled rebuild of `value` — the ONE, UNCONDITIONAL sanitizer
  * every snapshot in this adapter goes through. Safe JSON-primitive leaves
  * (`string`/`number`/`boolean`/`null`) pass through verbatim; plain objects and arrays are
  * rebuilt fresh, recursively, by inspecting their REAL own property descriptors directly
- * (`Object.getOwnPropertyDescriptor`), never by invoking anything the value itself controls
- * (a getter, an iterator, a copy protocol); anything else becomes a safe STRING representation,
- * never the live object.
+ * (`Object.getOwnPropertyDescriptor`), never by invoking anything the value itself controls (a
+ * getter, an iterator, a copy protocol, a Proxy trap, a `toString`/`valueOf`/`Symbol.toPrimitive`
+ * override); anything this function cannot represent becomes `UNSUPPORTED` (above) — never a
+ * string, never the live object.
  *
  * RELEASE-GATE CORRECTION (CRITICAL): this used to run ONLY as a fallback, after
  * `structuredClone` had already been tried and had THROWN — the previous revision of this
- * comment (below) documented that carefully, but never asked whether `structuredClone`
- * SUCCEEDING was itself a sufficient guarantee. It is not, on three counts, each reproduced
- * directly before this fix:
+ * comment documented that carefully, but never asked whether `structuredClone` SUCCEEDING was
+ * itself a sufficient guarantee. It is not, on three counts, each reproduced directly before
+ * that fix: (1) a circular object clones successfully — `structuredClone` handles cycles
+ * natively — so this function never ran on it at all, and the circularity later reached
+ * `params.ts`'s own cycle-guard-less hash walk and crashed with `RangeError`; (2) a sparse
+ * array clones successfully too, bypassing this function's own densification; (3) a
+ * `SharedArrayBuffer` clones to a DISTINCT wrapper object sharing the SAME underlying memory —
+ * a "successful" clone that is not independent at all. Fixed by making this function the ONLY
+ * snapshot path, unconditionally — `structuredClone` is not called anywhere in this adapter.
  *
- *   1. A circular object clones successfully — `structuredClone` handles cycles natively — so
- *      this function never ran on it at all; the circularity then reached `params.ts`'s own
- *      hash-commitment walk (`hasUnsafeIntegralNumber`), which has NO cycle guard, and crashed
- *      with `RangeError: Maximum call stack size exceeded` before authorization or the tool body
- *      ever ran.
- *   2. A sparse array clones successfully too (holes preserved) — bypassing this function's own
- *      densification entirely — and reached `params.ts` as `paramsHashReason: "unsupported"`
- *      instead of a real, densified, hashable snapshot.
- *   3. A `SharedArrayBuffer` clones to a DISTINCT wrapper object that shares the SAME underlying
- *      memory, by design — a "successful" clone that is not independent at all, disproving the
- *      premise that a successful `structuredClone` never aliases.
+ * A SECOND release-gate pass then found that "pure introspection" was not fully true either —
+ * three more code-execution paths, all reproduced directly before this fix:
  *
- * Fixed by making this function the ONLY snapshot path, unconditionally — `structuredClone` is
- * no longer called anywhere in this adapter. `active` is the PATH-ACTIVE cycle guard: the set of
- * containers on the CURRENT recursion path, passed as a NEW `Set` at each recursive call rather
- * than mutated in place and shared across sibling branches (an earlier revision of this function
- * DID share one mutable `WeakSet` across the whole call, which meant a DAG's repeated reference
- * — the SAME object appearing twice as sibling values, never as its own ancestor — was wrongly
- * reported `"<circular>"` on its second occurrence; reproduced directly before this fix too,
- * fixed the same way Python's own shared `_snapshot.freeze()` was always designed: immutable,
- * per-branch sets, never a shared mutable one).
+ *   1. A `Proxy` is not inert under reflection. `Object.getPrototypeOf`, `Object.keys`
+ *      (`[[OwnPropertyKeys]]` + a `[[GetOwnProperty]]` per key to check enumerability), and
+ *      `Object.getOwnPropertyDescriptor` are each real, user-definable traps — reproduced
+ *      directly: walking an ordinary handler-tracked Proxy through the OLD version of this
+ *      function fired four separate traps before authorization was ever decided. `Array.isArray`
+ *      is worse: called on a REVOKED Proxy, it throws `TypeError` outright (its spec algorithm,
+ *      `IsArray`, unwraps `[[ProxyTarget]]`, which does not exist on a revoked handle) —
+ *      reproduced directly. Fixed: `require("node:util").types.isProxy(value)` recognizes a
+ *      Proxy — live OR revoked — via an internal engine slot, invoking NOTHING (verified
+ *      directly: zero trap calls, no throw on a revoked handle either) — checked FIRST, before
+ *      `Array.isArray` or any other reflection, and routed straight to `UNSUPPORTED`.
+ *   2. The bottom fallback used `String(value)` for anything not a plain object/array — a boxed
+ *      primitive (`new Number(...)`) with a hostile `Symbol.toPrimitive`, or a `TypedArray` with
+ *      a hostile own `toString`, each ran attacker code exactly once per snapshot, reproduced
+ *      directly both ways — BEFORE `Guard.check` had decided allow or deny. The same is true, in
+ *      principle, of ANY object-typed exotic value (a function's own `.toString` is just as
+ *      overridable) — there is no way to distinguish "safe to stringify" from "hostile" by
+ *      inspection alone, so none of them are stringified any more. Fixed: every value that is
+ *      not a safe JSON primitive and not a plain object/array — a Proxy, a boxed primitive, a
+ *      TypedArray/`ArrayBuffer`/`SharedArrayBuffer`/`DataView`, a `Map`/`Set`/`Date`/`RegExp`, a
+ *      function, a `Symbol`, a `BigInt`, anything else — becomes `UNSUPPORTED` (never `String()`,
+ *      never any other protocol) — see the confirmed-good note above: stringification itself
+ *      was never unsafe as a RESULT (a `SharedArrayBuffer` never retained live memory as a
+ *      string), the defect was invoking attacker-controlled code to PRODUCE that string before
+ *      authorization ran, and `UNSUPPORTED` avoids that entirely rather than picking a "safer"
+ *      string.
+ *   3. Any OTHER reflection failure — an exotic value this pass did not specifically anticipate,
+ *      still throwing from `Object.getPrototypeOf`/`Object.keys`/`Object.getOwnPropertyDescriptor`
+ *      despite the Proxy check above — must degrade the same way, not propagate an exception out
+ *      of a snapshot taken before authorization. The whole reflective walk (everything past the
+ *      Proxy/primitive fast paths) runs inside one `try`/`catch`; any throw there becomes
+ *      `UNSUPPORTED` too.
+ *
+ * `active` is the PATH-ACTIVE cycle guard: the set of containers on the CURRENT recursion path,
+ * passed as a NEW `Set` at each recursive call rather than mutated in place and shared across
+ * sibling branches (an earlier revision DID share one mutable `WeakSet` across the whole call,
+ * which meant a DAG's repeated reference — the SAME object appearing twice as sibling values,
+ * never as its own ancestor — was wrongly flagged on its second occurrence; reproduced directly
+ * before that fix too). A genuine cycle's own leaf value is `UNSUPPORTED`, not a literal string
+ * `"<circular>"` — audited for the same collision class as `"<accessor>"` below, and it has the
+ * identical problem: a self-referential object and a plain object holding the literal string
+ * `"<circular>"` would otherwise produce the same commitment. There is no position-based reason
+ * a cycle's collision is any less real than an accessor's, so it gets the same fix.
  *
  * The property-descriptor walk ALSO closes a separate, protocol-driven gap: the previous
  * revision used `Array.from`/`.map()` (which invoke `[Symbol.iterator]()` — a hostile array's
@@ -202,12 +271,16 @@ export type GuardedNode<F extends (...args: any[]) => any> = F & {
  * directly: `[1, , 3]` with a hostile iterator froze as `[999]`) and `Object.entries()` (which
  * reads each property's VALUE directly, invoking a getter if one is defined there — reproduced
  * directly: a getter with a side effect was observed three times across the old clone-attempt/
- * freeze/body sequence, and the committed snapshot was the SECOND of three observations, not
- * the first). `Object.getOwnPropertyDescriptor` and a `.length`-bounded index loop are pure
- * introspection — they never invoke user code — and an accessor property (`.get`/`.set`
- * present) is encoded as the literal string `"<accessor>"` rather than read at all: a getter can
- * have arbitrary side effects, throw, or return something different on every call, so there is
- * no single "correct" observation of it to commit.
+ * freeze/body sequence, and the committed snapshot was the SECOND of three observations, not the
+ * first). `Object.getOwnPropertyDescriptor` and a `.length`-bounded index loop are pure
+ * introspection — they never invoke user code — and an accessor property (`.get`/`.set` present)
+ * becomes `UNSUPPORTED` rather than read at all: a getter can have arbitrary side effects, throw,
+ * or return something different on every call, so there is no single "correct" observation of it
+ * to commit, and (release-gate correction) the earlier `"<accessor>"` string sentinel this
+ * function used instead genuinely collided — reproduced directly: a real getter-bearing object
+ * and a plain object holding the literal string `"<accessor>"` produced the identical
+ * `authorizedParamsHash`. Both now degrade the same commitment to `unsupported` via `UNSUPPORTED`
+ * (see its own doc comment above), never a JSON-representable stand-in.
  *
  * Exported — not part of this adapter's semantic contract (it is an internal sanitizer, not a
  * feature callers configure), but its own aliasing-safety invariant is worth a direct unit
@@ -220,82 +293,96 @@ export function freeze(value: unknown, active: ReadonlySet<unknown> = new Set())
   if (value === null || value === undefined) return null;
   const t = typeof value;
   if (t === "string" || t === "number" || t === "boolean") return value as Json;
-  if (Array.isArray(value)) {
-    if (active.has(value)) return "<circular>";
-    const withSelf = new Set(active).add(value);
-    const out: Json[] = [];
-    // Index-by-index via getOwnPropertyDescriptor, not Array.from/.map: those invoke
-    // `[Symbol.iterator]()`, which a hostile array can override to yield ANYTHING regardless
-    // of what its real indexed properties hold (reproduced directly: `[1, , 3]` with a hostile
-    // iterator froze as `[999]`). `.length` and getOwnPropertyDescriptor are pure introspection
-    // -- they read the array's REAL own properties without ever calling user code. A hole (no
-    // descriptor at that index) is densified to `null`, same as any other absence here.
-    for (let i = 0; i < value.length; i++) {
-      out.push(freezeDescriptor(Object.getOwnPropertyDescriptor(value, i), withSelf));
-    }
-    return out;
-  }
-  if (t === "object") {
-    const proto = Object.getPrototypeOf(value);
-    if (proto === Object.prototype || proto === null) {
-      const obj = value as object;
-      if (active.has(obj)) return "<circular>";
-      const withSelf = new Set(active).add(obj);
-      const out: Record<string, Json> = {};
-      // Object.keys + getOwnPropertyDescriptor, not Object.entries: Object.entries reads each
-      // property's VALUE directly, which invokes a getter if one is defined at that key --
-      // reproduced directly: with an unclonable sibling forcing the old fallback, a getter with
-      // a side effect was observed three times across the old clone-attempt/freeze/body path,
-      // and the committed snapshot was the SECOND of three observations, not the first. Reading
-      // the DESCRIPTOR instead never invokes anything; an accessor property (`.get`/`.set`
-      // present, no `.value`) is encoded as `"<accessor>"` -- explicitly marked, never executed
-      // -- rather than read (see `freezeDescriptor`). `Object.keys` correctly LISTS a literal
-      // `"__proto__"` key (a plain `JSON.parse('{"__proto__": {...}}')` result has it as an
-      // own, enumerable DATA property, same as any other key) -- the loop below still needs
-      // `Object.defineProperty`, not a bracket assignment, to actually WRITE it back safely.
-      for (const key of Object.keys(obj)) {
-        // Object.defineProperty, NOT `out[key] = ...`: a bracket ASSIGNMENT to the literal key
-        // "__proto__" does not create a data property at all -- it invokes Object.prototype's
-        // own `__proto__` SETTER, silently changing `out`'s prototype instead and dropping the
-        // key from its own enumerable keys entirely. defineProperty always performs a genuine
-        // [[DefineOwnProperty]], bypassing that accessor, for "__proto__" exactly like any
-        // other key name.
-        Object.defineProperty(out, key, {
-          value: freezeDescriptor(Object.getOwnPropertyDescriptor(obj, key), withSelf),
-          enumerable: true,
-          writable: true,
-          configurable: true,
-        });
+
+  // A Proxy is recognized FIRST, before Array.isArray or ANY reflection -- see this function's
+  // own doc comment, point 1. `util.types.isProxy` reads an internal engine slot; it invokes no
+  // trap and does not throw even on a revoked Proxy (verified directly), unlike everything below
+  // it, which would either fire real traps (a live Proxy) or throw outright (a revoked one).
+  if (isProxy(value)) return UNSUPPORTED;
+
+  try {
+    if (Array.isArray(value)) {
+      if (active.has(value)) return UNSUPPORTED; // a genuine cycle -- see doc comment above
+      const withSelf = new Set(active).add(value);
+      const out: Json[] = [];
+      // Index-by-index via getOwnPropertyDescriptor, not Array.from/.map: those invoke
+      // `[Symbol.iterator]()`, which a hostile array can override to yield ANYTHING regardless
+      // of what its real indexed properties hold (reproduced directly: `[1, , 3]` with a
+      // hostile iterator froze as `[999]`). `.length` and getOwnPropertyDescriptor are pure
+      // introspection -- they read the array's REAL own properties without ever calling user
+      // code. A hole (no descriptor at that index) is densified to `null`, same as any other
+      // absence here.
+      for (let i = 0; i < value.length; i++) {
+        out.push(freezeDescriptor(Object.getOwnPropertyDescriptor(value, i), withSelf));
       }
       return out;
     }
-  }
-  // A function, a class instance, a Map/Set/Date/RegExp/ArrayBuffer/SharedArrayBuffer, a
-  // Symbol, a BigInt, or anything else that is not a plain object or array -- never the live
-  // reference, never wrapped, never passed through any copy protocol. A `SharedArrayBuffer`
-  // specifically: `structuredClone` "succeeding" on one does NOT mean independence -- the clone
-  // is a DISTINCT wrapper object sharing the SAME underlying memory, by design (that is the
-  // whole point of the type) -- so it is stringified here like anything else this function does
-  // not specifically know how to rebuild as plain JSON, never handed to any clone mechanism at
-  // all.
-  try {
-    return String(value);
+    if (t === "object") {
+      const proto = Object.getPrototypeOf(value);
+      if (proto === Object.prototype || proto === null) {
+        const obj = value as object;
+        if (active.has(obj)) return UNSUPPORTED; // a genuine cycle -- see doc comment above
+        const withSelf = new Set(active).add(obj);
+        const out: Record<string, Json> = {};
+        // Object.keys + getOwnPropertyDescriptor, not Object.entries: Object.entries reads each
+        // property's VALUE directly, which invokes a getter if one is defined at that key --
+        // reproduced directly: with an unclonable sibling forcing the old fallback, a getter
+        // with a side effect was observed three times across the old clone-attempt/freeze/body
+        // path, and the committed snapshot was the SECOND of three observations, not the first.
+        // Reading the DESCRIPTOR instead never invokes anything; an accessor property
+        // (`.get`/`.set` present, no `.value`) becomes `UNSUPPORTED` -- explicitly marked, never
+        // executed -- rather than read (see `freezeDescriptor`). `Object.keys` correctly LISTS a
+        // literal `"__proto__"` key (a plain `JSON.parse('{"__proto__": {...}}')` result has it
+        // as an own, enumerable DATA property, same as any other key) -- the loop below still
+        // needs `Object.defineProperty`, not a bracket assignment, to actually WRITE it back
+        // safely.
+        for (const key of Object.keys(obj)) {
+          // Object.defineProperty, NOT `out[key] = ...`: a bracket ASSIGNMENT to the literal key
+          // "__proto__" does not create a data property at all -- it invokes Object.prototype's
+          // own `__proto__` SETTER, silently changing `out`'s prototype instead and dropping the
+          // key from its own enumerable keys entirely. defineProperty always performs a genuine
+          // [[DefineOwnProperty]], bypassing that accessor, for "__proto__" exactly like any
+          // other key name.
+          Object.defineProperty(out, key, {
+            value: freezeDescriptor(Object.getOwnPropertyDescriptor(obj, key), withSelf),
+            enumerable: true,
+            writable: true,
+            configurable: true,
+          });
+        }
+        return out;
+      }
+    }
   } catch {
-    return `<unrepresentable ${t}>`;
+    // A reflection call above threw despite the Proxy check -- an exotic value this pass did
+    // not specifically anticipate. Degrade the same way as everything else this function
+    // cannot represent; never let a snapshot taken BEFORE authorization propagate an exception.
+    return UNSUPPORTED;
   }
+
+  // A boxed primitive (`new Number(...)`/`new String(...)`/`new Boolean(...)`), a TypedArray,
+  // `ArrayBuffer`/`SharedArrayBuffer`/`DataView`, a `Map`/`Set`/`Date`/`RegExp`, a function, a
+  // `Symbol`, a `BigInt`, or anything else that is not a plain object or array -- never
+  // stringified any more (see this function's own doc comment, point 2: a hostile
+  // `Symbol.toPrimitive`/`toString`/`valueOf` override runs attacker code before authorization
+  // has been decided, reproduced directly for a boxed primitive and a TypedArray) and never the
+  // live reference either. `UNSUPPORTED` degrades the whole commitment cleanly instead.
+  return UNSUPPORTED;
 }
 
 /**
  * Reads ONE property descriptor safely: a data property's `.value` is frozen recursively; an
- * accessor property (`.get`/`.set` present) is encoded as `"<accessor>"` WITHOUT ever calling
- * the getter (a getter can have arbitrary side effects, throw, or return something different on
- * each call — there is no "correct" single observation to commit); a missing descriptor (an
- * array hole, or a key that no longer exists) becomes `null`, the same as any other JSON-shaped
- * absence `freeze` produces elsewhere.
+ * accessor property (`.get`/`.set` present) becomes `UNSUPPORTED` WITHOUT ever calling the
+ * getter (a getter can have arbitrary side effects, throw, or return something different on
+ * each call — there is no "correct" single observation to commit, and a JSON-representable
+ * sentinel string genuinely collided with a real getter-bearing object's commitment — see
+ * `UNSUPPORTED`'s own doc comment); a missing descriptor (an array hole, or a key that no
+ * longer exists) becomes `null`, the same as any other JSON-shaped absence `freeze` produces
+ * elsewhere.
  */
 function freezeDescriptor(desc: PropertyDescriptor | undefined, active: ReadonlySet<unknown>): Json {
   if (desc === undefined) return null;
-  if (desc.get || desc.set) return "<accessor>";
+  if (desc.get || desc.set) return UNSUPPORTED;
   return freeze(desc.value, active);
 }
 

@@ -12,6 +12,7 @@ import {
   addGuardedNode,
   delegateTo,
   freeze,
+  FREEZE_UNSUPPORTED,
   guardNode,
   guardTool,
   guardTools,
@@ -517,7 +518,11 @@ test("freeze guards a circular reference instead of looping forever", () => {
   const circular: { self?: unknown } = {};
   circular.self = circular;
   const frozen = freeze(circular) as { self: unknown };
-  assert.equal(frozen.self, "<circular>");
+  // Release-gate correction: a literal string "<circular>" here would collide the same way
+  // "<accessor>" did (see the collision tests below) -- a genuine cycle and a plain object
+  // holding that literal string would produce the identical commitment. FREEZE_UNSUPPORTED is a
+  // private Symbol, so it cannot equal any real call argument.
+  assert.equal(frozen.self, FREEZE_UNSUPPORTED);
 });
 
 test("freeze does NOT mislabel a DAG's repeated sibling reference as circular", () => {
@@ -535,7 +540,12 @@ test("freeze does NOT mislabel a DAG's repeated sibling reference as circular", 
   assert.notEqual(frozen.b, "<circular>");
 });
 
-test("a guarded node with an unclonable argument still authorizes, runs, and commits a real hash", () => {
+test("a guarded node with an unclonable argument still authorizes and runs, committing no hash", () => {
+  // Release-gate correction: a function is one of the exotic types freeze() now routes to
+  // FREEZE_UNSUPPORTED rather than String() -- see freeze()'s own doc comment, point 2 (a
+  // function's own .toString is just as overridable as a boxed primitive's Symbol.toPrimitive,
+  // so it is never invoked either). Policy evaluation still fully controls whether the body
+  // runs -- this is an evidence-integrity property, not an authorization one.
   const g = supervisorV2();
   const node = guardNode(
     g,
@@ -547,34 +557,32 @@ test("a guarded node with an unclonable argument still authorizes, runs, and com
     { contextFn: () => ({ rows: 1 }) },
   );
   const arg = { note: "before" };
-  const result = node(arg, () => {}); // the function is stringified rather than crashing anything
+  const result = node(arg, () => {}); // the function is never invoked, stringified, or reflected
   assert.deepEqual(result, { ok: true });
   const entries = g.auditLog().entries;
   const allow = entries.find((e) => e["event"] === "allow")!;
   const outcome = entries.find((e) => e["event"] === "outcome")!;
-  // freeze() sanitizes the unclonable value to a safe string BEFORE it is ever handed to the
-  // hash commitment, so -- unlike the pre-fix bare shallow-copy fallback, which left the raw
-  // function value in place for the commitment to reject -- a real hash is committed here, not
-  // paramsHashReason: "unsupported".
-  assert.ok(allow["authorized_params_hash"]);
-  assert.equal(allow["authorized_params_hash"], outcome["invoked_params_hash"]);
-  assert.equal("params_hash_reason" in allow, false);
+  assert.equal("authorized_params_hash" in allow, false);
+  assert.equal(allow["params_hash_reason"], "unsupported");
+  assert.equal("invoked_params_hash" in outcome, false);
+  assert.equal(outcome["params_hash_reason"], "unsupported");
 });
 
-test("a guarded tool with an unclonable argument still authorizes, runs, and commits a real hash", () => {
+test("a guarded tool with an unclonable argument still authorizes and runs, committing no hash", () => {
   const g = supervisorV2();
   const guarded = guardTool(g, fakeTool("crm_query", (input: any) => ({ rows: input.rows })), {
     scope: "crm.read",
     contextFn: (input: any) => ({ rows: toolArgs(input).rows }),
   });
-  const result = guarded.invoke({ rows: 5, cb: () => {} }); // the function is stringified rather than crashing anything
+  const result = guarded.invoke({ rows: 5, cb: () => {} }); // the function is never invoked, stringified, or reflected
   assert.deepEqual(result, { rows: 5 });
   const entries = g.auditLog().entries;
   const allow = entries.find((e) => e["event"] === "allow")!;
   const outcome = entries.find((e) => e["event"] === "outcome")!;
-  assert.ok(allow["authorized_params_hash"]);
-  assert.equal(allow["authorized_params_hash"], outcome["invoked_params_hash"]);
-  assert.equal("params_hash_reason" in allow, false);
+  assert.equal("authorized_params_hash" in allow, false);
+  assert.equal(allow["params_hash_reason"], "unsupported");
+  assert.equal("invoked_params_hash" in outcome, false);
+  assert.equal(outcome["params_hash_reason"], "unsupported");
 });
 
 test("freeze keeps a JSON.parse-created own __proto__ key as a data property, not a prototype", () => {
@@ -613,7 +621,7 @@ test("freeze densifies a sparse array's holes instead of preserving them as hole
 // on a circular input and freeze() was never reached at all.
 // =================================================================================================
 
-test("a guarded node with a circular argument does not crash, and commits a real hash", () => {
+test("a guarded node with a circular argument does not crash, and commits no hash", () => {
   const g = supervisorV2();
   const node = guardNode(g, "crm.read", (_payload: unknown) => ({ ok: true }), {
     contextFn: () => ({ rows: 1 }),
@@ -625,8 +633,11 @@ test("a guarded node with a circular argument does not crash, and commits a real
 
   assert.deepEqual(result, { ok: true });
   const allow = g.auditLog().entries.find((e) => e["event"] === "allow")!;
-  assert.ok(allow["authorized_params_hash"]);
-  assert.equal("params_hash_reason" in allow, false);
+  // Release-gate correction: a genuine cycle is now FREEZE_UNSUPPORTED, not a literal
+  // "<circular>" string -- see the direct freeze() cycle test above for the collision this
+  // avoids. The call still authorizes and runs; only the commitment is absent.
+  assert.equal("authorized_params_hash" in allow, false);
+  assert.equal(allow["params_hash_reason"], "unsupported");
 });
 
 test("a guarded node with a sparse array argument densifies it and commits a real hash", () => {
@@ -682,7 +693,14 @@ test("a guarded node with a hostile custom iterator on its array argument is not
   assert.equal("params_hash_reason" in allow, false);
 });
 
-test("a guarded tool with a getter argument never invokes it, and encodes it as an accessor", () => {
+test("a guarded tool with a getter argument never invokes it, and commits no hash", () => {
+  // Release-gate finding, MEDIUM: the earlier "<accessor>" string sentinel was a real
+  // commitment collision -- a real getter-bearing object and a plain object holding the
+  // literal string "<accessor>" produced the IDENTICAL authorizedParamsHash (reproduced
+  // directly), an evidence-integrity ambiguity in a supposedly cryptographic commitment. Fixed:
+  // an accessor now joins the same FREEZE_UNSUPPORTED handling as every other unrepresentable
+  // value, degrading the whole commitment to params_hash_reason: "unsupported" rather than
+  // using any JSON-representable sentinel.
   const g = supervisorV2();
   let getterCalls = 0;
   const withGetter: Record<string, unknown> = {};
@@ -704,14 +722,30 @@ test("a guarded tool with a getter argument never invokes it, and encodes it as 
   // let alone the three observations the old Object.entries-based fallback could produce.
   assert.equal(getterCalls, 0);
   const allow = g.auditLog().entries.find((e) => e["event"] === "allow")!;
-  assert.ok(allow["authorized_params_hash"]);
+  assert.equal("authorized_params_hash" in allow, false);
+  assert.equal(allow["params_hash_reason"], "unsupported");
 });
 
-test("a guarded node with a SharedArrayBuffer argument never aliases its backing memory", () => {
+test("freeze does not let a real getter-bearing object and the old \"<accessor>\" string collide", () => {
+  // The exact collision reproduced during the release-gate review, pinned directly against
+  // freeze() rather than through a wrapper: two materially different inputs must not produce
+  // the same frozen shape (and therefore not the same commitment) just because one of them
+  // happens to spell the old sentinel literally.
+  const withGetter: Record<string, unknown> = {};
+  Object.defineProperty(withGetter, "secret", { get: () => "leaked", enumerable: true });
+  const literalSentinel = { secret: "<accessor>" };
+  const frozenGetter = freeze(withGetter) as Record<string, unknown>;
+  const frozenLiteral = freeze(literalSentinel) as Record<string, unknown>;
+  assert.equal(frozenGetter["secret"], FREEZE_UNSUPPORTED);
+  assert.equal(frozenLiteral["secret"], "<accessor>"); // a REAL string stays a real string
+  assert.notEqual(frozenGetter["secret"], frozenLiteral["secret"]); // no longer collide
+});
+
+test("a guarded node with a SharedArrayBuffer argument commits no hash and never aliases its backing memory", () => {
   // structuredClone "succeeding" on a SharedArrayBuffer produces a DISTINCT wrapper object that
   // shares the SAME underlying memory, by design -- not independence at all. freeze() never
-  // calls structuredClone (or anything else) on it; it is stringified like any other value with
-  // no plain-JSON shape.
+  // calls structuredClone, String(), or anything else on it; it becomes FREEZE_UNSUPPORTED like
+  // any other exotic value freeze() cannot represent as plain JSON.
   const g = supervisorV2();
   const node = guardNode(g, "crm.read", (_buf: SharedArrayBuffer) => ({ ok: true }), {
     contextFn: () => ({ rows: 1 }),
@@ -721,7 +755,115 @@ test("a guarded node with a SharedArrayBuffer argument never aliases its backing
   node(sab);
 
   const allow = g.auditLog().entries.find((e) => e["event"] === "allow")!;
-  assert.ok(allow["authorized_params_hash"]);
+  assert.equal("authorized_params_hash" in allow, false);
+  assert.equal(allow["params_hash_reason"], "unsupported");
+});
+
+test("a guarded node with a Proxy argument never fires a trap, and commits no hash", () => {
+  // Release-gate finding, HIGH: walking a Proxy through the OLD property-descriptor logic
+  // fired real, user-definable traps (getPrototypeOf/ownKeys/getOwnPropertyDescriptor) before
+  // authorization was ever decided -- reproduced directly: four traps fired. `util.types.isProxy`
+  // recognizes a Proxy via an internal engine slot, invoking nothing, checked before any
+  // reflection at all.
+  const g = supervisorV2();
+  const node = guardNode(g, "crm.read", (_p: unknown) => ({ ok: true }), {
+    contextFn: () => ({ rows: 1 }),
+  });
+  const traps: string[] = [];
+  const target = { a: 1 };
+  const proxied = new Proxy(target, {
+    getPrototypeOf(t) {
+      traps.push("getPrototypeOf");
+      return Reflect.getPrototypeOf(t);
+    },
+    ownKeys(t) {
+      traps.push("ownKeys");
+      return Reflect.ownKeys(t);
+    },
+    getOwnPropertyDescriptor(t, k) {
+      traps.push(`getOwnPropertyDescriptor:${String(k)}`);
+      return Reflect.getOwnPropertyDescriptor(t, k);
+    },
+  });
+
+  const result = node(proxied);
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(traps, []); // zero traps fired -- the Proxy was never reflected on at all
+  const allow = g.auditLog().entries.find((e) => e["event"] === "allow")!;
+  assert.equal("authorized_params_hash" in allow, false);
+  assert.equal(allow["params_hash_reason"], "unsupported");
+});
+
+test("a guarded node with a REVOKED Proxy argument does not throw", () => {
+  // Release-gate finding, HIGH: Array.isArray on a revoked Proxy throws TypeError outright
+  // (IsArray's spec algorithm unwraps [[ProxyTarget]], which does not exist on a revoked
+  // handle) -- reproduced directly through the real snapshot path, before this fix, as an
+  // uncaught exception from a call that should have degraded cleanly to unsupported instead.
+  const g = supervisorV2();
+  const node = guardNode(g, "crm.read", (_p: unknown) => ({ ok: true }), {
+    contextFn: () => ({ rows: 1 }),
+  });
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+
+  const result = node(proxy);
+
+  assert.deepEqual(result, { ok: true });
+  const allow = g.auditLog().entries.find((e) => e["event"] === "allow")!;
+  assert.equal("authorized_params_hash" in allow, false);
+  assert.equal(allow["params_hash_reason"], "unsupported");
+});
+
+test("a guarded node with a boxed primitive's hostile Symbol.toPrimitive never invokes it", () => {
+  // Release-gate finding, HIGH: the old bottom fallback called String(value) on anything not a
+  // plain object/array -- a boxed primitive with a hostile Symbol.toPrimitive ran attacker code
+  // exactly once per snapshot, reproduced directly, BEFORE Guard.check had decided allow or
+  // deny.
+  const g = supervisorV2();
+  const node = guardNode(g, "crm.read", (_p: unknown) => ({ ok: true }), {
+    contextFn: () => ({ rows: 1 }),
+  });
+  let hostileCalls = 0;
+  class HostileNumber {
+    [Symbol.toPrimitive](_hint: string): number {
+      hostileCalls++;
+      return 42;
+    }
+  }
+
+  const result = node(new HostileNumber());
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(hostileCalls, 0);
+  const allow = g.auditLog().entries.find((e) => e["event"] === "allow")!;
+  assert.equal("authorized_params_hash" in allow, false);
+  assert.equal(allow["params_hash_reason"], "unsupported");
+});
+
+test("a guarded node with a TypedArray's hostile own toString never invokes it", () => {
+  // Same class as the boxed-primitive case above, reproduced directly for a TypedArray with a
+  // hostile OWN toString (shadowing the built-in Uint8Array.prototype.toString).
+  const g = supervisorV2();
+  const node = guardNode(g, "crm.read", (_p: unknown) => ({ ok: true }), {
+    contextFn: () => ({ rows: 1 }),
+  });
+  let hostileCalls = 0;
+  const ta = new Uint8Array([1, 2, 3]);
+  Object.defineProperty(ta, "toString", {
+    value: () => {
+      hostileCalls++;
+      return "haha";
+    },
+  });
+
+  const result = node(ta);
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(hostileCalls, 0);
+  const allow = g.auditLog().entries.find((e) => e["event"] === "allow")!;
+  assert.equal("authorized_params_hash" in allow, false);
+  assert.equal(allow["params_hash_reason"], "unsupported");
 });
 
 test("a guarded node with a JSON.parse-created __proto__ argument commits a real hash", () => {

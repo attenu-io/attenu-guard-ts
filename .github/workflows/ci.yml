@@ -100,17 +100,30 @@ jobs:
         with:
           python-version: "3.12"
       - run: npm ci
-      - name: Check whether attenu-guard 0.10.x is on PyPI yet
-        id: check_next
+      - name: Probe -- a PyPI query failure must fail this job, never read as "not published"
+        # Release-gate correction (MEDIUM): runs the exact fail-open reproduction from
+        # tools/check-next-python-published.sh's own doc comment on every CI run, so the defect
+        # it fixed cannot silently come back. A stub `python3` on PATH simulates a query that
+        # fails outright (network error, PyPI outage, ...); the script must exit non-zero, not
+        # print "false".
         run: |
           set -eu
-          if python3 -m pip index versions attenu-guard 2>/dev/null \
-              | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | grep -qE '^0\.10\.'; then
-            echo "published=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "published=false" >> "$GITHUB_OUTPUT"
-            echo "attenu-guard 0.10.x is not on PyPI yet -- this lane activates automatically once it ships"
+          fake_bin="$RUNNER_TEMP/fake-python-bin"
+          mkdir -p "$fake_bin"
+          cat > "$fake_bin/python3" <<'SCRIPT'
+          #!/usr/bin/env bash
+          echo "simulated network failure" >&2
+          exit 42
+          SCRIPT
+          chmod +x "$fake_bin/python3"
+          if PATH="$fake_bin:$PATH" bash tools/check-next-python-published.sh attenu-guard "0.10."; then
+            echo "::error::a failing pip query must fail check-next-python-published.sh, not report \"false\""
+            exit 1
           fi
+          echo "probe passed: a failing query correctly failed the script"
+      - name: Check whether attenu-guard 0.10.x is on PyPI yet
+        id: check_next
+        run: echo "published=$(bash tools/check-next-python-published.sh attenu-guard "0.10.")" >> "$GITHUB_OUTPUT"
       - name: Install the Python implementation (0.10.x)
         if: steps.check_next.outputs.published == 'true'
         run: python3 -m pip install --quiet "attenu-guard>=0.10,<0.11" cryptography
