@@ -55,6 +55,29 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     reference, and one end-to-end test per wrapper (`guardNode`, `guardTool`) driving an
     unclonable argument through the real call path and asserting a genuine, matching
     `authorizedParamsHash`/`invokedParamsHash` pair is committed rather than `"unsupported"`.
+  - **Delta review, two more edits to `freeze()` itself:**
+    - **Medium-low, required:** the plain-object branch built the rebuilt object with an
+      `out[k] = freeze(v, seen)` accumulation loop. A plain `JSON.parse('{"__proto__": {...}}')`
+      result genuinely has `"__proto__"` as an OWN, ENUMERABLE data property (`Object.keys`
+      lists it — JSON has no notion of prototypes, so this is reachable from ordinary untrusted
+      input, not a contrived shape) — but assigning through `out[k] = v` for that specific key
+      name does not create a data property at all; it sets the accumulator's own `[[Prototype]]`
+      via `Object.prototype`'s own `__proto__` accessor instead. The key then vanished from the
+      rebuilt object's own enumerable keys entirely — a params-commitment completeness gap
+      (substitution on that key would be invisible to a params mismatch) that `structuredClone`'s
+      own success path, and Python's `_freeze()`, do not have. Fixed with
+      `Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, freeze(v, seen)]))`, which
+      always defines genuine data properties, `__proto__` included. Test added: a
+      `JSON.parse`-created `__proto__` own key beside an unclonable sibling (forcing the
+      fallback) — the key survives into the snapshot with its value, and the rebuilt object's
+      own prototype is unaffected.
+    - **Nit, ride-along:** the array branch used `value.map((v) => freeze(v, seen))` —
+      `Array.prototype.map` SKIPS a hole in a sparse array rather than visiting it, so a hole
+      would survive into the snapshot as a hole too, unlike every other absent value `freeze()`
+      turns into a plain `null`. Fixed with `Array.from(value, (v) => freeze(v, seen))`, which
+      visits every index up to `.length`, densifying a hole to `undefined` (then `null`, same as
+      any other `undefined`). Test added: `freeze([1, , 3])` equals `[1, null, 3]`, with a real
+      (densified) element at index 1, not a hole.
 - **D14 — `Guard.check()` registered a `PRE_HOOK_ONLY` allow as pending, wedging `complete()`
   forever.** Mirrors the fix landing in the Python `attenu-guard` reference implementation
   (`guard.py`, same defect, same root cause): `registerPending` ran unconditionally for every

@@ -196,7 +196,12 @@ export function freeze(value: unknown, seen: WeakSet<object> = new WeakSet()): J
   if (Array.isArray(value)) {
     if (seen.has(value)) return "<circular>";
     seen.add(value);
-    return value.map((v) => freeze(v, seen)) as Json;
+    // Array.from, not .map: .map SKIPS a hole (a sparse array's missing index) rather than
+    // visiting it, so a hole would silently survive into the snapshot as a hole instead of
+    // being densified to `null` like every other JSON-shaped absence here. Array.from visits
+    // every index up to `.length`, treating a hole as `undefined`, which `freeze` then turns
+    // into `null` like any other `undefined`.
+    return Array.from(value, (v) => freeze(v, seen)) as Json;
   }
   if (t === "object") {
     const proto = Object.getPrototypeOf(value);
@@ -204,11 +209,18 @@ export function freeze(value: unknown, seen: WeakSet<object> = new WeakSet()): J
       const obj = value as object;
       if (seen.has(obj)) return "<circular>";
       seen.add(obj);
-      const out: Record<string, Json> = {};
-      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-        out[k] = freeze(v, seen);
-      }
-      return out;
+      // Object.fromEntries, not an `out[k] = ...` accumulation loop: a plain
+      // `JSON.parse('{"__proto__": {...}}')` result has `__proto__` as an OWN, enumerable
+      // DATA property (`Object.keys` lists it) — but assigning through `out[k] = v` for that
+      // specific key name does not create a data property at all; it sets the accumulator's
+      // OWN `[[Prototype]]` via `Object.prototype`'s `__proto__` accessor. The key then
+      // vanishes from the rebuilt object's own enumerable keys entirely — a params-commitment
+      // completeness gap (substitution on that key would be invisible to a params mismatch)
+      // that structuredClone's own success path, and Python's `_freeze()`, do not have.
+      // `Object.fromEntries` always defines genuine data properties, `__proto__` included.
+      return Object.fromEntries(
+        Object.entries(obj as Record<string, unknown>).map(([k, v]) => [k, freeze(v, seen)]),
+      ) as Json;
     }
   }
   // A function, a class instance, a Map/Set/Date/RegExp, a Symbol, a BigInt, or anything else

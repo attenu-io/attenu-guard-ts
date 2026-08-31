@@ -562,3 +562,30 @@ test("a guarded tool with an unclonable argument still authorizes, runs, and com
   assert.equal(allow["authorized_params_hash"], outcome["invoked_params_hash"]);
   assert.equal("params_hash_reason" in allow, false);
 });
+
+test("freeze keeps a JSON.parse-created own __proto__ key as a data property, not a prototype", () => {
+  // Delta review (medium-low, required): the naive `out[k] = v` accumulation loop in an
+  // earlier revision of freeze() did not create a data property for the key name
+  // "__proto__" -- it set the accumulator's OWN [[Prototype]] instead, via Object.prototype's
+  // own __proto__ accessor, so the key silently vanished from the rebuilt object's own
+  // enumerable keys. A plain JSON.parse('{"__proto__": {...}}') result genuinely has
+  // "__proto__" as an own, enumerable DATA property (JSON has no notion of prototypes), so
+  // this is reachable from ordinary untrusted input, not a contrived attack shape.
+  const parsed = JSON.parse('{"__proto__": {"polluted": true}, "note": "sibling"}');
+  const raw = { data: parsed, cb: () => {} }; // the function forces the freeze() fallback
+  const frozen = freeze(raw) as { data: Record<string, unknown> };
+  assert.deepEqual(Object.keys(frozen.data), ["__proto__", "note"]);
+  assert.equal(Object.prototype.hasOwnProperty.call(frozen.data, "__proto__"), true);
+  assert.deepEqual(frozen.data["__proto__"], { polluted: true });
+  assert.equal(Object.getPrototypeOf(frozen.data), Object.prototype); // not polluted
+});
+
+test("freeze densifies a sparse array's holes instead of preserving them as holes", () => {
+  // Delta review (nit): Array.prototype.map SKIPS a hole rather than visiting it, so a sparse
+  // array's hole would survive into the "snapshot" as a hole too, unlike every other absent
+  // value freeze() turns into a plain null.
+  const sparse = [1, , 3] as unknown[]; // eslint-disable-line no-sparse-arrays
+  const frozen = freeze(sparse) as unknown[];
+  assert.deepEqual(frozen, [1, null, 3]);
+  assert.equal(1 in frozen, true); // a real (densified) element, not a hole
+});
