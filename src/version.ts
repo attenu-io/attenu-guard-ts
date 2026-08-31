@@ -6,4 +6,4 @@
  * itself imported BY index.ts, so index.ts cannot be the source: `guard.ts -> index.ts ->
  * guard.ts` would be circular. A one-constant leaf module has nothing to be circular with.
  */
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";

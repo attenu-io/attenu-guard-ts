@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-31
+
 ### Fixed
 - **Adapter mirror of the Python batch-1/batch-2 adversarial review.** The TS package ships
   exactly one adapter surface (`src/adapters/langgraph.ts` — `package.json`'s `exports` map
