@@ -37,6 +37,14 @@ export const ReasonCode = {
   CHAIN_CEILING: "chain_ceiling",
   /** The principal holds no authority at all in this chain. */
   NO_AUTHORITY: "no_authority",
+  // 0.9.0 execution-binding transition (schema_version=2 chains only — see guard.ts):
+  /** `check` refused: the node already called `complete()`. */
+  NODE_FINALIZED: "node_finalized",
+  /**
+   * The CSPRNG failed while allocating `callId`; fail-closed — the call is denied and
+   * nothing is written.
+   */
+  CALL_ID_UNAVAILABLE: "call_id_unavailable",
 } as const;
 
 export type ReasonCodeValue = (typeof ReasonCode)[keyof typeof ReasonCode];
@@ -60,6 +68,80 @@ export const Disposition = {
 export type DispositionValue = (typeof Disposition)[keyof typeof Disposition];
 
 export const DISPOSITIONS: ReadonlySet<string> = new Set(Object.values(Disposition));
+
+/**
+ * What the adapter's code path WILL observe for a given `check`ed call (0.9.0 execution binding)
+ * — recorded on the `allow` entry alongside `adapter` (module/version/hookPath). Describes
+ * observation CAPABILITY only, never a claim of quality: a verifier routes a call into
+ * observed/unobserved reporting from this label, never trusts it as evidence on its own.
+ */
+export const Capture = {
+  /** The adapter's wrapper calls the body itself, synchronously. */
+  WRAPPER_SYNC: "wrapper_sync",
+  /** ... and awaits it. */
+  WRAPPER_ASYNC: "wrapper_async",
+  /** The framework itself calls back after the body runs. */
+  FRAMEWORK_POST_HOOK: "framework_post_hook",
+  /** The adapter sees the call authorized but never observes it finish. */
+  PRE_HOOK_ONLY: "pre_hook_only",
+} as const;
+
+export type CaptureValue = (typeof Capture)[keyof typeof Capture];
+
+export const CAPTURES: ReadonlySet<string> = new Set(Object.values(Capture));
+
+/**
+ * The `outcome` record's observation of how a body-owning wrapper's call ended (0.9.0 execution
+ * binding, docs/execution-binding spec section 3) — an OBSERVATION, not a judgment about the
+ * world. There is no `executed`/`blocked`/`timeout`/`cancelled` at this layer; each of those
+ * words claims knowledge a wrapper does not always have. Adapters emitting into a richer outcome
+ * vocabulary own that mapping.
+ */
+export const BodyState = {
+  /** The body returned to the wrapper. */
+  RETURNED: "returned",
+  /** It raised (`errorCode` required, from the exception's class/constructor name). */
+  RAISED: "raised",
+  /** The wrapper stopped observing while the body may still run. */
+  ABANDONED: "abandoned",
+  /** The wrapper returned a generator/stream/future it does not itself consume. */
+  DEFERRED: "deferred",
+} as const;
+
+export type BodyStateValue = (typeof BodyState)[keyof typeof BodyState];
+
+export const BODY_STATES: ReadonlySet<string> = new Set(Object.values(BodyState));
+
+/**
+ * `Guard.complete()`'s return value (0.9.0, docs/execution-binding spec section 1): whether the
+ * node was actually finalized, and — when it refused because calls are still pending an outcome
+ * — the `callId`s it is waiting on.
+ *
+ * Python's equivalent is bool-coercible via `__bool__`, so `if guard.complete():` keeps reading
+ * naturally there. JavaScript has no such hook for `if` — `ToBoolean` on any object is
+ * unconditionally `true`, so an `if (guard.complete())` check cannot be bridged to `false` no
+ * matter what this class defines, and neither can `assert.equal`/`assert.strictEqual` from
+ * `node:assert/strict` (no coercion at all — this project's own test suite uses it, so its
+ * existing `assert.equal(g.complete(), true)`-shaped call sites were updated to read
+ * `.completed` rather than relying on a bridge that cannot exist for them). What CAN be bridged:
+ * `valueOf()` returns `.completed`, so contexts that genuinely coerce via `==`/`!=` (loose
+ * equality), template literals, and arithmetic still read as the bare boolean `complete()` used
+ * to return. Read `.completed` explicitly wherever you would have written `if (guard.complete())`.
+ */
+export class CompletionResult {
+  constructor(
+    readonly completed: boolean,
+    readonly pendingCallIds: readonly string[] = [],
+  ) {}
+
+  valueOf(): boolean {
+    return this.completed;
+  }
+
+  toString(): string {
+    return String(this.completed);
+  }
+}
 
 export interface ReasonInit {
   /** Which ceiling or dimension, e.g. "max_rows". */
@@ -125,6 +207,12 @@ export class Decision {
     readonly allowed: boolean,
     readonly reasons: readonly Reason[] = [],
     readonly determiningNode: string | null = null,
+    /**
+     * 0.9.0 execution binding: set only on a `schemaVersion: 2` chain (`Guard.check` /
+     * `Guard.recordDenial`); `null` on schema-version-1 chains and on any `Decision` built
+     * outside a `Guard` transition (`wouldAllow`, tests).
+     */
+    readonly callId: string | null = null,
   ) {}
 
   /** A single human-readable line — for logs, CLIs and error messages. */
@@ -139,7 +227,13 @@ export class Decision {
       allowed: this.allowed,
       reasons: this.reasons.map((r) => r.toDict()),
       determining_node: this.determiningNode,
+      call_id: this.callId,
     };
+  }
+
+  /** A copy of this Decision with `callId` set — mirrors Python's `dataclasses.replace`. */
+  withCallId(callId: string | null): Decision {
+    return new Decision(this.allowed, this.reasons, this.determiningNode, callId);
   }
 
   static allow(node: string | null = null): Decision {
