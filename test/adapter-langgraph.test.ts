@@ -397,3 +397,88 @@ test("a denied guarded-tool call with onDenied never records an outcome", () => 
   assert.match(String(result), /^refused: denied: scope_not_granted/);
   assert.deepEqual(g.auditLog().entries.filter((e) => e["event"] === "outcome"), []);
 });
+
+// =============================================================================================
+// merge-gate item 3: honest boundary capture — a snapshot taken BEFORE invocation, deferred
+// results, and cancellation. "An async callable object" (an instance whose __call__ is async) is
+// NOT ported: JavaScript has no equivalent — invocation via `fn(...)` requires `fn` to literally
+// be a function, unlike Python where any object can make itself callable via `__call__`, so
+// GuardOptions' `fn` type already rules this case out structurally.
+// =============================================================================================
+
+test("a callable that mutates its own input does not cause a params mismatch", () => {
+  const g = supervisorV2();
+  const received: { seen?: unknown } = {};
+  const node = guardNode(
+    g,
+    "crm.read",
+    (payload: { original: boolean; mutated?: boolean }, rows: number) => {
+      received.seen = { ...payload };
+      payload.mutated = true; // mutate the wrapper's own input in place
+      return { ok: true };
+    },
+    { contextFn: (_payload: unknown, rows: number) => ({ rows }) },
+  );
+  const arg: { original: boolean; mutated?: boolean } = { original: true };
+  node(arg, 1);
+  assert.deepEqual(received.seen, { original: true }); // the body saw it BEFORE mutation
+  assert.equal(arg.mutated, true); // the mutation still happened
+  const entries = g.auditLog().entries;
+  const allow = entries.find((e) => e["event"] === "allow")!;
+  const outcome = entries.find((e) => e["event"] === "outcome")!;
+  // both hashes come from the SAME pre-invocation snapshot -- no false mismatch
+  assert.equal(allow["authorized_params_hash"], outcome["invoked_params_hash"]);
+});
+
+test("a generator return value is reported deferred, not returned", () => {
+  const g = supervisorV2();
+  const node = guardNode(
+    g,
+    "crm.read",
+    function* (): Generator<number> {
+      yield 1;
+      yield 2;
+    },
+    { contextFn: () => ({ rows: 1 }) },
+  );
+  const result = node();
+  assert.deepEqual([...(result as Iterable<number>)], [1, 2]); // the generator itself still works
+  const outcome = g.auditLog().entries.find((e) => e["event"] === "outcome")!;
+  assert.equal(outcome["body_state"], BodyState.DEFERRED);
+});
+
+test("async cancellation via AbortController is reported abandoned and still propagates", async () => {
+  const g = supervisorV2();
+  const node = guardNode(
+    g,
+    "crm.read",
+    async (signal: AbortSignal) => {
+      await new Promise<void>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason));
+      });
+      return { ok: true }; // never reached
+    },
+    { contextFn: () => ({ rows: 1 }) },
+  );
+  const controller = new AbortController();
+  const promise = node(controller.signal);
+  controller.abort();
+  await assert.rejects(
+    () => promise,
+    (err: unknown) => err instanceof Error && err.name === "AbortError",
+  );
+  const outcome = g.auditLog().entries.find((e) => e["event"] === "outcome")!;
+  assert.equal(outcome["body_state"], BodyState.ABANDONED);
+  assert.equal("error_code" in outcome, false);
+});
+
+test("a v1 guard's guarded async node stays sync and returns an unawaited promise", async () => {
+  const g = supervisor(); // schemaVersion: 1 (the default)
+  const node = guardNode(g, "crm.read", async (state: { rows: number }) => ({ ok: true, rows: state.rows }), {
+    contextFn: (state: { rows: number }) => ({ rows: state.rows }),
+  });
+  assert.notEqual(node.constructor.name, "AsyncFunction"); // not itself an async function
+  const result = node({ rows: 1 });
+  assert.ok(result instanceof Promise); // ...that returned an unawaited promise
+  assert.deepEqual(await result, { ok: true, rows: 1 });
+});

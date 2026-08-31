@@ -22,7 +22,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import nodeCrypto = require("node:crypto");
-import { mkdtempSync, unlinkSync } from "node:fs";
+import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,9 +33,11 @@ import { AuditLog, CommittedAuditError, GENESIS, hashEntry, type LedgerEntry, ty
 import { AuthorityDenied, DuplicateOutcomeError, Guard, type AdapterInfo, type IssueOptions } from "../src/guard.js";
 import { BodyState, Capture, CompletionResult, Decision, ReasonCode } from "../src/reasons.js";
 import * as paramsMod from "../src/params.js";
-import { MAX_SAFE_INTEGER, type CJson } from "../src/canonical.js";
+import { CanonicalizationError, MAX_SAFE_INTEGER, type CJson, type Json } from "../src/canonical.js";
 import { anchorFor, exportBundle, verifyBundle } from "../src/evidence.js";
 import { HS256TestSigner } from "../src/wire.js";
+
+const HEX64 = "ab".repeat(32);
 
 function v2Root(options: Partial<IssueOptions> = {}): Guard {
   return Guard.issue(
@@ -199,6 +201,97 @@ test("a retry after CommittedAuditError is a new call with no shared statement",
     assert.equal("retry_of" in e, false);
     assert.equal("attempt" in e, false);
   }
+});
+
+// =============================================================================================
+// merge-gate item 8: a v1 chain must be byte-and-type unchanged by 0.9.0
+// =============================================================================================
+
+test("complete returns a plain boolean on v1", () => {
+  const g = Guard.issue("a", new Authority({ scopes: ["crm.read"], ttl: 60 })); // schemaVersion: 1
+  const result = g.complete();
+  assert.equal(typeof result, "boolean");
+  assert.equal(result, true);
+  assert.equal(g.complete(), false);
+});
+
+test("Decision.toDict has no call_id key on v1", () => {
+  const g = Guard.issue("a", new Authority({ scopes: ["crm.read"], ttl: 60 }));
+  const d = g.check("crm.read");
+  assert.equal("call_id" in d.toDict(), false);
+});
+
+test("Decision.toDict has a call_id key on v2", () => {
+  const g = v2Root();
+  const d = g.check("crm.read");
+  assert.ok("call_id" in d.toDict());
+  assert.equal(d.toDict()["call_id"], d.callId);
+});
+
+test("auditOverwrite is forbidden on v2", () => {
+  const dir = mkdtempSync(join(tmpdir(), "attenu-ov-"));
+  const p = join(dir, "l.jsonl");
+  assert.throws(() =>
+    Guard.issue("a", new Authority({ scopes: ["crm.read"], ttl: 60 }), {
+      schemaVersion: 2,
+      auditPath: p,
+      auditOverwrite: true,
+    }),
+  );
+});
+
+test("auditOverwrite still works on v1", () => {
+  const dir = mkdtempSync(join(tmpdir(), "attenu-ov-"));
+  const p = join(dir, "l.jsonl");
+  writeFileSync(p, '{"seq": 0}\n');
+  const g = Guard.issue("a", new Authority({ scopes: ["crm.read"], ttl: 60 }), {
+    auditPath: p,
+    auditOverwrite: true,
+  });
+  assert.ok(g.check("crm.read").allowed);
+});
+
+// =============================================================================================
+// merge-gate items 1-2: complete()/revoke() atomicity (N/A in JS — see the file header comment)
+// and full pre-commit rollback for ANY check()/recordOutcome() failure, not only CSPRNG.
+//
+// The two lock-injection tests from the Python reference (asserting complete()/revoke() BLOCK a
+// concurrent check() for their whole duration) are not ported: JavaScript's single-threaded,
+// run-to-completion execution model makes the race they probe for structurally impossible here —
+// no other code can run between two statements in complete()/revoke() the way a second OS thread
+// could interleave with Python's. There is nothing to test because there is nothing that could
+// happen.
+// =============================================================================================
+
+test("a pre-commit canonicalization failure in check() restores meters and propagates", () => {
+  const g = v2Root();
+  const chain = (g as any).chain;
+  const before = chain.callsSoFar(g.nodeId, "*");
+  assert.throws(
+    () => g.check("crm.read", { context: { rows: 1, note: "\ud800" } }), // a lone surrogate: fails hashEntry pre-commit
+    CanonicalizationError,
+  );
+  const after = chain.callsSoFar(g.nodeId, "*");
+  assert.equal(before, after, "meters must be restored on ANY pre-commit failure, not only CSPRNG");
+  assert.equal(g.auditLog().entries.length, 1); // just the root — nothing was appended
+});
+
+test("a recordOutcome pre-commit failure leaves the callId unresolved", () => {
+  const g = v2Root();
+  const d = g.check("crm.read");
+  const badReceipt = { type: "\ud800", ref: "x", digest: HEX64 };
+  assert.throws(
+    () => g.recordOutcome(d.callId!, BodyState.RETURNED, { durationMs: 1, receipt: badReceipt }),
+    CanonicalizationError,
+  );
+  // NOT marked outcomed, STILL pending — the outcome was never actually committed
+  const chain = (g as any).chain;
+  assert.equal(chain.isOutcomed(d.callId), false);
+  assert.ok(chain.pendingFor(g.nodeId).includes(d.callId));
+  // a corrected retry succeeds, exactly once
+  const entry = g.recordOutcome(d.callId!, BodyState.RETURNED, { durationMs: 1 });
+  assert.equal(entry["event"], "outcome");
+  assert.throws(() => g.recordOutcome(d.callId!, BodyState.RETURNED, { durationMs: 1 }), DuplicateOutcomeError);
 });
 
 // =============================================================================================
@@ -403,22 +496,9 @@ test("the safe-integer boundary and one past it", () => {
   assert.equal(reason2, paramsMod.ParamsHashReason.UNSUPPORTED);
 });
 
-test("an integral number beyond the bound is unsupported at the params layer (parity pin)", () => {
-  // TS's canonicalBytes ALREADY rejects every unsafe integer, literal or float-shaped alike
-  // (JavaScript has one numeric type, unlike Python's separate int/float) — so unlike Python,
-  // where this test proves params.py must run its OWN check because canonical.dumps tolerates
-  // 1e16, this pins the boundary VALUES the spec names (9e15 accepted, 1e16 rejected) so both
-  // runtimes are provably in parity at the layer that matters — the params commitment — even
-  // though their general canonicalizers diverge on how they get there (see params.ts's doc
-  // comment and canonical.ts's UnsafeIntegerError).
-  const salt = Buffer.alloc(16);
-  const [hOk, reasonOk] = paramsMod.commit({ n: 9e15 }, salt);
-  assert.notEqual(hOk, null);
-  assert.equal(reasonOk, null);
-  const [h, reason] = paramsMod.commit({ n: 1e16 }, salt);
-  assert.equal(h, null);
-  assert.equal(reason, paramsMod.ParamsHashReason.UNSUPPORTED);
-});
+// The 9e15-accepted/1e16-rejected boundary pin (and every other params_c14n_v1 boundary) is now
+// covered by the language-neutral vector file consumed in test/params-c14n-vectors.test.ts —
+// see that file's header comment for why a hand-written pin was replaced with the shared vectors.
 
 test("an ordinary fractional float within range is fine", () => {
   // Every binary64 double beyond roughly 2**52 in magnitude IS mathematically integral — there
@@ -849,4 +929,195 @@ test("verification never consults current authority state", () => {
   const rep = verifyBundle(bundleFor(g, signer), signer);
   const eb = rep.execution_binding as any;
   assert.equal(eb.per_call[d.callId!], "observed");
+});
+
+// =============================================================================================
+// merge-gate items 4/5/7/9: strict schema validation, honest "observed"/coverage,
+// independent-anchor verification
+// =============================================================================================
+
+test("invalid allow: adapter value wrong type", () => {
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  g.check("crm.read", { capture: Capture.WRAPPER_SYNC, adapter: adapterInfo() });
+  const bundle = bundleFor(g, signer);
+  const entries = bundle.entries;
+  const idx = entries.findIndex((e) => e["event"] === "allow");
+  (entries[idx]!["adapter"] as any)["version"] = 123; // must be a string
+  rehashFrom(entries, idx);
+  bundle.anchor = anchorFor(entries, signer);
+  const rep = verifyBundle(bundle, signer);
+  const eb = rep.execution_binding as any;
+  assert.ok(eb.failures.some((f: string) => f.startsWith("invalid_allow:")));
+});
+
+test("invalid allow: adapter present without capture", () => {
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  g.check("crm.read");
+  const bundle = bundleFor(g, signer);
+  const entries = bundle.entries;
+  const idx = entries.findIndex((e) => e["event"] === "allow");
+  entries[idx]!["adapter"] = adapterInfo() as unknown as Json; // adapter present, capture absent -- illegal pairing
+  rehashFrom(entries, idx);
+  bundle.anchor = anchorFor(entries, signer);
+  const rep = verifyBundle(bundle, signer);
+  const eb = rep.execution_binding as any;
+  assert.ok(eb.failures.some((f: string) => f.startsWith("invalid_allow:")));
+});
+
+test("invalid allow: explicit null authorized_params_hash", () => {
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  g.check("crm.read", { authorizedParams: { x: 1 } });
+  const bundle = bundleFor(g, signer);
+  const entries = bundle.entries;
+  const idx = entries.findIndex((e) => e["event"] === "allow");
+  entries[idx]!["authorized_params_hash"] = null; // explicit null, not absent
+  rehashFrom(entries, idx);
+  bundle.anchor = anchorFor(entries, signer);
+  const rep = verifyBundle(bundle, signer);
+  const eb = rep.execution_binding as any;
+  assert.ok(eb.failures.some((f: string) => f.startsWith("invalid_allow:")));
+});
+
+test("invalid root: missing params_salt", () => {
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  const bundle = bundleFor(g, signer);
+  const entries = bundle.entries;
+  delete entries[0]!["params_salt"];
+  rehashFrom(entries, 0);
+  bundle.anchor = anchorFor(entries, signer);
+  const rep = verifyBundle(bundle, signer);
+  const eb = rep.execution_binding as any;
+  assert.ok(eb.failures.some((f: string) => f.startsWith("invalid_root:")));
+});
+
+test("invalid kill: malformed pending_at_kill", () => {
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  g.check("crm.read");
+  g.revoke();
+  const bundle = bundleFor(g, signer);
+  const entries = bundle.entries;
+  const idx = entries.findIndex((e) => e["event"] === "kill");
+  entries[idx]!["pending_at_kill"] = ["not-a-call-id"] as unknown as Json;
+  rehashFrom(entries, idx);
+  bundle.anchor = anchorFor(entries, signer);
+  const rep = verifyBundle(bundle, signer);
+  const eb = rep.execution_binding as any;
+  assert.ok(eb.failures.some((f: string) => f.startsWith("invalid_kill:")));
+});
+
+test("invalid outcome: malformed receipt digest", () => {
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  const d = g.check("crm.read");
+  g.recordOutcome(d.callId!, BodyState.RETURNED, {
+    durationMs: 1,
+    receipt: { type: "otel", ref: "s1", digest: HEX64 },
+  });
+  const bundle = bundleFor(g, signer);
+  const entries = bundle.entries;
+  const idx = entries.findIndex((e) => e["event"] === "outcome");
+  (entries[idx]!["receipt"] as any)["digest"] = "not-hex-64";
+  rehashFrom(entries, idx);
+  bundle.anchor = anchorFor(entries, signer);
+  const rep = verifyBundle(bundle, signer);
+  const eb = rep.execution_binding as any;
+  assert.ok(eb.failures.some((f: string) => f.startsWith("invalid_outcome:")));
+});
+
+test("a cross-ref outcome does not count as observed", () => {
+  // "observed" requires an outcome that exists AND is bound correctly (right node, right order)
+  // -- a cross_ref'd outcome must not count, even though a callId-matching outcome record
+  // technically exists somewhere in the ledger.
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  const d = g.check("crm.read", { capture: Capture.WRAPPER_SYNC, adapter: adapterInfo() });
+  const child = g.delegate("summarizer", new Authority({ scopes: ["crm.read"], ttl: 60 }), "t");
+  const bundle = bundleFor(g, signer);
+  const entries = bundle.entries;
+  entries.push({
+    v: 2,
+    c14n: "JCS",
+    seq: entries.length,
+    ts: 99,
+    event: "outcome",
+    chain_id: g.chainId,
+    node: child.nodeId,
+    call_id: d.callId!,
+    body_state: "returned",
+    duration_ms: 1,
+    prev_hash: entries[entries.length - 1]!["hash"] as string,
+  });
+  rehashFrom(entries, entries.length - 1);
+  bundle.anchor = anchorFor(entries, signer);
+  const rep = verifyBundle(bundle, signer);
+  const eb = rep.execution_binding as any;
+  assert.notEqual(eb.per_call[d.callId!], "observed");
+  assert.equal(eb.per_call[d.callId!], "unaccounted"); // capture was WRAPPER_SYNC: promised, absent
+});
+
+test("a pending hashed call makes params_coverage partial, not complete", () => {
+  // one fully hashed COMPLETED call plus one hashed PENDING call must report partial, not
+  // complete -- the pending call has no invoked_params_hash yet.
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  const d1 = g.check("crm.read", { authorizedParams: { x: 1 } });
+  g.recordOutcome(d1.callId!, BodyState.RETURNED, { invokedParams: { x: 1 }, durationMs: 1 });
+  g.check("crm.read", { authorizedParams: { x: 2 } }); // still pending, no outcome
+  const rep = verifyBundle(bundleFor(g, signer), signer);
+  assert.equal((rep.execution_binding as any).params_coverage, "partial");
+});
+
+test("a missing root is rejected", () => {
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  g.check("crm.read");
+  const bundle = bundleFor(g, signer);
+  bundle.entries = bundle.entries.filter((e) => e["event"] !== "root");
+  const rep = verifyBundle(bundle, signer);
+  assert.equal(rep.checks.root, false);
+  assert.ok(rep.failures.some((f) => f.startsWith("missing_root:")));
+  assert.equal(rep.ok, false);
+});
+
+test("an expected-head mismatch is caught even with a self-consistent forged anchor", () => {
+  // The scenario spec section 5 calls out: an attacker who controls (or can re-sign) the
+  // bundle's OWN anchor cannot fool a verifier holding an independently retained expected head
+  // from an earlier, trusted export.
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  g.check("crm.read");
+  const trueBundle = bundleFor(g, signer);
+  const trueHead: [number, string] = [trueBundle.entries.length - 1, trueBundle.entries[trueBundle.entries.length - 1]!["hash"] as string];
+
+  // Attacker rewrites the ledger (drops the last entry) and re-anchors it self-consistently.
+  const forged: LedgerEntry[] = trueBundle.entries.slice(0, -1).map((e) => ({ ...e }));
+  const forgedAnchor = anchorFor(forged, signer);
+  const forgedBundle = { ...trueBundle, entries: forged, anchor: forgedAnchor };
+
+  // Verified against ONLY the bundle's own (self-consistent, honestly re-signed) anchor: passes.
+  const repBundleOnly = verifyBundle(forgedBundle, signer);
+  assert.equal(repBundleOnly.ok, true);
+  assert.equal(repBundleOnly.verified_against, "bundle_anchor");
+
+  // Verified against the INDEPENDENTLY RETAINED true head: caught.
+  const repExpected = verifyBundle(forgedBundle, signer, { expectedHead: trueHead });
+  assert.equal(repExpected.ok, false);
+  assert.equal(repExpected.checks.expected_anchor, "FAILED");
+  assert.ok(repExpected.failures.some((f) => f.startsWith("expected_head_mismatch:")));
+  assert.equal(repExpected.verified_against, "expected_anchor");
+});
+
+test("an expected anchor matches a genuine bundle", () => {
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  g.check("crm.read");
+  const bundle = bundleFor(g, signer);
+  const rep = verifyBundle(bundle, signer, { expectedAnchor: bundle.anchor });
+  assert.equal(rep.ok, true);
+  assert.equal(rep.checks.expected_anchor, "verified");
 });
