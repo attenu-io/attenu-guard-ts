@@ -51,6 +51,7 @@ const VECTOR_NAMES = [
   "reject_non_finite",
   "reject_duplicate_member",
   "valid_jcs_unmarked_header",
+  "reject_unsafe_integer",
 ] as const;
 
 const REJECT_VECTORS = VECTOR_NAMES.filter((name) => name.startsWith("reject_"));
@@ -111,8 +112,13 @@ test("the valid 3-hop chain verifies, and yields the formatter's authority", () 
   assert.equal(chain.permits("mail.send").allowed, false); // held by the root, not the leaf
 });
 
-test("all 19 published vectors score exactly as declared", () => {
-  assert.equal(VECTOR_NAMES.length, 19);
+test("all 20 published vectors score exactly as declared", () => {
+  // Release-gate finding 8 (MEDIUM): this list, and this count, omitted "reject_unsafe_integer"
+  // -- the interop suite's own CHANGELOG (0.3.1) anticipated it "once the Python package ships
+  // [it]", the fixture file has been present on disk (byte-identical to Python's, per a direct
+  // diff) since then, but VECTOR_NAMES itself was never updated to actually include it, so this
+  // assertion enumerated and scored 19 of the 20 vectors that exist, silently.
+  assert.equal(VECTOR_NAMES.length, 20);
   for (const name of VECTOR_NAMES) {
     const v = vector(name);
     assert.equal(outcome(v), v.expect ?? v.expect_reject_reason, `${name}: ${v.description}`);

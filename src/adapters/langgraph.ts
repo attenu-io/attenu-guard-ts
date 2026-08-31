@@ -84,12 +84,19 @@
  *   closure that owns the whole call, from `authorize()`'s own returned `Decision.callId` — no
  *   external pending-map keyed by a framework-supplied correlation id exists to collide on.
  * - **Lazy-result detection gaps** (e.g. Python's `smolagents` adapter missing a coroutine or a
- *   `concurrent.futures.Future`) — checked and found already complete for this platform:
- *   `isDeferredResult` catches generators, async generators, and anything thenable — which is
- *   the whole lazy-result landscape JavaScript actually has (there is no separate "Future" type
- *   distinct from `Promise`/thenable the way Python has two). A plain (non-`async`) function that
- *   manually returns a bare `Promise` is also caught correctly, via the same thenable check, in
- *   the sync branch of both wrappers.
+ *   `concurrent.futures.Future`) — `isDeferredResult` catches generators (an object with its own
+ *   `.next` AND `[Symbol.iterator]` — "self-iterating", the shape a native generator has, but
+ *   deliberately NOT the shape a plain `Array`/`Set`/`Map` has, since those implement
+ *   `[Symbol.iterator]` too without an own `.next`, and their contents are already fully
+ *   computed), a genuine ASYNC ITERABLE (anything implementing a callable
+ *   `[Symbol.asyncIterator]`, self-iterating async generators included — see the RELEASE-GATE
+ *   CORRECTION on this function's own body for why this does NOT require an own `.next` the way
+ *   the sync branch does), and anything thenable. A plain (non-`async`) function that manually
+ *   returns a bare `Promise` is also caught correctly, via the thenable check, in the sync
+ *   branch of both wrappers. This is NOT a claim of covering "the whole lazy-result landscape" —
+ *   only what this function's own checks actually implement, listed above; a class implementing
+ *   some OTHER deferred-consumption protocol this function does not check for would not be
+ *   caught.
  * - **Lost-terminal-event / "fires unconditionally" false claims** (e.g. Python's `strands`
  *   adapter's before-hook interrupt paths) — NOT APPLICABLE. There is no external, multi-phase
  *   hook-dispatch loop for an event to be lost across; one wrapper function's own `try`/`catch`
@@ -153,83 +160,143 @@ export type GuardedNode<F extends (...args: any[]) => any> = F & {
 };
 
 /**
- * A genuinely immutable, fully decoupled rebuild of `value` — the fallback path taken when
- * `structuredClone` cannot clone the value being snapshotted (a function, a class instance
- * `structuredClone` refuses, a `Map`/`Set`/`Date`/`RegExp` sharing a graph with something
- * unclonable, a `Symbol`, a `BigInt`, ...). NEVER returns the live reference the way a bare
- * shallow copy would: safe JSON-primitive leaves (`string`/`number`/`boolean`/`null`) pass
- * through verbatim; plain objects and arrays are rebuilt fresh, recursively; anything else
- * becomes a safe STRING representation, never the live object.
+ * A genuinely immutable, fully decoupled rebuild of `value` — the ONE, UNCONDITIONAL sanitizer
+ * every snapshot in this adapter goes through. Safe JSON-primitive leaves
+ * (`string`/`number`/`boolean`/`null`) pass through verbatim; plain objects and arrays are
+ * rebuilt fresh, recursively, by inspecting their REAL own property descriptors directly
+ * (`Object.getOwnPropertyDescriptor`), never by invoking anything the value itself controls
+ * (a getter, an iterator, a copy protocol); anything else becomes a safe STRING representation,
+ * never the live object.
  *
- * ROUND 2 CORRECTION (a parallel adversarial review, TS mirror of the Python batch-2 pass):
- * the previous fallback here was a bare shallow copy of `raw` — `{args: [...args]}` makes a
- * fresh OUTER array, but every element INSIDE it is the same live reference as the real call
- * arguments, so a callable that mutates one of them after the "snapshot" was taken would be
- * observed through the snapshot too, on exactly the object(s) `structuredClone` could not
- * itself clone. Reproduced directly before fixing: `snap.args[0] === liveArg` was `true`, and
- * a later mutation of `liveArg` was visible through `snap`. `structuredClone`'s OWN success
- * path was already safe (verified directly: it does not consult a `toJSON` method or any
- * other user-overridable protocol the way Python's `copy.deepcopy` consults `__deepcopy__` —
- * a hostile class's own `toJSON` returning fabricated data is simply ignored, and the clone is
- * never the same reference) — only the FAILURE path aliased. This function closes that gap
- * unconditionally, the same invariant every Python adapter's own `_freeze()` already holds
- * (see e.g. `adapters/langchain.py`'s `_freeze()`): the snapshot's independence from the live
- * object graph must hold on its own, never leaning on `structuredClone`'s support matrix
- * happening to overlap with what the audit-log's own JCS canonicalizer (`params.ts`) can
- * hash — the two are not proven to always agree on what counts as "unsupported".
+ * RELEASE-GATE CORRECTION (CRITICAL): this used to run ONLY as a fallback, after
+ * `structuredClone` had already been tried and had THROWN — the previous revision of this
+ * comment (below) documented that carefully, but never asked whether `structuredClone`
+ * SUCCEEDING was itself a sufficient guarantee. It is not, on three counts, each reproduced
+ * directly before this fix:
  *
- * `seen` guards a circular reference on the path this function itself walks:
- * `structuredClone` handles cycles natively, but the whole point of this function is the
- * cases it could NOT handle, one of which could still be cyclic.
+ *   1. A circular object clones successfully — `structuredClone` handles cycles natively — so
+ *      this function never ran on it at all; the circularity then reached `params.ts`'s own
+ *      hash-commitment walk (`hasUnsafeIntegralNumber`), which has NO cycle guard, and crashed
+ *      with `RangeError: Maximum call stack size exceeded` before authorization or the tool body
+ *      ever ran.
+ *   2. A sparse array clones successfully too (holes preserved) — bypassing this function's own
+ *      densification entirely — and reached `params.ts` as `paramsHashReason: "unsupported"`
+ *      instead of a real, densified, hashable snapshot.
+ *   3. A `SharedArrayBuffer` clones to a DISTINCT wrapper object that shares the SAME underlying
+ *      memory, by design — a "successful" clone that is not independent at all, disproving the
+ *      premise that a successful `structuredClone` never aliases.
  *
- * Exported — not part of this adapter's semantic contract (it is an internal fallback, not a
+ * Fixed by making this function the ONLY snapshot path, unconditionally — `structuredClone` is
+ * no longer called anywhere in this adapter. `active` is the PATH-ACTIVE cycle guard: the set of
+ * containers on the CURRENT recursion path, passed as a NEW `Set` at each recursive call rather
+ * than mutated in place and shared across sibling branches (an earlier revision of this function
+ * DID share one mutable `WeakSet` across the whole call, which meant a DAG's repeated reference
+ * — the SAME object appearing twice as sibling values, never as its own ancestor — was wrongly
+ * reported `"<circular>"` on its second occurrence; reproduced directly before this fix too,
+ * fixed the same way Python's own shared `_snapshot.freeze()` was always designed: immutable,
+ * per-branch sets, never a shared mutable one).
+ *
+ * The property-descriptor walk ALSO closes a separate, protocol-driven gap: the previous
+ * revision used `Array.from`/`.map()` (which invoke `[Symbol.iterator]()` — a hostile array's
+ * own override can yield ANYTHING regardless of its real indexed properties; reproduced
+ * directly: `[1, , 3]` with a hostile iterator froze as `[999]`) and `Object.entries()` (which
+ * reads each property's VALUE directly, invoking a getter if one is defined there — reproduced
+ * directly: a getter with a side effect was observed three times across the old clone-attempt/
+ * freeze/body sequence, and the committed snapshot was the SECOND of three observations, not
+ * the first). `Object.getOwnPropertyDescriptor` and a `.length`-bounded index loop are pure
+ * introspection — they never invoke user code — and an accessor property (`.get`/`.set`
+ * present) is encoded as the literal string `"<accessor>"` rather than read at all: a getter can
+ * have arbitrary side effects, throw, or return something different on every call, so there is
+ * no single "correct" observation of it to commit.
+ *
+ * Exported — not part of this adapter's semantic contract (it is an internal sanitizer, not a
  * feature callers configure), but its own aliasing-safety invariant is worth a direct unit
  * test in isolation, the same way every Python adapter's `_freeze()` is imported directly by
  * its own tests: the audit log never exposes the raw snapshot value it produces (only its
  * hash — see `params.ts`'s own doc comment), so "does this alias a live mutable object" is
  * not otherwise observable from outside this module.
  */
-export function freeze(value: unknown, seen: WeakSet<object> = new WeakSet()): Json {
+export function freeze(value: unknown, active: ReadonlySet<unknown> = new Set()): Json {
   if (value === null || value === undefined) return null;
   const t = typeof value;
   if (t === "string" || t === "number" || t === "boolean") return value as Json;
   if (Array.isArray(value)) {
-    if (seen.has(value)) return "<circular>";
-    seen.add(value);
-    // Array.from, not .map: .map SKIPS a hole (a sparse array's missing index) rather than
-    // visiting it, so a hole would silently survive into the snapshot as a hole instead of
-    // being densified to `null` like every other JSON-shaped absence here. Array.from visits
-    // every index up to `.length`, treating a hole as `undefined`, which `freeze` then turns
-    // into `null` like any other `undefined`.
-    return Array.from(value, (v) => freeze(v, seen)) as Json;
+    if (active.has(value)) return "<circular>";
+    const withSelf = new Set(active).add(value);
+    const out: Json[] = [];
+    // Index-by-index via getOwnPropertyDescriptor, not Array.from/.map: those invoke
+    // `[Symbol.iterator]()`, which a hostile array can override to yield ANYTHING regardless
+    // of what its real indexed properties hold (reproduced directly: `[1, , 3]` with a hostile
+    // iterator froze as `[999]`). `.length` and getOwnPropertyDescriptor are pure introspection
+    // -- they read the array's REAL own properties without ever calling user code. A hole (no
+    // descriptor at that index) is densified to `null`, same as any other absence here.
+    for (let i = 0; i < value.length; i++) {
+      out.push(freezeDescriptor(Object.getOwnPropertyDescriptor(value, i), withSelf));
+    }
+    return out;
   }
   if (t === "object") {
     const proto = Object.getPrototypeOf(value);
     if (proto === Object.prototype || proto === null) {
       const obj = value as object;
-      if (seen.has(obj)) return "<circular>";
-      seen.add(obj);
-      // Object.fromEntries, not an `out[k] = ...` accumulation loop: a plain
-      // `JSON.parse('{"__proto__": {...}}')` result has `__proto__` as an OWN, enumerable
-      // DATA property (`Object.keys` lists it) — but assigning through `out[k] = v` for that
-      // specific key name does not create a data property at all; it sets the accumulator's
-      // OWN `[[Prototype]]` via `Object.prototype`'s `__proto__` accessor. The key then
-      // vanishes from the rebuilt object's own enumerable keys entirely — a params-commitment
-      // completeness gap (substitution on that key would be invisible to a params mismatch)
-      // that structuredClone's own success path, and Python's `_freeze()`, do not have.
-      // `Object.fromEntries` always defines genuine data properties, `__proto__` included.
-      return Object.fromEntries(
-        Object.entries(obj as Record<string, unknown>).map(([k, v]) => [k, freeze(v, seen)]),
-      ) as Json;
+      if (active.has(obj)) return "<circular>";
+      const withSelf = new Set(active).add(obj);
+      const out: Record<string, Json> = {};
+      // Object.keys + getOwnPropertyDescriptor, not Object.entries: Object.entries reads each
+      // property's VALUE directly, which invokes a getter if one is defined at that key --
+      // reproduced directly: with an unclonable sibling forcing the old fallback, a getter with
+      // a side effect was observed three times across the old clone-attempt/freeze/body path,
+      // and the committed snapshot was the SECOND of three observations, not the first. Reading
+      // the DESCRIPTOR instead never invokes anything; an accessor property (`.get`/`.set`
+      // present, no `.value`) is encoded as `"<accessor>"` -- explicitly marked, never executed
+      // -- rather than read (see `freezeDescriptor`). `Object.keys` correctly LISTS a literal
+      // `"__proto__"` key (a plain `JSON.parse('{"__proto__": {...}}')` result has it as an
+      // own, enumerable DATA property, same as any other key) -- the loop below still needs
+      // `Object.defineProperty`, not a bracket assignment, to actually WRITE it back safely.
+      for (const key of Object.keys(obj)) {
+        // Object.defineProperty, NOT `out[key] = ...`: a bracket ASSIGNMENT to the literal key
+        // "__proto__" does not create a data property at all -- it invokes Object.prototype's
+        // own `__proto__` SETTER, silently changing `out`'s prototype instead and dropping the
+        // key from its own enumerable keys entirely. defineProperty always performs a genuine
+        // [[DefineOwnProperty]], bypassing that accessor, for "__proto__" exactly like any
+        // other key name.
+        Object.defineProperty(out, key, {
+          value: freezeDescriptor(Object.getOwnPropertyDescriptor(obj, key), withSelf),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
+      return out;
     }
   }
-  // A function, a class instance, a Map/Set/Date/RegExp, a Symbol, a BigInt, or anything else
-  // structuredClone itself could not handle — never the live reference.
+  // A function, a class instance, a Map/Set/Date/RegExp/ArrayBuffer/SharedArrayBuffer, a
+  // Symbol, a BigInt, or anything else that is not a plain object or array -- never the live
+  // reference, never wrapped, never passed through any copy protocol. A `SharedArrayBuffer`
+  // specifically: `structuredClone` "succeeding" on one does NOT mean independence -- the clone
+  // is a DISTINCT wrapper object sharing the SAME underlying memory, by design (that is the
+  // whole point of the type) -- so it is stringified here like anything else this function does
+  // not specifically know how to rebuild as plain JSON, never handed to any clone mechanism at
+  // all.
   try {
     return String(value);
   } catch {
     return `<unrepresentable ${t}>`;
   }
+}
+
+/**
+ * Reads ONE property descriptor safely: a data property's `.value` is frozen recursively; an
+ * accessor property (`.get`/`.set` present) is encoded as `"<accessor>"` WITHOUT ever calling
+ * the getter (a getter can have arbitrary side effects, throw, or return something different on
+ * each call — there is no "correct" single observation to commit); a missing descriptor (an
+ * array hole, or a key that no longer exists) becomes `null`, the same as any other JSON-shaped
+ * absence `freeze` produces elsewhere.
+ */
+function freezeDescriptor(desc: PropertyDescriptor | undefined, active: ReadonlySet<unknown>): Json {
+  if (desc === undefined) return null;
+  if (desc.get || desc.set) return "<accessor>";
+  return freeze(desc.value, active);
 }
 
 /**
@@ -240,14 +307,10 @@ export function freeze(value: unknown, seen: WeakSet<object> = new WeakSet()): J
  * binding" section; no `kwargs` — JavaScript has no separate keyword-argument bag).
  */
 function snapshotParams(args: readonly unknown[]): Json {
-  const raw = { args: [...args] };
-  try {
-    return structuredClone(raw) as unknown as Json;
-  } catch {
-    // structuredClone could not clone something in here (a live socket, a function, ...) —
-    // freeze() rebuilds a genuinely independent snapshot rather than aliasing the live args.
-    return freeze(raw);
-  }
+  // freeze() unconditionally, not structuredClone-then-fallback: see freeze()'s own doc
+  // comment's "RELEASE-GATE CORRECTION" for why a successful structuredClone is not itself a
+  // sufficient independence guarantee (circular inputs, sparse arrays, SharedArrayBuffer).
+  return freeze({ args: [...args] });
 }
 
 /**
@@ -261,8 +324,25 @@ function snapshotParams(args: readonly unknown[]): Json {
 function isDeferredResult(result: unknown): boolean {
   if (result === null || typeof result !== "object") return false;
   const r = result as Record<PropertyKey, unknown>;
+  // A native generator object (from `function*`) has BOTH `.next` AND `[Symbol.iterator]`
+  // (returning itself) -- "self-iterating". Requiring both here deliberately does NOT match a
+  // plain Array/Set/Map: those implement `[Symbol.iterator]` too, but the object ITSELF has no
+  // `.next` (only the SEPARATE iterator `arr[Symbol.iterator]()` produces does) -- and an
+  // array's contents are already fully computed, nothing deferred about returning one.
   if (typeof r["next"] === "function" && typeof r[Symbol.iterator] === "function") return true;
-  if (typeof r["next"] === "function" && typeof r[Symbol.asyncIterator] === "function") return true;
+  // RELEASE-GATE CORRECTION (HIGH): the async branch used to require the SAME "has its own
+  // .next" shape, matching a native async generator (self-iterating, same reasoning as above)
+  // but missing the more general ASYNC ITERABLE protocol: per spec, `[Symbol.asyncIterator]`
+  // being callable is sufficient on its own -- calling it returns a SEPARATE async iterator
+  // object that has `.next`, so the ITERABLE itself need not. Reproduced directly before
+  // fixing: a plain object implementing only `[Symbol.asyncIterator]()` was recorded
+  // `BodyState.RETURNED`, not `DEFERRED`. Unlike the sync case, there is no common JavaScript
+  // built-in that implements `Symbol.asyncIterator` over ALREADY-computed values the way a
+  // plain Array does for `Symbol.iterator` (Node's own `Readable` streams implement it
+  // precisely because their data is NOT all available yet), so checking `Symbol.asyncIterator`
+  // alone does not risk the same false-positive class dropping the `.next` requirement here
+  // would raise for the sync branch.
+  if (typeof r[Symbol.asyncIterator] === "function") return true;
   if (typeof r["then"] === "function") return true;
   return false;
 }
@@ -496,14 +576,8 @@ export function guardTool<T extends ToolLike>(
   };
 
   function snapshotToolParams(input: any): Json {
-    const raw = toolArgs(input);
-    try {
-      return structuredClone(raw) as unknown as Json;
-    } catch {
-      // See snapshotParams' own freeze() call above: never alias the live tool-call args on a
-      // structuredClone failure.
-      return freeze(raw);
-    }
+    // See snapshotParams' own comment above: freeze() unconditionally, never structuredClone.
+    return freeze(toolArgs(input));
   }
 
   function authorize(input: any, config: any, snapshot: Json | null): Decision {

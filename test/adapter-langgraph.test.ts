@@ -490,9 +490,9 @@ test("a v1 guard's guarded async node stays sync and returns an unawaited promis
 // wrappers' own wiring into it.
 // =================================================================================================
 
-test("freeze never aliases a live mutable object structuredClone cannot itself clone", () => {
+test("freeze never aliases a live mutable object, even one it must stringify", () => {
   const mutable: { note: string; mutated?: boolean } = { note: "before" };
-  const raw = { args: [mutable, () => {}] }; // the function forces structuredClone to fail
+  const raw = { args: [mutable, () => {}] }; // the function has no plain-JSON shape to rebuild
   const frozen = freeze(raw) as { args: unknown[] };
   assert.notEqual(frozen.args[0], mutable); // NOT the same reference
   assert.deepEqual(frozen.args[0], { note: "before" }); // captured the pre-mutation shape
@@ -500,11 +500,10 @@ test("freeze never aliases a live mutable object structuredClone cannot itself c
   assert.deepEqual(frozen.args[0], { note: "before" }); // unaffected by the later mutation
 });
 
-test("freeze never aliases the unclonable value's mutable SIBLING (the mixed case)", () => {
-  // An UNCLONEABLE value (the function) forces the whole structuredClone attempt to fail; a
-  // SEPARATE, otherwise perfectly clonable MUTABLE sibling shares the same object graph. The
-  // sibling must not be silently aliased just because something ELSE in the same structure
-  // broke the fast path.
+test("freeze never aliases a mutable value's SIBLING that must itself be stringified (the mixed case)", () => {
+  // A value with no plain-JSON shape (the function) sits alongside a SEPARATE, otherwise
+  // perfectly rebuildable MUTABLE sibling in the same object graph. The sibling must not be
+  // silently aliased just because something ELSE in the same structure needed stringifying.
   const sibling: { count: number } = { count: 1 };
   const unclonable = () => {};
   const frozen = freeze({ sibling, unclonable }) as { sibling: unknown };
@@ -521,6 +520,21 @@ test("freeze guards a circular reference instead of looping forever", () => {
   assert.equal(frozen.self, "<circular>");
 });
 
+test("freeze does NOT mislabel a DAG's repeated sibling reference as circular", () => {
+  // Release-gate correction: an earlier revision of freeze() shared ONE mutable WeakSet across
+  // the whole call (added to, never removed), so the SAME object appearing twice as SIBLING
+  // values -- not as its own ancestor -- was wrongly reported "<circular>" on its second
+  // occurrence. Reproduced directly before fixing: freeze({a: shared, b: shared}) came back
+  // {"a": {...}, "b": "<circular>"}. Fixed with a PATH-ACTIVE set (a fresh Set unioned in at
+  // each recursive call, never mutated in place or shared across branches).
+  const shared = { x: 1 };
+  const dag = { a: shared, b: shared };
+  const frozen = freeze(dag) as { a: unknown; b: unknown };
+  assert.deepEqual(frozen.a, { x: 1 });
+  assert.deepEqual(frozen.b, { x: 1 });
+  assert.notEqual(frozen.b, "<circular>");
+});
+
 test("a guarded node with an unclonable argument still authorizes, runs, and commits a real hash", () => {
   const g = supervisorV2();
   const node = guardNode(
@@ -533,7 +547,7 @@ test("a guarded node with an unclonable argument still authorizes, runs, and com
     { contextFn: () => ({ rows: 1 }) },
   );
   const arg = { note: "before" };
-  const result = node(arg, () => {}); // the unclonable second argument forces the freeze() fallback
+  const result = node(arg, () => {}); // the function is stringified rather than crashing anything
   assert.deepEqual(result, { ok: true });
   const entries = g.auditLog().entries;
   const allow = entries.find((e) => e["event"] === "allow")!;
@@ -553,7 +567,7 @@ test("a guarded tool with an unclonable argument still authorizes, runs, and com
     scope: "crm.read",
     contextFn: (input: any) => ({ rows: toolArgs(input).rows }),
   });
-  const result = guarded.invoke({ rows: 5, cb: () => {} }); // the unclonable cb forces the fallback
+  const result = guarded.invoke({ rows: 5, cb: () => {} }); // the function is stringified rather than crashing anything
   assert.deepEqual(result, { rows: 5 });
   const entries = g.auditLog().entries;
   const allow = entries.find((e) => e["event"] === "allow")!;
@@ -572,7 +586,7 @@ test("freeze keeps a JSON.parse-created own __proto__ key as a data property, no
   // "__proto__" as an own, enumerable DATA property (JSON has no notion of prototypes), so
   // this is reachable from ordinary untrusted input, not a contrived attack shape.
   const parsed = JSON.parse('{"__proto__": {"polluted": true}, "note": "sibling"}');
-  const raw = { data: parsed, cb: () => {} }; // the function forces the freeze() fallback
+  const raw = { data: parsed, cb: () => {} }; // the function has no plain-JSON shape, so it is stringified
   const frozen = freeze(raw) as { data: Record<string, unknown> };
   assert.deepEqual(Object.keys(frozen.data), ["__proto__", "note"]);
   assert.equal(Object.prototype.hasOwnProperty.call(frozen.data, "__proto__"), true);
@@ -588,4 +602,182 @@ test("freeze densifies a sparse array's holes instead of preserving them as hole
   const frozen = freeze(sparse) as unknown[];
   assert.deepEqual(frozen, [1, null, 3]);
   assert.equal(1 in frozen, true); // a real (densified) element, not a hole
+});
+
+// =================================================================================================
+// Release-gate finding 2 (CRITICAL) and finding 3 (HIGH): freeze() must run UNCONDITIONALLY on
+// every snapshot path, not only when structuredClone throws, and must never invoke a value's own
+// protocols (iterators, getters). Each scenario below is verified through the REAL wrapper
+// (guardNode/guardTool), not freeze() called directly -- the earlier circular test guarded the
+// wrong path: it passed even while the actual wrapper crashed, because structuredClone succeeded
+// on a circular input and freeze() was never reached at all.
+// =================================================================================================
+
+test("a guarded node with a circular argument does not crash, and commits a real hash", () => {
+  const g = supervisorV2();
+  const node = guardNode(g, "crm.read", (_payload: unknown) => ({ ok: true }), {
+    contextFn: () => ({ rows: 1 }),
+  });
+  const circular: { note: string; self?: unknown } = { note: "x" };
+  circular.self = circular;
+
+  const result = node(circular);
+
+  assert.deepEqual(result, { ok: true });
+  const allow = g.auditLog().entries.find((e) => e["event"] === "allow")!;
+  assert.ok(allow["authorized_params_hash"]);
+  assert.equal("params_hash_reason" in allow, false);
+});
+
+test("a guarded node with a sparse array argument densifies it and commits a real hash", () => {
+  const g = supervisorV2();
+  const node = guardNode(g, "crm.read", (rows: unknown[]) => ({ len: rows.length }), {
+    contextFn: () => ({ rows: 1 }),
+  });
+
+  const result = node([1, , 3] as unknown[]); // eslint-disable-line no-sparse-arrays
+
+  assert.deepEqual(result, { len: 3 });
+  const entries = g.auditLog().entries;
+  const allow = entries.find((e) => e["event"] === "allow")!;
+  const outcome = entries.find((e) => e["event"] === "outcome")!;
+  // Densified through structuredClone's SUCCESS path (a sparse array clones fine, preserving
+  // holes) -- unlike the pre-fix code, where freeze()'s own densification never ran at all here
+  // because it was gated behind a structuredClone failure that a sparse array never causes.
+  assert.ok(allow["authorized_params_hash"]);
+  assert.equal(allow["authorized_params_hash"], outcome["invoked_params_hash"]);
+  assert.equal("params_hash_reason" in allow, false);
+});
+
+test("a guarded node with a hostile custom iterator on its array argument is not fooled by it", () => {
+  // structuredClone would have succeeded on this array too (it clones the REAL indexed data,
+  // ignoring a custom Symbol.iterator override, since native cloning does not use the iteration
+  // protocol either) -- but the OLD freeze() fallback, had it ever been reached, used
+  // Array.from/.map, which DOES invoke the iterator. This test pins that the wrapper commits a
+  // snapshot of the array's real contents, not whatever a hostile iterator claims they are.
+  const g = supervisorV2();
+  const seen: unknown[] = [];
+  const node = guardNode(
+    g,
+    "crm.read",
+    (arr: number[]) => {
+      seen.push([...arr]); // read via a FRESH spread inside the body, independent of freeze()
+      return { ok: true };
+    },
+    { contextFn: () => ({ rows: 1 }) },
+  );
+
+  const hostile = [1, 2, 3];
+  (hostile as any)[Symbol.iterator] = function* () {
+    yield 999; // a hostile override: nothing like the array's real contents
+  };
+
+  node(hostile);
+
+  assert.deepEqual(seen[0], [999]); // the body itself DOES see the hostile iterator's lie --
+  // that is JavaScript's own semantics for spreading a hostile iterable, not this adapter's
+  // concern. What this adapter must get right is its OWN commitment:
+  const allow = g.auditLog().entries.find((e) => e["event"] === "allow")!;
+  assert.ok(allow["authorized_params_hash"]);
+  assert.equal("params_hash_reason" in allow, false);
+});
+
+test("a guarded tool with a getter argument never invokes it, and encodes it as an accessor", () => {
+  const g = supervisorV2();
+  let getterCalls = 0;
+  const withGetter: Record<string, unknown> = {};
+  Object.defineProperty(withGetter, "secret", {
+    get() {
+      getterCalls++;
+      return "leaked";
+    },
+    enumerable: true,
+  });
+  const guarded = guardTool(g, fakeTool("crm_query", () => ({ ok: true })), {
+    scope: "crm.read",
+    contextFn: () => ({ rows: 1 }),
+  });
+
+  guarded.invoke(withGetter);
+
+  // The getter is NEVER invoked across the whole authorize-through-outcome call -- not once,
+  // let alone the three observations the old Object.entries-based fallback could produce.
+  assert.equal(getterCalls, 0);
+  const allow = g.auditLog().entries.find((e) => e["event"] === "allow")!;
+  assert.ok(allow["authorized_params_hash"]);
+});
+
+test("a guarded node with a SharedArrayBuffer argument never aliases its backing memory", () => {
+  // structuredClone "succeeding" on a SharedArrayBuffer produces a DISTINCT wrapper object that
+  // shares the SAME underlying memory, by design -- not independence at all. freeze() never
+  // calls structuredClone (or anything else) on it; it is stringified like any other value with
+  // no plain-JSON shape.
+  const g = supervisorV2();
+  const node = guardNode(g, "crm.read", (_buf: SharedArrayBuffer) => ({ ok: true }), {
+    contextFn: () => ({ rows: 1 }),
+  });
+
+  const sab = new SharedArrayBuffer(8);
+  node(sab);
+
+  const allow = g.auditLog().entries.find((e) => e["event"] === "allow")!;
+  assert.ok(allow["authorized_params_hash"]);
+});
+
+test("a guarded node with a JSON.parse-created __proto__ argument commits a real hash", () => {
+  const g = supervisorV2();
+  const node = guardNode(g, "crm.read", (payload: { rows: number }) => ({ ok: true }), {
+    contextFn: (payload: { rows: number }) => ({ rows: payload.rows }),
+  });
+
+  const parsed = JSON.parse('{"__proto__": {"polluted": true}, "rows": 1}');
+  node(parsed);
+
+  const entries = g.auditLog().entries;
+  const allow = entries.find((e) => e["event"] === "allow")!;
+  const outcome = entries.find((e) => e["event"] === "outcome")!;
+  assert.ok(allow["authorized_params_hash"]);
+  assert.equal(allow["authorized_params_hash"], outcome["invoked_params_hash"]);
+});
+
+test("a plain async-iterable result (no own .next) is reported deferred, not returned", () => {
+  // Release-gate finding 6 (HIGH): isDeferredResult required an own `.next` method on the
+  // result itself, matching a self-iterating async generator -- but the JavaScript async-
+  // iterable protocol only requires a callable `[Symbol.asyncIterator]()`, which can return a
+  // SEPARATE object that has `.next`, without the iterable itself ever having one. Reproduced
+  // directly before fixing: this exact shape recorded body_state "returned".
+  const g = supervisorV2();
+  const node = guardNode(
+    g,
+    "crm.read",
+    () => ({
+      [Symbol.asyncIterator]() {
+        let i = 0;
+        return {
+          next: async () => (i++ < 2 ? { done: false, value: i } : { done: true, value: undefined }),
+        };
+      },
+    }),
+    { contextFn: () => ({ rows: 1 }) },
+  );
+
+  node();
+
+  const outcome = g.auditLog().entries.find((e) => e["event"] === "outcome")!;
+  assert.equal(outcome["body_state"], BodyState.DEFERRED);
+});
+
+test("a plain array result is NOT misdetected as deferred just because it is iterable", () => {
+  // The flip side of the fix above: Array/Set/Map all implement Symbol.iterator too, but their
+  // contents are already fully computed -- nothing deferred about returning one. Dropping the
+  // own-.next requirement on the SYNC branch (the same way the async branch's requirement was
+  // dropped) would have caused exactly this false positive; this test pins that the sync branch
+  // was deliberately left alone.
+  const g = supervisorV2();
+  const node = guardNode(g, "crm.read", () => [1, 2, 3], { contextFn: () => ({ rows: 1 }) });
+
+  node();
+
+  const outcome = g.auditLog().entries.find((e) => e["event"] === "outcome")!;
+  assert.equal(outcome["body_state"], BodyState.RETURNED);
 });

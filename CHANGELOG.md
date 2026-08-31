@@ -32,8 +32,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     callable runs"). Checked the specific `toJSON` vector first: `structuredClone` does NOT
     consult a `toJSON` method or any other user-overridable protocol the way Python's
     `copy.deepcopy` consults `__deepcopy__` (verified empirically — a hostile class's own
-    `toJSON` returning fabricated data is simply ignored, and a successful clone is never the
-    same reference); only the FAILURE path aliased.
+    `toJSON` returning fabricated data is simply ignored, and the clone is never the same
+    OBJECT reference for that specific case); only the FAILURE path aliased for a hostile
+    `toJSON`. See the release-gate correction below for why "a successful clone never aliases"
+    was still wrong as a general claim (a `SharedArrayBuffer` clones "successfully" to a
+    DIFFERENT object that shares the SAME underlying memory).
   - Fixed with a new `freeze()` function (exported for direct testing, the same reason every
     Python adapter's own `_freeze()` is imported directly by its tests — the audit log never
     exposes the raw snapshot value, only its hash, so "does this alias" is not otherwise
@@ -78,6 +81,97 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
       visits every index up to `.length`, densifying a hole to `undefined` (then `null`, same as
       any other `undefined`). Test added: `freeze([1, , 3])` equals `[1, null, 3]`, with a real
       (densified) element at index 1, not a hole.
+  - **Release-gate correction (CRITICAL + HIGH): `freeze()` was still only a FALLBACK, run only
+    when `structuredClone` THREW — a successful clone bypassed it entirely, and "a successful
+    clone never aliases" (asserted above) was not actually true.** Three bypasses, each
+    reproduced directly before fixing: (1) a circular object clones successfully —
+    `structuredClone` handles cycles natively — so `freeze()` never ran on it at all; the
+    circularity then reached `params.ts`'s own hash-commitment walk, which has NO cycle guard,
+    and crashed with `RangeError: Maximum call stack size exceeded` before authorization or the
+    tool body ever ran. (2) A sparse array clones successfully too, holes preserved, bypassing
+    `freeze()`'s own densification (added above) entirely — it reached `params.ts` as
+    `paramsHashReason: "unsupported"` instead of a real, densified, hashable snapshot. (3) A
+    `SharedArrayBuffer` clones to a DISTINCT wrapper object that shares the SAME underlying
+    memory, by design — a "successful" clone that is not independent at all. Fixed by making
+    `freeze()` the ONLY snapshot path, unconditionally: `structuredClone` is no longer called
+    anywhere in this adapter. Also fixed in the same pass: the cycle guard (`seen`) was a
+    single, MUTABLE `WeakSet` shared across the whole call, added to but never removed from —
+    so a DAG's repeated sibling reference (the SAME object appearing twice as two different
+    keys' values, never as its own ancestor) was wrongly reported `"<circular>"` on its second
+    occurrence, reproduced directly: `freeze({a: shared, b: shared})` came back
+    `{"a": {...}, "b": "<circular>"}`. Renamed to `active`, a PATH-ACTIVE `ReadonlySet` — a
+    fresh `Set` unioned in at each recursive call, never mutated in place or shared across
+    sibling branches. Separately, HIGH: the array and object branches (`Array.from`/`.map()` and
+    `Object.entries()`) invoke the value's OWN protocols — a hostile `[Symbol.iterator]`
+    override can yield ANYTHING regardless of an array's real indexed properties (reproduced:
+    `[1, , 3]` with a hostile iterator froze as `[999]`), and a getter is INVOKED by
+    `Object.entries()`, with no guarantee of being invoked only once (reproduced: with an
+    unclonable sibling forcing the old fallback, a getter with a side effect was observed three
+    times across the old clone-attempt/freeze/body sequence, and the committed snapshot was the
+    SECOND of three observations, not the first). Fixed: both branches now walk
+    `Object.getOwnPropertyDescriptor` directly (arrays by a `.length`-bounded index loop, objects
+    by `Object.keys`) — pure introspection, never invoking user code — and an accessor property
+    (`.get`/`.set` present) is encoded as the literal string `"<accessor>"` rather than read at
+    all. **A regression caught and fixed before this same commit landed:** rewriting the
+    object branch's write-back re-introduced the EXACT `out[key] = value` bug the `__proto__`
+    fix above had already closed (a bracket assignment to the literal key `"__proto__"` sets the
+    accumulator's prototype instead of a data property) — caught by running the existing
+    `__proto__` test against the rewrite, not assumed fixed; corrected with
+    `Object.defineProperty` in the loop instead. Six new tests added, each driving the REAL
+    wrapper (`guardNode`/`guardTool`), not `freeze()` directly — the earlier circular test
+    guarded the wrong path (it passed even while the actual wrapper crashed): circular input,
+    sparse array, hostile custom iterator, getter, `SharedArrayBuffer`, and a DAG's repeated
+    reference, all via `test/adapter-langgraph.test.ts`.
+  - **Release-gate correction (HIGH): `isDeferredResult` missed a plain `AsyncIterable`.** The
+    async branch required the result to have its OWN `.next` method, matching a self-iterating
+    async generator — but the JavaScript async-iterable protocol only requires a callable
+    `[Symbol.asyncIterator]()`, which can return a SEPARATE object that has `.next`, without the
+    iterable itself ever having one. Reproduced directly before fixing: a plain object
+    implementing only `[Symbol.asyncIterator]()` was recorded `BodyState.RETURNED`, not
+    `DEFERRED`. Fixed: the async check no longer requires an own `.next` (the sync check, which
+    DOES require it, was deliberately left alone — dropping it there would misdetect a plain
+    `Array`/`Set`/`Map` as deferred, since those implement `Symbol.iterator` too without their
+    contents being lazily produced; there is no equivalent JavaScript built-in that implements
+    `Symbol.asyncIterator` over already-computed values, so this asymmetry is not itself a gap).
+    The module doc comment's own "whole lazy-result landscape" claim is narrowed to list exactly
+    what `isDeferredResult` checks, rather than asserting completeness. Two tests added: the
+    async-iterable case now scores `DEFERRED`; a plain array result is confirmed to still score
+    `RETURNED` (pinning that the sync branch's requirement was deliberately kept).
+  - **Release-gate correction (HIGH): three disagreeing version fields.** `package.json` said
+    `0.4.0`; `package-lock.json`'s root `"version"` said `0.3.1` (stale since before the 0.4.0
+    bump — `npm install` never re-synced it); `src/version.ts`'s exported `VERSION` — the
+    constant `guard.ts` and both `adapters/langgraph.ts` wrappers use to attribute every v2
+    ledger entry's `adapter.version` field — said `0.3.0`. The release workflow
+    (`.github/workflows/release.yml`) only ever checks the pushed tag against `package.json`, so
+    it would have published while shipped ledger attribution was still wrong. Every v2 ledger
+    entry produced by the shipped 0.4.0 release has been misreporting `adapter.version` as
+    `"0.3.0"`. Fixed: all three aligned to the CURRENT `0.4.0` (no version bump as part of this
+    fix — that is the operator's call at release time). Added
+    `test/version-consistency.test.ts`, a new CI-run test (not only a release-time check)
+    asserting `package.json`, `package-lock.json`'s root version (both the top-level field and
+    its `packages[""].version` copy, which have drifted independently before), and the exported
+    `VERSION` all agree, every run, not only at tag time.
+  - **Release-gate finding, MEDIUM: `test/wire-vectors.test.ts` enumerated and scored 19 of the
+    20 published interop vectors, silently.** `reject_unsafe_integer` — anticipated in this
+    package's own `[0.3.1]` CHANGELOG entry below ("will show 20 vectors... once the Python
+    package ships them") and shipped by Python's own `[0.9.0]` — has had its fixture file
+    present on disk (byte-identical to Python's) since, but `VECTOR_NAMES` itself was never
+    updated to include it, and the test's own count assertion (`19`) masked the omission rather
+    than catching it. Fixed: added to `VECTOR_NAMES`, the count and test name updated to `20`,
+    and the stale `.github/workflows/ci.yml` comment ("19-vector... >=0.8 ships this") corrected
+    to `20-vector`/`>=0.9` (Python's own `[0.9.0]` CHANGELOG entry is where
+    `reject_unsafe_integer.json` shipped, matching the pip constraint
+    `attenu-guard>=0.9,<0.10` already pinned two lines below that comment).
+  - **Release-gate finding, LOW: the interop matrix had no early warning for the NEXT Python
+    minor.** `ci.yml`'s `interop` job pins `attenu-guard>=0.9,<0.10` deliberately — the committed
+    fixtures match that release, and the job's own last step re-generates and diffs them, so
+    pinning to it is correct, not stale. But nothing in this repo would notice a 0.10.0 that
+    breaks wire compatibility until someone widened that pin by hand. Added a second job,
+    `interop-next`, that runs the same cross-language suite against `attenu-guard>=0.10,<0.11` —
+    gated on a `pip index versions` check so it reports success without running anything while
+    0.10.0 is unpublished (confirmed against the live PyPI index: 0.9.0 is current, no 0.10.x
+    yet), and starts actually exercising the suite the moment the operator ships it, with no
+    workflow edit required either way.
 - **D14 — `Guard.check()` registered a `PRE_HOOK_ONLY` allow as pending, wedging `complete()`
   forever.** Mirrors the fix landing in the Python `attenu-guard` reference implementation
   (`guard.py`, same defect, same root cause): `registerPending` ran unconditionally for every
