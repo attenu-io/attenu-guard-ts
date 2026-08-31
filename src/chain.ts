@@ -352,16 +352,21 @@ export class Chain {
   }
 
   /**
-   * `true` the FIRST time `callId` is marked (and it is now recorded as outcomed); `false` if it
-   * was already outcomed — "exactly one outcome per callId" (the restart rule — see audit.ts's
-   * overwrite protection — is what makes this enforceable within one chain's continuous
-   * lifetime; JavaScript's single-threaded execution model makes it trivially atomic here, unlike
-   * the Python library's threaded case).
+   * Peek: has `callId` already received an outcome? Split from `markOutcomed` so a caller (see
+   * `Guard.recordOutcome`) can check BEFORE attempting the append and commit AFTER it actually
+   * succeeds — a pre-commit failure must leave `callId` exactly as unresolved as it was.
    */
-  markOutcomed(callId: string): boolean {
-    if (this.outcomed.has(callId)) return false;
+  isOutcomed(callId: string): boolean {
+    return this.outcomed.has(callId);
+  }
+
+  /**
+   * Commit `callId` as having received its outcome. Call ONLY after the outcome entry has
+   * actually reached the audit log's commit point (a plain successful append, or a
+   * `CommittedAuditError` post-commit failure) — never before (see `Guard.recordOutcome`).
+   */
+  markOutcomed(callId: string): void {
     this.outcomed.add(callId);
-    return true;
   }
 
   graph(): Record<string, Json> {

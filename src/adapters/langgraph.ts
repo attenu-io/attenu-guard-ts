@@ -96,9 +96,55 @@ export type GuardedNode<F extends (...args: any[]) => any> = F & {
   readonly unwrapped: F;
 };
 
-/** `{args: [...]}` — see the module doc comment's "Execution binding" section for why no `kwargs`. */
-function argsParams(args: readonly unknown[]): Json {
-  return { args: [...args] } as unknown as Json;
+/**
+ * An IMMUTABLE snapshot of the call's arguments, taken BEFORE the wrapped callable runs and
+ * reused for BOTH `authorizedParams` (`check`) and `invokedParams` (`recordOutcome`) — so a
+ * callable that mutates its own inputs in place cannot make this adapter observe two different
+ * values for what was actually one call's arguments (see the module doc comment's "Execution
+ * binding" section; no `kwargs` — JavaScript has no separate keyword-argument bag).
+ */
+function snapshotParams(args: readonly unknown[]): Json {
+  const raw = { args: [...args] };
+  try {
+    return structuredClone(raw) as unknown as Json;
+  } catch {
+    // Best-effort: something in here isn't structured-cloneable (a live socket, a function, ...).
+    // Fall back to the shallow copy — a residual risk only if THAT specific object is later
+    // mutated in place, a rare edge case documented here rather than silently claimed away.
+    return raw as unknown as Json;
+  }
+}
+
+/**
+ * `true` if `result` is a generator/async-generator/promise-like value whose consumption this
+ * wrapper does not itself observe — spec's `deferred`: "the record covers the call, not the
+ * eventual exhaustion." A promise counts too (the closest JavaScript analogue of Python's
+ * `asyncio.Future`/`concurrent.futures.Future`): the async branch here already `await`s `fn`
+ * itself, so a bare promise surfacing as `result` there means `fn` returned ANOTHER promise
+ * without awaiting it, which is exactly the same "not actually consumed" situation.
+ */
+function isDeferredResult(result: unknown): boolean {
+  if (result === null || typeof result !== "object") return false;
+  const r = result as Record<PropertyKey, unknown>;
+  if (typeof r["next"] === "function" && typeof r[Symbol.iterator] === "function") return true;
+  if (typeof r["next"] === "function" && typeof r[Symbol.asyncIterator] === "function") return true;
+  if (typeof r["then"] === "function") return true;
+  return false;
+}
+
+function bodyStateFor(result: unknown): string {
+  return isDeferredResult(result) ? BodyState.DEFERRED : BodyState.RETURNED;
+}
+
+/**
+ * `true` for the JavaScript analogue of Python's `asyncio.CancelledError`: an `AbortController`/
+ * `AbortSignal`-driven abort, surfaced as a `DOMException`/`Error` named `"AbortError"` — the
+ * standard shape Node and the Fetch/Web platform both use. There is no single universal async
+ * cancellation exception type in JavaScript the way `asyncio.CancelledError` is in Python, so this
+ * is the best-grounded, most widely applicable translation rather than a exact 1:1 port.
+ */
+function isAbortError(exc: unknown): boolean {
+  return exc instanceof Error && exc.name === "AbortError";
 }
 
 /** The class/constructor name of a thrown value — JavaScript's nearest analogue of Python's `type(exc).__name__`. */
@@ -106,6 +152,10 @@ function errorCodeOf(exc: unknown): string {
   if (exc instanceof Error) return exc.constructor.name || "Error";
   if (exc === null) return "null";
   return typeof exc === "object" ? "object" : typeof exc;
+}
+
+function elapsedMs(start: number): number {
+  return Math.round(performance.now() - start);
 }
 
 /**
@@ -130,77 +180,98 @@ export function guardNode<F extends (...args: any[]) => any>(
   options: GuardOptions = {},
 ): GuardedNode<F> {
   const resolvedTool = options.tool !== undefined ? options.tool : (fn.name || null);
-  const isAsync = fn.constructor.name === "AsyncFunction";
-  const capture = isAsync ? Capture.WRAPPER_ASYNC : Capture.WRAPPER_SYNC;
+  const isAsyncFn = fn.constructor.name === "AsyncFunction";
+  // guard.schemaVersion never changes for a guard's lifetime, so it is safe (and correct: a
+  // wrapper's sync-vs-async SHAPE must be fixed at definition time, not per-call) to decide it
+  // once, here, at decoration time.
+  const v2 = guard.schemaVersion === 2;
+  const capture = isAsyncFn ? Capture.WRAPPER_ASYNC : Capture.WRAPPER_SYNC;
   const adapterInfo: AdapterInfo = {
     module: "attenu-guard/adapters/langgraph",
     version: VERSION,
     hookPath: `guardNode:${fn.name || toolScope}`,
   };
 
-  function check(args: unknown[]): { decision: Decision; v2: boolean } {
+  function authorize(args: unknown[], snapshot: Json | null): Decision {
     const context: Context = options.contextFn ? options.contextFn(...args) : {};
-    const v2 = guard.schemaVersion === 2;
+    const extra = v2 ? { capture, adapter: adapterInfo, authorizedParams: snapshot ?? undefined } : {};
     const decision = guard.check(toolScope, {
       context,
       tool: resolvedTool,
       disposition: options.disposition ?? null,
       metered: options.metered ?? false,
-      ...(v2 ? { capture, adapter: adapterInfo, authorizedParams: argsParams(args) } : {}),
+      ...extra,
     });
     if (!decision.allowed) throw new AuthorityDenied(decision);
-    return { decision, v2 };
+    return decision;
   }
 
-  const wrapped = (
-    isAsync
-      ? async function (this: unknown, ...args: any[]) {
-          const { decision, v2 } = check(args);
-          const start = performance.now();
-          try {
-            const result = await fn.apply(this, args);
-            if (v2) {
-              guard.recordOutcome(decision.callId!, BodyState.RETURNED, {
-                invokedParams: argsParams(args),
-                durationMs: Math.round(performance.now() - start),
-              });
-            }
-            return result;
-          } catch (exc) {
-            if (v2) {
-              guard.recordOutcome(decision.callId!, BodyState.RAISED, {
-                errorCode: errorCodeOf(exc),
-                invokedParams: argsParams(args),
-                durationMs: Math.round(performance.now() - start),
-              });
-            }
-            throw exc;
-          }
+  let wrapped: GuardedNode<F>;
+  if (isAsyncFn && v2) {
+    wrapped = (async function (this: unknown, ...args: any[]) {
+      const snapshot = snapshotParams(args);
+      const decision = authorize(args, snapshot);
+      const start = performance.now();
+      try {
+        const result = await fn.apply(this, args);
+        guard.recordOutcome(decision.callId!, bodyStateFor(result), {
+          invokedParams: snapshot,
+          durationMs: elapsedMs(start),
+        });
+        return result;
+      } catch (exc) {
+        // The wrapper stopped observing while the body may still run — exactly spec's
+        // `abandoned`, not `raised`. Still re-thrown: cancellation must propagate normally.
+        if (isAbortError(exc)) {
+          guard.recordOutcome(decision.callId!, BodyState.ABANDONED, {
+            invokedParams: snapshot,
+            durationMs: elapsedMs(start),
+          });
+        } else {
+          guard.recordOutcome(decision.callId!, BodyState.RAISED, {
+            errorCode: errorCodeOf(exc),
+            invokedParams: snapshot,
+            durationMs: elapsedMs(start),
+          });
         }
-      : function (this: unknown, ...args: any[]) {
-          const { decision, v2 } = check(args);
-          const start = performance.now();
-          try {
-            const result = fn.apply(this, args);
-            if (v2) {
-              guard.recordOutcome(decision.callId!, BodyState.RETURNED, {
-                invokedParams: argsParams(args),
-                durationMs: Math.round(performance.now() - start),
-              });
-            }
-            return result;
-          } catch (exc) {
-            if (v2) {
-              guard.recordOutcome(decision.callId!, BodyState.RAISED, {
-                errorCode: errorCodeOf(exc),
-                invokedParams: argsParams(args),
-                durationMs: Math.round(performance.now() - start),
-              });
-            }
-            throw exc;
-          }
-        }
-  ) as GuardedNode<F>;
+        throw exc;
+      }
+    }) as unknown as GuardedNode<F>;
+  } else if (isAsyncFn) {
+    // v1 (schemaVersion: 1, the default): EXACTLY the pre-0.9.0 shape — a plain SYNC wrapper
+    // that authorizes, then returns fn(...args) UNAWAITED. The caller awaits the returned
+    // promise itself, as it always has; `wrapped` is never itself an async function on v1, even
+    // when `fn` is.
+    wrapped = (function (this: unknown, ...args: any[]) {
+      authorize(args, null);
+      return fn.apply(this, args);
+    }) as unknown as GuardedNode<F>;
+  } else {
+    wrapped = (function (this: unknown, ...args: any[]) {
+      if (!v2) {
+        authorize(args, null);
+        return fn.apply(this, args);
+      }
+      const snapshot = snapshotParams(args);
+      const decision = authorize(args, snapshot);
+      const start = performance.now();
+      try {
+        const result = fn.apply(this, args);
+        guard.recordOutcome(decision.callId!, bodyStateFor(result), {
+          invokedParams: snapshot,
+          durationMs: elapsedMs(start),
+        });
+        return result;
+      } catch (exc) {
+        guard.recordOutcome(decision.callId!, BodyState.RAISED, {
+          errorCode: errorCodeOf(exc),
+          invokedParams: snapshot,
+          durationMs: elapsedMs(start),
+        });
+        throw exc;
+      }
+    }) as unknown as GuardedNode<F>;
+  }
 
   Object.defineProperties(wrapped, {
     name: { value: fn.name, configurable: true },
@@ -254,8 +325,6 @@ export interface GuardToolOptions extends GuardOptions {
   onDenied?: (decision: Decision, input: any) => any;
 }
 
-type CheckToolOutcome = { decision: Decision; v2: boolean } | { denied: unknown };
-
 /**
  * Return a stand-in for `tool` whose `invoke` authorizes through `guard` before
  * the tool body runs. Everything else — `name`, `description`, `schema`, any
@@ -265,11 +334,12 @@ type CheckToolOutcome = { decision: Decision; v2: boolean } | { denied: unknown 
  * The context function receives the raw invoke arguments. `ToolNode` passes a
  * tool call object, so the arguments the model proposed are at `input.args`;
  * a direct `tool.invoke({...})` passes them at the top level. `toolArgs` below
- * reads either shape — and, on a `schemaVersion: 2` guard, is also what
- * `authorizedParams`/`invokedParams` are built from: this adapter's closest analogue
- * of "the exact tool-call JSON object" the execution-binding spec names (see the
- * module doc comment's "Execution binding" section; this is the one construct in
- * this adapter that wraps a tool BODY, so it is the reference wiring for
+ * reads either shape — and, on a `schemaVersion: 2` guard, feeds a single
+ * IMMUTABLE snapshot taken BEFORE `tool.invoke` runs, reused for both
+ * `authorizedParams` and `invokedParams`: this adapter's closest analogue of "the
+ * exact tool-call JSON object" the execution-binding spec names (see the module
+ * doc comment's "Execution binding" section; this is the one construct in this
+ * adapter that wraps a tool BODY, so it is the reference wiring for
  * `recordOutcome`, mirroring `guardNode` above).
  */
 export function guardTool<T extends ToolLike>(
@@ -279,82 +349,123 @@ export function guardTool<T extends ToolLike>(
 ): T {
   const scope = options.scope ?? tool.name;
   const label = options.tool !== undefined ? options.tool : tool.name;
-  const isAsync = tool.invoke.constructor.name === "AsyncFunction";
-  const capture = isAsync ? Capture.WRAPPER_ASYNC : Capture.WRAPPER_SYNC;
+  const isAsyncInvoke = tool.invoke.constructor.name === "AsyncFunction";
+  // guard.schemaVersion never changes for a guard's lifetime — decided once, at wrap time, same
+  // as guardNode.
+  const v2 = guard.schemaVersion === 2;
+  const capture = isAsyncInvoke ? Capture.WRAPPER_ASYNC : Capture.WRAPPER_SYNC;
   const adapterInfo: AdapterInfo = {
     module: "attenu-guard/adapters/langgraph",
     version: VERSION,
     hookPath: `guardTool:${tool.name}`,
   };
 
-  function check(input: any, config: any): CheckToolOutcome {
+  function snapshotToolParams(input: any): Json {
+    const raw = toolArgs(input);
+    try {
+      return structuredClone(raw) as unknown as Json;
+    } catch {
+      return raw as unknown as Json;
+    }
+  }
+
+  function authorize(input: any, config: any, snapshot: Json | null): Decision {
     const context: Context = options.contextFn ? options.contextFn(input, config) : {};
-    const v2 = guard.schemaVersion === 2;
+    const extra = v2 ? { capture, adapter: adapterInfo, authorizedParams: snapshot ?? undefined } : {};
     const decision = guard.check(scope, {
       context,
       tool: label,
       disposition: options.disposition ?? null,
       metered: options.metered ?? false,
-      ...(v2 ? { capture, adapter: adapterInfo, authorizedParams: toolArgs(input) as unknown as Json } : {}),
+      ...extra,
     });
-    if (!decision.allowed) {
-      if (options.onDenied) return { denied: options.onDenied(decision, input) };
-      throw new AuthorityDenied(decision);
-    }
-    return { decision, v2 };
+    if (!decision.allowed) throw new AuthorityDenied(decision);
+    return decision;
   }
 
-  const guardedInvoke = isAsync
-    ? async (input: any, config?: any) => {
-        const outcome = check(input, config);
-        if ("denied" in outcome) return outcome.denied;
-        const { decision, v2 } = outcome;
-        const start = performance.now();
-        try {
-          const result = await tool.invoke(input, config);
-          if (v2) {
-            guard.recordOutcome(decision.callId!, BodyState.RETURNED, {
-              invokedParams: toolArgs(input) as unknown as Json,
-              durationMs: Math.round(performance.now() - start),
-            });
-          }
-          return result;
-        } catch (exc) {
-          if (v2) {
-            guard.recordOutcome(decision.callId!, BodyState.RAISED, {
-              errorCode: errorCodeOf(exc),
-              invokedParams: toolArgs(input) as unknown as Json,
-              durationMs: Math.round(performance.now() - start),
-            });
-          }
-          throw exc;
-        }
+  /** `authorize`, but returns `{denied: ...}` instead of throwing when `onDenied` is set. */
+  function authorizeOrDenied(
+    input: any,
+    config: any,
+    snapshot: Json | null,
+  ): { decision: Decision } | { denied: unknown } {
+    try {
+      return { decision: authorize(input, config, snapshot) };
+    } catch (exc) {
+      if (exc instanceof AuthorityDenied && options.onDenied) {
+        return { denied: options.onDenied(exc.decision, input) };
       }
-    : (input: any, config?: any) => {
-        const outcome = check(input, config);
-        if ("denied" in outcome) return outcome.denied;
-        const { decision, v2 } = outcome;
-        const start = performance.now();
-        try {
-          const result = tool.invoke(input, config);
-          if (v2) {
-            guard.recordOutcome(decision.callId!, BodyState.RETURNED, {
-              invokedParams: toolArgs(input) as unknown as Json,
-              durationMs: Math.round(performance.now() - start),
-            });
-          }
-          return result;
-        } catch (exc) {
-          if (v2) {
-            guard.recordOutcome(decision.callId!, BodyState.RAISED, {
-              errorCode: errorCodeOf(exc),
-              invokedParams: toolArgs(input) as unknown as Json,
-              durationMs: Math.round(performance.now() - start),
-            });
-          }
-          throw exc;
+      throw exc;
+    }
+  }
+
+  let guardedInvoke: (input: any, config?: any) => any;
+  if (isAsyncInvoke && v2) {
+    guardedInvoke = async (input: any, config?: any) => {
+      const snapshot = snapshotToolParams(input);
+      const outcome = authorizeOrDenied(input, config, snapshot);
+      if ("denied" in outcome) return outcome.denied;
+      const start = performance.now();
+      try {
+        const result = await tool.invoke(input, config);
+        guard.recordOutcome(outcome.decision.callId!, bodyStateFor(result), {
+          invokedParams: snapshot,
+          durationMs: elapsedMs(start),
+        });
+        return result;
+      } catch (exc) {
+        if (isAbortError(exc)) {
+          guard.recordOutcome(outcome.decision.callId!, BodyState.ABANDONED, {
+            invokedParams: snapshot,
+            durationMs: elapsedMs(start),
+          });
+        } else {
+          guard.recordOutcome(outcome.decision.callId!, BodyState.RAISED, {
+            errorCode: errorCodeOf(exc),
+            invokedParams: snapshot,
+            durationMs: elapsedMs(start),
+          });
         }
-      };
+        throw exc;
+      }
+    };
+  } else if (isAsyncInvoke) {
+    // v1: EXACTLY the pre-0.9.0 shape — a plain SYNC function that authorizes, then returns
+    // tool.invoke(...) UNAWAITED (the caller — typically ToolNode's own `await` — consumes the
+    // returned promise itself, as it always has).
+    guardedInvoke = (input: any, config?: any) => {
+      const outcome = authorizeOrDenied(input, config, null);
+      if ("denied" in outcome) return outcome.denied;
+      return tool.invoke(input, config);
+    };
+  } else {
+    guardedInvoke = (input: any, config?: any) => {
+      if (!v2) {
+        const outcome = authorizeOrDenied(input, config, null);
+        if ("denied" in outcome) return outcome.denied;
+        return tool.invoke(input, config);
+      }
+      const snapshot = snapshotToolParams(input);
+      const outcome = authorizeOrDenied(input, config, snapshot);
+      if ("denied" in outcome) return outcome.denied;
+      const start = performance.now();
+      try {
+        const result = tool.invoke(input, config);
+        guard.recordOutcome(outcome.decision.callId!, bodyStateFor(result), {
+          invokedParams: snapshot,
+          durationMs: elapsedMs(start),
+        });
+        return result;
+      } catch (exc) {
+        guard.recordOutcome(outcome.decision.callId!, BodyState.RAISED, {
+          errorCode: errorCodeOf(exc),
+          invokedParams: snapshot,
+          durationMs: elapsedMs(start),
+        });
+        throw exc;
+      }
+    };
+  }
 
   return new Proxy(tool, {
     get(target, prop, receiver) {

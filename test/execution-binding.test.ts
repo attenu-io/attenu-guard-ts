@@ -251,9 +251,10 @@ test("complete refuses while pending and reports the callIds", () => {
   const g = v2Root();
   const d = g.check("crm.read");
   const cr = g.complete();
-  assert.ok(cr instanceof CompletionResult);
-  assert.equal(cr.completed, false);
-  assert.deepEqual(cr.pendingCallIds, [d.callId]);
+  assert.ok(cr instanceof CompletionResult); // a schemaVersion: 2 chain always gets a CompletionResult
+  const cr2 = cr as CompletionResult;
+  assert.equal(cr2.completed, false);
+  assert.deepEqual(cr2.pendingCallIds, [d.callId]);
   assert.equal(g.isComplete, false);
 });
 
@@ -261,7 +262,7 @@ test("complete succeeds once the outcome is recorded", () => {
   const g = v2Root();
   const d = g.check("crm.read");
   g.recordOutcome(d.callId!, BodyState.RETURNED, { durationMs: 5 });
-  const cr = g.complete();
+  const cr = g.complete() as CompletionResult;
   assert.equal(cr.completed, true);
   assert.deepEqual(cr.pendingCallIds, []);
 });

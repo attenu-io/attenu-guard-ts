@@ -214,12 +214,25 @@ export class Guard {
   /**
    * A fresh root Guard, starting a new delegation chain. `schemaVersion: 2` opts the whole chain
    * into 0.9.0 execution binding — see the module doc comment.
+   *
+   * `auditOverwrite: true` (silently replace an existing non-empty ledger at `auditPath`) is
+   * REFUSED on a `schemaVersion: 2` chain: the restart rule has no escape hatch on v2 — a v2
+   * process restart must always open a NEW audit path, never overwrite an old one, so that a
+   * pending call from before the restart stays truthfully unaccounted rather than vanishing
+   * under a fresh chain at the same path. v1 keeps the flag exactly as before.
    */
   static issue(agentId: string, authority: Authority, options: IssueOptions = {}): Guard {
     const chainId = options.chainId ?? "chain";
     const schemaVersion = options.schemaVersion ?? 1;
     if (schemaVersion !== 1 && schemaVersion !== 2) {
       throw new Error(`unsupported schemaVersion ${schemaVersion}; expected 1 or 2`);
+    }
+    if (schemaVersion === 2 && options.auditOverwrite) {
+      throw new Error(
+        "auditOverwrite: true is not permitted on a schemaVersion: 2 chain — the restart rule " +
+          "has no escape hatch on v2 (docs/execution-binding spec section 1). Open a new audit " +
+          "path for the new chain instead; v1 chains may still set auditOverwrite: true.",
+      );
     }
     const chain = new Chain(chainId, {
       maxDepth: options.maxDepth ?? 6,
@@ -308,26 +321,32 @@ export class Guard {
   }
 
   /**
-   * Mark this node's work FINISHED — one `done` event. Returns a `CompletionResult` (see its own
-   * doc comment in reasons.ts for the JavaScript-specific limits of its truthiness bridge). On a
-   * `schemaVersion: 2` chain, refuses (a `CompletionResult` carrying `.pendingCallIds`) while
-   * this node has `allow`ed calls that have not yet reported an outcome — completing while a call
-   * is still open would be a false claim that the node's work is finished. Once no calls are
-   * pending (always true on a schema-version-1 chain, which never registers any), marks complete
-   * and returns `CompletionResult(true, [])`. Idempotent: `CompletionResult(false, [])` if already
-   * marked. Purely a lifecycle marker — it does NOT change authority; revocation is the hard stop.
+   * Mark this node's work FINISHED — one `done` event.
+   *
+   * On a `schemaVersion: 2` chain, returns a `CompletionResult` (see its own doc comment in
+   * reasons.ts for the JavaScript-specific limits of its truthiness bridge) and refuses — a
+   * falsy-by-`.completed` `CompletionResult` carrying `.pendingCallIds` — while this node has
+   * `allow`ed calls that have not yet reported an outcome; completing while a call is still open
+   * would be a false claim that the node's work is finished. Idempotent:
+   * `CompletionResult(false, [])` if already marked.
+   *
+   * On a `schemaVersion: 1` chain (the default) this returns a plain `boolean`, byte-and-type
+   * IDENTICAL to every release before 0.9.0 — v1 never gained pending-call awareness, so there is
+   * nothing new to report and no reason to change its return type. Purely a lifecycle marker
+   * either way — it does NOT change authority; revocation is the hard stop.
    */
-  complete(): CompletionResult {
-    if (this.node.complete) return new CompletionResult(false, []);
-    const pending = this.chain.pendingFor(this.node.nodeId);
-    if (pending.length > 0) return new CompletionResult(false, pending);
+  complete(): boolean | CompletionResult {
+    const v2 = this.isV2;
+    if (this.node.complete) return v2 ? new CompletionResult(false, []) : false;
+    const pending = v2 ? this.chain.pendingFor(this.node.nodeId) : [];
+    if (pending.length > 0) return new CompletionResult(false, pending); // only reachable on v2
     this.node.complete = true;
     this.append("done", {
       chain_id: this.chainId,
       node: this.node.nodeId,
       agent: this.node.agentId,
     });
-    return new CompletionResult(true, []);
+    return v2 ? new CompletionResult(true, []) : true;
   }
 
   // ---- delegation -------------------------------------------------------
@@ -644,7 +663,13 @@ export class Guard {
 
     // 4. commit (append) — a post-commit persistence failure throws CommittedAuditError; attach
     //    `.decision` (spec: "carries the committed entry and the decision") before it propagates,
-    //    and still register the pending call first (step 5).
+    //    and still register the pending call first (step 5). ANY OTHER exception here (e.g. a
+    //    canonicalization failure while hashing the entry, inside AuditLog.append's hashEntry
+    //    call, which runs BEFORE its commit point) is a pre-commit failure exactly like the
+    //    CSPRNG case above: meters are restored, nothing is pending, and the exception is
+    //    re-thrown as-is (not swallowed into a Decision — unlike CSPRNG exhaustion, a malformed
+    //    context/authorizedParams value is the caller's error, and this library's convention
+    //    elsewhere is to throw on malformed input, not silently deny).
     try {
       this.logDecision(decision, scope, options.tool ?? null, ctx, disposition, extra);
     } catch (exc) {
@@ -652,6 +677,8 @@ export class Guard {
         const decisionWithId = Guard.attachCallId(decision, callId);
         if (isV2 && decision.allowed) this.chain.registerPending(nid, callId!);
         exc.decision = decisionWithId;
+      } else if (decision.allowed) {
+        for (const c of filled) this.chain.uncountCall(nid, c.meterKey ?? "*");
       }
       throw exc;
     }
@@ -787,8 +814,12 @@ export class Guard {
       );
     }
     const errorCode = options.errorCode ?? null;
-    if ((errorCode !== null) !== (bodyState === BodyState.RAISED)) {
-      throw new Error("errorCode is required exactly when bodyState === BodyState.RAISED");
+    if (bodyState === BodyState.RAISED) {
+      if (typeof errorCode !== "string" || !errorCode) {
+        throw new Error("errorCode is required (a non-empty string) when bodyState === BodyState.RAISED");
+      }
+    } else if (errorCode !== null) {
+      throw new Error("errorCode is only permitted when bodyState === BodyState.RAISED");
     }
     const durationMs = options.durationMs;
     if (!Number.isInteger(durationMs) || durationMs < 0) {
@@ -796,18 +827,31 @@ export class Guard {
     }
     const receipt = options.receipt ?? null;
     if (receipt !== null) {
-      const missing = (["type", "ref", "digest"] as const).filter(
-        (k) => !(k in (receipt as unknown as Record<string, unknown>)),
-      );
+      const r = receipt as unknown as Record<string, unknown>;
+      const missing = (["type", "ref", "digest"] as const).filter((k) => !(k in r));
       if (missing.length > 0) {
         throw new Error(`receipt is missing ${JSON.stringify(missing)}; expected type/ref/digest`);
       }
+      for (const k of ["type", "ref"] as const) {
+        if (typeof r[k] !== "string" || !r[k]) {
+          throw new Error(`receipt[${JSON.stringify(k)}] must be a non-empty string`);
+        }
+      }
+      if (typeof r["digest"] !== "string" || !/^[0-9a-f]{64}$/.test(r["digest"] as string)) {
+        throw new Error(
+          "receipt['digest'] must be a lowercase-hex SHA-256 digest (64 hex characters) — spec section 7",
+        );
+      }
     }
 
-    if (!this.chain.markOutcomed(callId)) {
+    // Exactly one outcome per callId, "enforced at append" (spec section 3): peek first, but
+    // only COMMIT the outcomed/pending state AFTER the append actually reaches its commit point
+    // — see below. A pre-commit failure here (e.g. a canonicalization failure while hashing this
+    // entry) must leave callId exactly as unresolved as before this call, so a corrected retry
+    // is still possible and `complete()` does not wrongly believe the call was accounted for.
+    if (this.chain.isOutcomed(callId)) {
       throw new DuplicateOutcomeError(`callId ${JSON.stringify(callId)} already has a recorded outcome`);
     }
-    this.chain.resolvePending(callId);
     const fields: LedgerEntry = {
       chain_id: this.chainId,
       node: this.node.nodeId,
@@ -820,7 +864,23 @@ export class Guard {
     if (ph !== null) fields["invoked_params_hash"] = ph;
     else if (preason !== null) fields["params_hash_reason"] = preason;
     if (receipt !== null) fields["receipt"] = { ...receipt } as unknown as Json;
-    return this.append("outcome", fields);
+
+    let entry: LedgerEntry;
+    try {
+      entry = this.append("outcome", fields);
+    } catch (exc) {
+      if (exc instanceof CommittedAuditError) {
+        // post-commit: the outcome DID reach the in-memory chain; it is now safe (and correct)
+        // to mark it done and drop it from pending before the persistence failure propagates.
+        this.chain.markOutcomed(callId);
+        this.chain.resolvePending(callId);
+      }
+      throw exc;
+    }
+    // success: commit the bookkeeping only now, never before.
+    this.chain.markOutcomed(callId);
+    this.chain.resolvePending(callId);
+    return entry;
   }
 
   // ---- chain controls ---------------------------------------------------

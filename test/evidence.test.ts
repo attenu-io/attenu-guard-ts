@@ -181,7 +181,10 @@ test("a bundle this library exports verifies here and reports no leak", () => {
     anchor: "verified",
     version: true,
     chain_id: true,
+    root: true,
+    expected_anchor: "not checked",
   });
+  assert.equal(report.verified_against, "bundle_anchor");
   assert.equal(bundle.redaction.ok, true);
   assert.equal(bundle.anchor.verified, true);
 });
@@ -270,9 +273,15 @@ test("a context allow-list catches an unvetted context key", () => {
   assert.equal(report.violations[0]!.context_key, "customer_email");
 });
 
-test("an empty ledger anchors to a seq of -1", () => {
+test("an empty ledger anchors to a seq of -1, but verifyBundle rejects it as rootless", () => {
   const bundle = exportBundle([], hs256);
   assert.equal(bundle.anchor.seq, -1);
   assert.equal(bundle.anchor.head, "GENESIS");
-  assert.equal(verifyBundle(bundle, hs256).ok, true);
+  // A bundle with zero entries has zero root events — verifyBundle requires EXACTLY one (0.9.0
+  // merge-gate item 7): the anchor itself is honest about an empty chain, but there is nothing to
+  // anchor monotonicity/containment to, so `ok` is correctly false here, not vacuously true.
+  const report = verifyBundle(bundle, hs256);
+  assert.equal(report.checks.root, false);
+  assert.equal(report.ok, false);
+  assert.ok(report.failures.some((f) => f.startsWith("missing_root:")), report.failures.join("; "));
 });

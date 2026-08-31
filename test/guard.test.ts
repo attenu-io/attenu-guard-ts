@@ -286,12 +286,10 @@ test("recordDenial puts an adapter-level refusal on the same trail", () => {
 test("complete is an idempotent lifecycle marker that never changes authority", () => {
   const g = Guard.issue("a", new Authority({ scopes: ["crm.read"], ttl: 60 }), { chainId: "t" });
   assert.equal(g.isComplete, false);
-  // `complete()` returns a `CompletionResult`, not a bare boolean (0.9.0 — see reasons.ts). It
-  // stays usable in a `==`/`!=` comparison via `valueOf()`, but `assert/strict`'s `equal` is
-  // `strictEqual` (no coercion), so tests read `.completed` explicitly, same as production code
-  // should in an `if`.
-  assert.equal(g.complete().completed, true);
-  assert.equal(g.complete().completed, false);
+  // v1 chain (the default): complete() returns a plain boolean, byte-and-type identical to
+  // every release before 0.9.0 — CompletionResult only appears on a schemaVersion: 2 chain.
+  assert.equal(g.complete(), true);
+  assert.equal(g.complete(), false);
   assert.equal(g.isComplete, true);
   assert.ok(g.check("crm.read").allowed, "completion does not revoke");
   assert.equal(g.auditLog().entries.filter((e) => e["event"] === "done").length, 1);

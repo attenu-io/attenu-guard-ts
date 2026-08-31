@@ -113,20 +113,22 @@ export type BodyStateValue = (typeof BodyState)[keyof typeof BodyState];
 export const BODY_STATES: ReadonlySet<string> = new Set(Object.values(BodyState));
 
 /**
- * `Guard.complete()`'s return value (0.9.0, docs/execution-binding spec section 1): whether the
- * node was actually finalized, and — when it refused because calls are still pending an outcome
- * — the `callId`s it is waiting on.
+ * `Guard.complete()`'s return value on a `schemaVersion: 2` chain ONLY (0.9.0, docs/
+ * execution-binding spec section 1): whether the node was actually finalized, and — when it
+ * refused because calls are still pending an outcome — the `callId`s it is waiting on. On a
+ * `schemaVersion: 1` chain (the default), `complete()` returns a plain `boolean`,
+ * byte-and-type IDENTICAL to every release before 0.9.0 — v1 never gained pending-call
+ * awareness, so there is nothing new for it to report and no reason to change its return type
+ * (mirrors attenu-guard Python's merge-gate fix restoring this exact split).
  *
- * Python's equivalent is bool-coercible via `__bool__`, so `if guard.complete():` keeps reading
- * naturally there. JavaScript has no such hook for `if` — `ToBoolean` on any object is
- * unconditionally `true`, so an `if (guard.complete())` check cannot be bridged to `false` no
- * matter what this class defines, and neither can `assert.equal`/`assert.strictEqual` from
- * `node:assert/strict` (no coercion at all — this project's own test suite uses it, so its
- * existing `assert.equal(g.complete(), true)`-shaped call sites were updated to read
- * `.completed` rather than relying on a bridge that cannot exist for them). What CAN be bridged:
- * `valueOf()` returns `.completed`, so contexts that genuinely coerce via `==`/`!=` (loose
- * equality), template literals, and arithmetic still read as the bare boolean `complete()` used
- * to return. Read `.completed` explicitly wherever you would have written `if (guard.complete())`.
+ * Python's v2 return value is bool-coercible via `__bool__`, so `if guard.complete():` keeps
+ * reading naturally there. JavaScript has no such hook for `if` — `ToBoolean` on any object is
+ * unconditionally `true`, so on v2 an `if (guard.complete())` check cannot be bridged to `false`
+ * no matter what this class defines, and neither can `assert.equal`/`assert.strictEqual` from
+ * `node:assert/strict` (no coercion at all). What CAN be bridged: `valueOf()` returns
+ * `.completed`, so contexts that genuinely coerce via `==`/`!=` (loose equality), template
+ * literals, and arithmetic still read as a boolean. On v2, read `.completed` explicitly wherever
+ * you would have written `if (guard.complete())`.
  */
 export class CompletionResult {
   constructor(
@@ -222,13 +224,19 @@ export class Decision {
     return "denied: " + this.reasons.map((r) => r.toString()).join("; ");
   }
 
+  /**
+   * `callId` is included only when set (a `schemaVersion: 2` chain's `check`/`recordDenial`) — a
+   * v1 Decision's serialized shape stays byte-and-key identical to every release before 0.9.0,
+   * never gaining a `call_id: null` key it never had.
+   */
   toDict(): Record<string, Json> {
-    return {
+    const d: Record<string, Json> = {
       allowed: this.allowed,
       reasons: this.reasons.map((r) => r.toDict()),
       determining_node: this.determiningNode,
-      call_id: this.callId,
     };
+    if (this.callId !== null) d["call_id"] = this.callId;
+    return d;
   }
 
   /** A copy of this Decision with `callId` set — mirrors Python's `dataclasses.replace`. */
