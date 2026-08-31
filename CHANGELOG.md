@@ -6,6 +6,32 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Execution binding**, opt-in per chain via `Guard.issue(agentId, authority, {schemaVersion: 2})`
+  (schema version 1 is unchanged and remains the default): `check`/`recordDenial` now allocate a
+  `callId` (fail-closed, with meters restored, if `crypto.randomBytes` throws) and return it on
+  `Decision.callId`; `check` gains `authorizedParams`/`capture`/`adapter` options and refuses
+  further calls once the node is `complete()`d (`ReasonCode.NODE_FINALIZED`).
+  `Guard.recordOutcome(callId, bodyState, options)` binds what a body-owning wrapper observed
+  afterwards — `returned`/`raised`/`abandoned`/`deferred`, with `errorCode` required exactly when
+  raised. `complete()` now returns a `CompletionResult` (see its doc comment for the JavaScript
+  limits of its truthiness bridge — unlike Python's `__bool__`, `if (guard.complete())` cannot be
+  made to read `false`) and refuses while calls are pending; `revoke`/`revokeAgent` snapshot
+  still-pending callIds onto the `kill` entry as `pending_at_kill` without clearing them, so a
+  late `recordOutcome` after a kill is still accepted. Arguments are committed via `params_c14n_v1`
+  (`params.ts`): `SHA-256(rawSalt || JCS(params))`, never the raw value. `verifyBundle` gains
+  `execution_binding`: per-call observed/unobserved/unaccounted, per-node
+  finalized/in_progress/revoked/revoked_with_pending, an aggregate clean/incomplete/failed, and
+  `params_coverage` as its own axis — `{status: "not applicable"}` for a schema-version-1 bundle.
+  `verifyBundle` also gains `root_version_mismatch` and `mixed_entry_versions` checks — a chain is
+  created at one schema version and never mixes. `AuditLog` gains `CommittedAuditError` (a
+  post-commit persistence failure after the entry is already in the in-memory chain) and
+  overwrite protection (constructing over a `path` that already names a non-empty ledger now
+  throws unless `overwrite: true`). The LangGraph adapter (`adapters/langgraph`) is the reference
+  wiring: `guardNode`/`guardTool` call `recordOutcome` on a `schemaVersion: 2` guard, sync and
+  async. Mirrors attenu-guard (Python) 0.9.0's execution-binding layer, byte-for-byte on every
+  reason-code string; ported test suite: `test/execution-binding.test.ts` (60 cases).
+
 ## [0.3.1] — 2026-08-30
 
 ### Fixed
