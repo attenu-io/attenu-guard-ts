@@ -51,6 +51,62 @@
  * adapter behaves exactly as it did before 0.9.0: no `capture`/`authorizedParams`, no
  * `recordOutcome` call. Every other framework adapter is unchanged in this release.
  *
+ * ## Adversarial review: the Python batch-1/batch-2 defect classes, checked against this
+ * adapter specifically (not assumed absent by analogy)
+ *
+ * The Python `attenu-guard` adapters went through two rounds of adversarial review that found
+ * several defect classes across their (many) framework adapters. This TS package ships exactly
+ * ONE adapter surface (this file — verified against `package.json`'s own `exports` map, which
+ * declares nothing besides `.` and `./adapters/langgraph`), so each class was checked against
+ * THIS adapter specifically, not inherited by assumption:
+ *
+ * - **Composable middleware / sibling short-circuit or retry** (a sibling wrapper positioned
+ *   closer to the tool body than this one, able to fabricate or repeat what it observes) — NOT
+ *   APPLICABLE. Verified directly against pinned `@langchain/core@1.2.9` and
+ *   `@langchain/langgraph@1.4.13` (installed and grepped, not read off documentation): zero
+ *   `"middleware"` hits anywhere near tool invocation in either package, and
+ *   `ToolNode.prototype.runTool` (`dist/prebuilt/tool_node.js`) calls `tool.invoke(toolCall,
+ *   runtime)` directly — `guardTool`'s `Proxy` IS what gets called, nothing sits between it and
+ *   `ToolNode`. Neither framework has a composable per-call hook chain the way LangChain-Python's
+ *   `create_agent(middleware=[...])` or AG2's `FunctionTool.register()` do.
+ * - **Double authorization via a second, independent gate** (e.g. Python's `claude_sdk`
+ *   adapter's `can_use_tool` calling `authorize()` a second time for the same call) — NOT
+ *   APPLICABLE. There is no second entry point here: `guardNode`/`guardTool` are each the ONLY
+ *   caller-facing wrapper for their call, and there is nothing in either framework analogous to
+ *   a second permission callback for a call this adapter already gated.
+ * - **Snapshot double-evaluation / narrow-projection commitment** — NOT APPLICABLE in the
+ *   double-evaluation shape (`snapshotParams`/`snapshotToolParams` already compute ONE snapshot,
+ *   reused unchanged for both `authorizedParams` and `invokedParams`), but a DIFFERENT,
+ *   TS-specific gap in the same family was found and fixed — see `freeze()`'s own doc comment
+ *   above and the CHANGELOG.
+ * - **Correlation-key collision across hooks** (e.g. Python's `claude_sdk` `tool_use_id`
+ *   collision) — NOT APPLICABLE. `guard.recordOutcome` is called synchronously inside the same
+ *   closure that owns the whole call, from `authorize()`'s own returned `Decision.callId` — no
+ *   external pending-map keyed by a framework-supplied correlation id exists to collide on.
+ * - **Lazy-result detection gaps** (e.g. Python's `smolagents` adapter missing a coroutine or a
+ *   `concurrent.futures.Future`) — checked and found already complete for this platform:
+ *   `isDeferredResult` catches generators, async generators, and anything thenable — which is
+ *   the whole lazy-result landscape JavaScript actually has (there is no separate "Future" type
+ *   distinct from `Promise`/thenable the way Python has two). A plain (non-`async`) function that
+ *   manually returns a bare `Promise` is also caught correctly, via the same thenable check, in
+ *   the sync branch of both wrappers.
+ * - **Lost-terminal-event / "fires unconditionally" false claims** (e.g. Python's `strands`
+ *   adapter's before-hook interrupt paths) — NOT APPLICABLE. There is no external, multi-phase
+ *   hook-dispatch loop for an event to be lost across; one wrapper function's own `try`/`catch`
+ *   (or `await`ed async path) owns authorize-through-`recordOutcome` for the whole call
+ *   synchronously. Structurally this adapter was already closest to Python's own `langgraph.py`
+ *   reference wiring, not any of the adapters that needed this class of fix.
+ * - **Unbounded correlation cache** (Python's `claude_sdk` `_recentVerdicts`) — NOT APPLICABLE,
+ *   for the same reason as the correlation-collision point above: no cache or pending-map exists
+ *   in this adapter to bound.
+ * - **Wrong dependency declaration** (Python's `semantic-kernel` `protobuf` lesson: check what
+ *   the RESOLVED version actually requires, not what is assumed) — checked: `src/` imports only
+ *   `@langchain/langgraph` (lazily, in `isLangGraphAvailable()`); it never imports
+ *   `@langchain/core` at all (only this file's own tests do, to build fixtures). `package.json`
+ *   declares zero `dependencies` and no `peerDependencies` — matching the README's own "zero
+ *   runtime dependencies" claim — and both `@langchain/core`/`@langchain/langgraph` are correctly
+ *   `devDependencies`-only. Nothing this package's `src/` needs at runtime is undeclared.
+ *
  * ## Delegation
  *
  * Handing work to a sub-agent is the delegation moment. `delegateTo` mints the
@@ -97,6 +153,74 @@ export type GuardedNode<F extends (...args: any[]) => any> = F & {
 };
 
 /**
+ * A genuinely immutable, fully decoupled rebuild of `value` — the fallback path taken when
+ * `structuredClone` cannot clone the value being snapshotted (a function, a class instance
+ * `structuredClone` refuses, a `Map`/`Set`/`Date`/`RegExp` sharing a graph with something
+ * unclonable, a `Symbol`, a `BigInt`, ...). NEVER returns the live reference the way a bare
+ * shallow copy would: safe JSON-primitive leaves (`string`/`number`/`boolean`/`null`) pass
+ * through verbatim; plain objects and arrays are rebuilt fresh, recursively; anything else
+ * becomes a safe STRING representation, never the live object.
+ *
+ * ROUND 2 CORRECTION (a parallel adversarial review, TS mirror of the Python batch-2 pass):
+ * the previous fallback here was a bare shallow copy of `raw` — `{args: [...args]}` makes a
+ * fresh OUTER array, but every element INSIDE it is the same live reference as the real call
+ * arguments, so a callable that mutates one of them after the "snapshot" was taken would be
+ * observed through the snapshot too, on exactly the object(s) `structuredClone` could not
+ * itself clone. Reproduced directly before fixing: `snap.args[0] === liveArg` was `true`, and
+ * a later mutation of `liveArg` was visible through `snap`. `structuredClone`'s OWN success
+ * path was already safe (verified directly: it does not consult a `toJSON` method or any
+ * other user-overridable protocol the way Python's `copy.deepcopy` consults `__deepcopy__` —
+ * a hostile class's own `toJSON` returning fabricated data is simply ignored, and the clone is
+ * never the same reference) — only the FAILURE path aliased. This function closes that gap
+ * unconditionally, the same invariant every Python adapter's own `_freeze()` already holds
+ * (see e.g. `adapters/langchain.py`'s `_freeze()`): the snapshot's independence from the live
+ * object graph must hold on its own, never leaning on `structuredClone`'s support matrix
+ * happening to overlap with what the audit-log's own JCS canonicalizer (`params.ts`) can
+ * hash — the two are not proven to always agree on what counts as "unsupported".
+ *
+ * `seen` guards a circular reference on the path this function itself walks:
+ * `structuredClone` handles cycles natively, but the whole point of this function is the
+ * cases it could NOT handle, one of which could still be cyclic.
+ *
+ * Exported — not part of this adapter's semantic contract (it is an internal fallback, not a
+ * feature callers configure), but its own aliasing-safety invariant is worth a direct unit
+ * test in isolation, the same way every Python adapter's `_freeze()` is imported directly by
+ * its own tests: the audit log never exposes the raw snapshot value it produces (only its
+ * hash — see `params.ts`'s own doc comment), so "does this alias a live mutable object" is
+ * not otherwise observable from outside this module.
+ */
+export function freeze(value: unknown, seen: WeakSet<object> = new WeakSet()): Json {
+  if (value === null || value === undefined) return null;
+  const t = typeof value;
+  if (t === "string" || t === "number" || t === "boolean") return value as Json;
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return "<circular>";
+    seen.add(value);
+    return value.map((v) => freeze(v, seen)) as Json;
+  }
+  if (t === "object") {
+    const proto = Object.getPrototypeOf(value);
+    if (proto === Object.prototype || proto === null) {
+      const obj = value as object;
+      if (seen.has(obj)) return "<circular>";
+      seen.add(obj);
+      const out: Record<string, Json> = {};
+      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+        out[k] = freeze(v, seen);
+      }
+      return out;
+    }
+  }
+  // A function, a class instance, a Map/Set/Date/RegExp, a Symbol, a BigInt, or anything else
+  // structuredClone itself could not handle — never the live reference.
+  try {
+    return String(value);
+  } catch {
+    return `<unrepresentable ${t}>`;
+  }
+}
+
+/**
  * An IMMUTABLE snapshot of the call's arguments, taken BEFORE the wrapped callable runs and
  * reused for BOTH `authorizedParams` (`check`) and `invokedParams` (`recordOutcome`) — so a
  * callable that mutates its own inputs in place cannot make this adapter observe two different
@@ -108,10 +232,9 @@ function snapshotParams(args: readonly unknown[]): Json {
   try {
     return structuredClone(raw) as unknown as Json;
   } catch {
-    // Best-effort: something in here isn't structured-cloneable (a live socket, a function, ...).
-    // Fall back to the shallow copy — a residual risk only if THAT specific object is later
-    // mutated in place, a rare edge case documented here rather than silently claimed away.
-    return raw as unknown as Json;
+    // structuredClone could not clone something in here (a live socket, a function, ...) —
+    // freeze() rebuilds a genuinely independent snapshot rather than aliasing the live args.
+    return freeze(raw);
   }
 }
 
@@ -365,7 +488,9 @@ export function guardTool<T extends ToolLike>(
     try {
       return structuredClone(raw) as unknown as Json;
     } catch {
-      return raw as unknown as Json;
+      // See snapshotParams' own freeze() call above: never alias the live tool-call args on a
+      // structuredClone failure.
+      return freeze(raw);
     }
   }
 

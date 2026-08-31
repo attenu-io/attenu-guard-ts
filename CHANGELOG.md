@@ -7,6 +7,54 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- **Adapter mirror of the Python batch-1/batch-2 adversarial review.** The TS package ships
+  exactly one adapter surface (`src/adapters/langgraph.ts` — `package.json`'s `exports` map
+  declares nothing besides `.` and `./adapters/langgraph`; no A2A, no generic wrapper, no
+  separate LangChain.js seam), and execution binding was already fully wired into both
+  `guardNode` and `guardTool` as of 0.4.0. Each Python defect class was checked against this
+  specific adapter, against pinned `@langchain/core@1.2.9`/`@langchain/langgraph@1.4.13` source
+  (installed and grepped directly, not assumed), rather than ported by analogy — see the module
+  doc comment's own "Adversarial review" section for the full per-class evidence. Six of the
+  seven classes came back genuinely inapplicable to this adapter's architecture (no composable
+  middleware chain in either pinned framework package; one wrapper per call, no second gate; no
+  cross-hook correlation map to collide or grow unbounded; `isDeferredResult` already covers
+  JavaScript's whole lazy-result landscape; no external multi-phase hook dispatch to lose an
+  event across; `src/`'s only runtime import is a lazy `@langchain/langgraph`, correctly
+  undeclared as a hard dependency, matching the README's own "zero runtime dependencies" claim).
+  One real, TS-specific gap was found in the snapshot-commitment family and fixed:
+  - `snapshotParams`/`snapshotToolParams`'s fallback, taken when `structuredClone` cannot clone
+    the value being snapshotted (a function, a class instance it refuses, anything sharing an
+    object graph with one of those), was a bare shallow copy — `{args: [...args]}` makes a fresh
+    OUTER array, but every element INSIDE it is the same live reference as the real call
+    arguments. Reproduced directly before fixing: `snapshot.args[0] === liveArg` was `true`, and
+    a mutation of `liveArg` after the call was visible through the "snapshot" — violating the
+    adapter's own documented guarantee ("an IMMUTABLE snapshot... taken BEFORE the wrapped
+    callable runs"). Checked the specific `toJSON` vector first: `structuredClone` does NOT
+    consult a `toJSON` method or any other user-overridable protocol the way Python's
+    `copy.deepcopy` consults `__deepcopy__` (verified empirically — a hostile class's own
+    `toJSON` returning fabricated data is simply ignored, and a successful clone is never the
+    same reference); only the FAILURE path aliased.
+  - Fixed with a new `freeze()` function (exported for direct testing, the same reason every
+    Python adapter's own `_freeze()` is imported directly by its tests — the audit log never
+    exposes the raw snapshot value, only its hash, so "does this alias" is not otherwise
+    observable): safe JSON-primitive leaves pass through verbatim, plain objects/arrays are
+    rebuilt fresh and recursively, and anything else (a function, a class instance, a
+    `Map`/`Set`/`Date`/`RegExp`, a `Symbol`, a `BigInt`) becomes a safe string representation —
+    never the live reference. This is `structuredClone`'s support matrix happening to overlap
+    with what the audit log's own JCS canonicalizer (`params.ts`) can hash, unconditionally,
+    matching the same invariant every Python adapter's `_freeze()` already holds, rather than
+    scoped narrowly to only the cases proven to reach a hash mismatch. Guards a circular
+    reference with a `WeakSet` (`structuredClone` handles cycles natively; the whole point of
+    this function is the cases it could NOT handle, one of which could still be cyclic). A
+    welcome side effect: because `freeze()` sanitizes an otherwise-unsupported value BEFORE it
+    is ever handed to `params.ts`'s `commit()`, a call that used to commit no hash at all
+    (`paramsHashReason: "unsupported"`) now commits a real, verifiable one.
+  - Tests added in `test/adapter-langgraph.test.ts`: two direct unit tests on `freeze()` itself
+    (never aliases the unclonable value's own case; never aliases a mutable SIBLING sharing the
+    same object graph as an unclonable value — the mixed case), one guarding the circular
+    reference, and one end-to-end test per wrapper (`guardNode`, `guardTool`) driving an
+    unclonable argument through the real call path and asserting a genuine, matching
+    `authorizedParamsHash`/`invokedParamsHash` pair is committed rather than `"unsupported"`.
 - **D14 — `Guard.check()` registered a `PRE_HOOK_ONLY` allow as pending, wedging `complete()`
   forever.** Mirrors the fix landing in the Python `attenu-guard` reference implementation
   (`guard.py`, same defect, same root cause): `registerPending` ran unconditionally for every

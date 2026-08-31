@@ -11,6 +11,7 @@ import test from "node:test";
 import {
   addGuardedNode,
   delegateTo,
+  freeze,
   guardNode,
   guardTool,
   guardTools,
@@ -481,4 +482,83 @@ test("a v1 guard's guarded async node stays sync and returns an unawaited promis
   const result = node({ rows: 1 });
   assert.ok(result instanceof Promise); // ...that returned an unawaited promise
   assert.deepEqual(await result, { ok: true, rows: 1 });
+});
+
+// =================================================================================================
+// A parallel adversarial review, TS mirror of the Python batch-2 pass: freeze()'s own aliasing-
+// safety invariant when structuredClone cannot itself clone the value being snapshotted, and both
+// wrappers' own wiring into it.
+// =================================================================================================
+
+test("freeze never aliases a live mutable object structuredClone cannot itself clone", () => {
+  const mutable: { note: string; mutated?: boolean } = { note: "before" };
+  const raw = { args: [mutable, () => {}] }; // the function forces structuredClone to fail
+  const frozen = freeze(raw) as { args: unknown[] };
+  assert.notEqual(frozen.args[0], mutable); // NOT the same reference
+  assert.deepEqual(frozen.args[0], { note: "before" }); // captured the pre-mutation shape
+  mutable.mutated = true;
+  assert.deepEqual(frozen.args[0], { note: "before" }); // unaffected by the later mutation
+});
+
+test("freeze never aliases the unclonable value's mutable SIBLING (the mixed case)", () => {
+  // An UNCLONEABLE value (the function) forces the whole structuredClone attempt to fail; a
+  // SEPARATE, otherwise perfectly clonable MUTABLE sibling shares the same object graph. The
+  // sibling must not be silently aliased just because something ELSE in the same structure
+  // broke the fast path.
+  const sibling: { count: number } = { count: 1 };
+  const unclonable = () => {};
+  const frozen = freeze({ sibling, unclonable }) as { sibling: unknown };
+  assert.notEqual(frozen.sibling, sibling);
+  assert.deepEqual(frozen.sibling, { count: 1 });
+  sibling.count = 999;
+  assert.deepEqual(frozen.sibling, { count: 1 });
+});
+
+test("freeze guards a circular reference instead of looping forever", () => {
+  const circular: { self?: unknown } = {};
+  circular.self = circular;
+  const frozen = freeze(circular) as { self: unknown };
+  assert.equal(frozen.self, "<circular>");
+});
+
+test("a guarded node with an unclonable argument still authorizes, runs, and commits a real hash", () => {
+  const g = supervisorV2();
+  const node = guardNode(
+    g,
+    "crm.read",
+    (payload: { note: string; mutated?: boolean }, _cb: () => void) => {
+      payload.mutated = true; // mutate the wrapper's own input in place, same as the existing test above
+      return { ok: true };
+    },
+    { contextFn: () => ({ rows: 1 }) },
+  );
+  const arg = { note: "before" };
+  const result = node(arg, () => {}); // the unclonable second argument forces the freeze() fallback
+  assert.deepEqual(result, { ok: true });
+  const entries = g.auditLog().entries;
+  const allow = entries.find((e) => e["event"] === "allow")!;
+  const outcome = entries.find((e) => e["event"] === "outcome")!;
+  // freeze() sanitizes the unclonable value to a safe string BEFORE it is ever handed to the
+  // hash commitment, so -- unlike the pre-fix bare shallow-copy fallback, which left the raw
+  // function value in place for the commitment to reject -- a real hash is committed here, not
+  // paramsHashReason: "unsupported".
+  assert.ok(allow["authorized_params_hash"]);
+  assert.equal(allow["authorized_params_hash"], outcome["invoked_params_hash"]);
+  assert.equal("params_hash_reason" in allow, false);
+});
+
+test("a guarded tool with an unclonable argument still authorizes, runs, and commits a real hash", () => {
+  const g = supervisorV2();
+  const guarded = guardTool(g, fakeTool("crm_query", (input: any) => ({ rows: input.rows })), {
+    scope: "crm.read",
+    contextFn: (input: any) => ({ rows: toolArgs(input).rows }),
+  });
+  const result = guarded.invoke({ rows: 5, cb: () => {} }); // the unclonable cb forces the fallback
+  assert.deepEqual(result, { rows: 5 });
+  const entries = g.auditLog().entries;
+  const allow = entries.find((e) => e["event"] === "allow")!;
+  const outcome = entries.find((e) => e["event"] === "outcome")!;
+  assert.ok(allow["authorized_params_hash"]);
+  assert.equal(allow["authorized_params_hash"], outcome["invoked_params_hash"]);
+  assert.equal("params_hash_reason" in allow, false);
 });
