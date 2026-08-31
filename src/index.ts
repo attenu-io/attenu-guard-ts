@@ -32,11 +32,39 @@
 export { Authority, AuthorityError } from "./authority.js";
 export type { AuthorityInit, AuthorityWire } from "./authority.js";
 
-export { Guard, AuthorityDenied } from "./guard.js";
-export type { CheckOptions, IssueOptions, RecordDenialOptions } from "./guard.js";
+export { Guard, AuthorityDenied, DuplicateOutcomeError } from "./guard.js";
+export type {
+  AdapterInfo,
+  CheckOptions,
+  IssueOptions,
+  ReceiptInfo,
+  RecordDenialOptions,
+  RecordOutcomeOptions,
+} from "./guard.js";
 
-export { Decision, Reason, ReasonCode, Disposition, DISPOSITIONS } from "./reasons.js";
-export type { DispositionValue, ReasonCodeValue, ReasonInit } from "./reasons.js";
+export {
+  BODY_STATES,
+  CAPTURES,
+  DISPOSITIONS,
+  BodyState,
+  Capture,
+  CompletionResult,
+  Decision,
+  Disposition,
+  Reason,
+  ReasonCode,
+} from "./reasons.js";
+export type {
+  BodyStateValue,
+  CaptureValue,
+  DispositionValue,
+  ReasonCodeValue,
+  ReasonInit,
+} from "./reasons.js";
+
+export { PARAMS_C14N_VERSION, PARAMS_HASH_REASONS, ParamsHashReason, SALT_HEX_LEN, decodeSalt } from "./params.js";
+export type { ParamsHashReasonValue } from "./params.js";
+export { commit as commitParams } from "./params.js";
 
 export {
   Allow,
@@ -55,7 +83,7 @@ export {
 } from "./ceilings.js";
 export type { Ceiling, CeilingClass, Context } from "./ceilings.js";
 
-export { AuditLog, GENESIS, SCHEMA_VERSION, chainIdOf, hashEntry } from "./audit.js";
+export { AuditLog, CommittedAuditError, GENESIS, SCHEMA_VERSION, chainIdOf, hashEntry } from "./audit.js";
 export type { Anchor, AuditLogInit, LedgerEntry, Sink } from "./audit.js";
 
 export { Chain, ManualClock, MonotonicClock } from "./chain.js";
@@ -80,6 +108,7 @@ export type {
   Bundle,
   DelegationGraph,
   DenialRow,
+  ExecutionBinding,
   ExportOptions,
   GraphNode,
   RedactionReport,

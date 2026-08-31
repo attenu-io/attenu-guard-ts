@@ -36,6 +36,8 @@ import { createHash } from "node:crypto";
 import { AuditLog, SCHEMA_VERSION, chainIdOf, hashEntry, GENESIS, type Anchor, type LedgerEntry } from "./audit.js";
 import { Authority } from "./authority.js";
 import type { Context } from "./ceilings.js";
+import { CAPTURES, BODY_STATES, BodyState, Capture } from "./reasons.js";
+import { PARAMS_HASH_REASONS } from "./params.js";
 import type { Signer } from "./wire.js";
 
 /**
@@ -73,6 +75,19 @@ export const LEDGER_FIELDS: ReadonlySet<string> = new Set([
   "strikes",
   "mode",
   "disposition",
+  // 0.9.0 execution binding (schemaVersion=2 chains): every field named in the spec.
+  "call_id",
+  "capture",
+  "adapter",
+  "authorized_params_hash",
+  "params_hash_reason",
+  "params_salt",
+  "body_state",
+  "error_code",
+  "invoked_params_hash",
+  "duration_ms",
+  "receipt",
+  "pending_at_kill",
 ]);
 
 /**
@@ -99,8 +114,26 @@ export interface RedactionReport {
   violations: RedactionViolation[];
 }
 
-/** Bundle schema versions this build knows how to verify. */
-export const SUPPORTED_BUNDLE_VERSIONS: ReadonlySet<number> = new Set([SCHEMA_VERSION]);
+/**
+ * Bundle schema versions this build knows how to verify. 2 (0.9.0): execution binding — callId,
+ * capture/adapter, outcome events, params commitments. v1 bundles verify exactly as before;
+ * `executionBinding` reports `{status: "not applicable"}` for them (docs/execution-binding spec
+ * section 9).
+ */
+export const SUPPORTED_BUNDLE_VERSIONS: ReadonlySet<number> = new Set([1, 2]);
+
+/**
+ * The chain's declared schema version, read off the `root` entry (falls back to `SCHEMA_VERSION`
+ * for an empty/rootless list — the historical default).
+ */
+function bundleVersion(entries: readonly LedgerEntry[]): number {
+  for (const e of entries) {
+    if (toPlain(e["event"]) === "root" && "v" in e) {
+      return toPlain(e["v"]) as number;
+    }
+  }
+  return SCHEMA_VERSION;
+}
 
 export interface Bundle {
   v: number;
@@ -168,7 +201,7 @@ export function anchorFor(
     seq = typeof rawSeq === "number" ? rawSeq : entries.length - 1;
     head = last["hash"] as string;
   }
-  const body = { v: SCHEMA_VERSION, c14n: "JCS" as const, chain_id: chainIdOf(entries), seq, head, ts };
+  const body = { v: bundleVersion(entries), c14n: "JCS" as const, chain_id: chainIdOf(entries), seq, head, ts };
   return { ...body, kid: signer.kid ?? null, sig: signer.sign(canonicalBytes(body)).toString("hex") };
 }
 
@@ -225,7 +258,7 @@ export function exportBundle(
   const anchor = anchorFor(entries, signer, options.ts ?? 0);
   anchor.verified = AuditLog.verifyAnchor(entries, anchor as Record<string, CJson>, signer)[0];
   return {
-    v: SCHEMA_VERSION,
+    v: bundleVersion(entries),
     c14n: "JCS",
     chain_id: chainIdOf(entries),
     entries,
@@ -417,6 +450,304 @@ function pyRepr(value: Json): string {
   return JSON.stringify(value);
 }
 
+// =============================================================================================
+// Execution binding (0.9.0): offline checks over callId/allow/outcome, from the ledger alone —
+// docs/execution-binding spec section 5. schemaVersion=2 chains only; a v1 bundle's
+// executionBinding is `{status: "not applicable"}`.
+// =============================================================================================
+
+const HEX32 = /^[0-9a-f]{32}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
+
+function validCallId(e: LedgerEntry): string | null {
+  const cid = toPlain(e["call_id"]);
+  if (typeof cid !== "string" || !HEX32.test(cid)) {
+    return `call_id missing or malformed (${pyRepr(cid ?? null)})`;
+  }
+  return null;
+}
+
+function validHashField(e: LedgerEntry, field: string): string | null {
+  const v = toPlain(e[field]);
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "string" || !HEX64.test(v)) {
+    return `${field} malformed (${pyRepr(v)})`;
+  }
+  return null;
+}
+
+function isPlainRecord(v: unknown): v is Record<string, Json> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+function validateAllow(e: LedgerEntry): string | null {
+  let err = validCallId(e);
+  if (err) return err;
+  const capture = toPlain(e["capture"]) as Json;
+  if (capture !== null && capture !== undefined && !CAPTURES.has(capture as string)) {
+    return `capture ${pyRepr(capture)} not a known value`;
+  }
+  if (capture !== null && capture !== undefined) {
+    const adapter = toPlain(e["adapter"]);
+    if (!isPlainRecord(adapter) || !["module", "version", "hook_path"].every((k) => k in adapter)) {
+      return "adapter missing module/version/hook_path alongside capture";
+    }
+  }
+  err = validHashField(e, "authorized_params_hash");
+  if (err) return err;
+  const reason = toPlain(e["params_hash_reason"]) as Json;
+  if (reason !== null && reason !== undefined && !PARAMS_HASH_REASONS.has(reason as string)) {
+    return `params_hash_reason ${pyRepr(reason)} not a known value`;
+  }
+  if (
+    reason !== null &&
+    reason !== undefined &&
+    toPlain(e["authorized_params_hash"]) !== null &&
+    toPlain(e["authorized_params_hash"]) !== undefined
+  ) {
+    return "params_hash_reason present alongside authorized_params_hash (illegal conditional field)";
+  }
+  return null;
+}
+
+function validateDeny(e: LedgerEntry): string | null {
+  return validCallId(e);
+}
+
+function validateOutcome(e: LedgerEntry): string | null {
+  const err0 = validCallId(e);
+  if (err0) return err0;
+  const bodyState = toPlain(e["body_state"]) as Json;
+  if (typeof bodyState !== "string" || !BODY_STATES.has(bodyState)) {
+    return `body_state ${pyRepr(bodyState ?? null)} not a known value`;
+  }
+  const errorCode = toPlain(e["error_code"]);
+  if (bodyState === BodyState.RAISED) {
+    if (typeof errorCode !== "string" || !errorCode) {
+      return "error_code required when body_state == raised";
+    }
+  } else if (errorCode !== null && errorCode !== undefined) {
+    return "error_code present but body_state != raised (illegal conditional field)";
+  }
+  const duration = toPlain(e["duration_ms"]);
+  if (typeof duration !== "number" || !Number.isInteger(duration) || duration < 0) {
+    return `duration_ms invalid (${pyRepr((duration as Json) ?? null)})`;
+  }
+  const err1 = validHashField(e, "invoked_params_hash");
+  if (err1) return err1;
+  const reason = toPlain(e["params_hash_reason"]) as Json;
+  if (reason !== null && reason !== undefined && !PARAMS_HASH_REASONS.has(reason as string)) {
+    return `params_hash_reason ${pyRepr(reason)} not a known value`;
+  }
+  if (
+    reason !== null &&
+    reason !== undefined &&
+    toPlain(e["invoked_params_hash"]) !== null &&
+    toPlain(e["invoked_params_hash"]) !== undefined
+  ) {
+    return "params_hash_reason present alongside invoked_params_hash (illegal conditional field)";
+  }
+  const receipt = toPlain(e["receipt"]);
+  if (receipt !== null && receipt !== undefined) {
+    if (!isPlainRecord(receipt) || !["type", "ref", "digest"].every((k) => k in receipt)) {
+      return "receipt malformed (expected type/ref/digest)";
+    }
+  }
+  return null;
+}
+
+/**
+ * `complete | partial | none`, from how many calls that have BOTH an allow and an outcome carry
+ * both hashes (spec section 5). No comparable calls at all -> `"none"` (no coverage shown).
+ */
+function paramsCoverage(
+  allows: ReadonlyMap<string, LedgerEntry>,
+  outcomes: ReadonlyMap<string, LedgerEntry>,
+): "complete" | "partial" | "none" {
+  let total = 0;
+  let both = 0;
+  for (const [cid, oc] of outcomes) {
+    const a = allows.get(cid);
+    if (a === undefined) continue;
+    total += 1;
+    if (toPlain(a["authorized_params_hash"]) && toPlain(oc["invoked_params_hash"])) both += 1;
+  }
+  if (total === 0 || both === 0) return "none";
+  return both === total ? "complete" : "partial";
+}
+
+export type ExecutionBinding =
+  | { status: "not applicable" }
+  | {
+      aggregate: "clean" | "incomplete" | "failed";
+      params_coverage: "complete" | "partial" | "none";
+      per_call: Record<string, "observed" | "unobserved" | "unaccounted">;
+      per_node_lifecycle: Record<string, "finalized" | "in_progress" | "revoked" | "revoked_with_pending">;
+      failures: string[];
+    };
+
+function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): ExecutionBinding {
+  if (bundleV !== 2) return { status: "not applicable" };
+
+  const failures: string[] = [];
+  const seenCallIds = new Map<string, [string, string | null, number | null]>(); // callId -> [event, node, seq]
+  const allows = new Map<string, LedgerEntry>();
+  const outcomes = new Map<string, LedgerEntry>();
+  const invalidAllowIds = new Set<string>();
+  const nodes = new Set<string>();
+  const finalizedNodes = new Set<string>();
+  const revokedNodes = new Set<string>();
+
+  for (const e of entries) {
+    const ev = toPlain(e["event"]);
+    const node = toPlain(e["node"]) as string | null;
+    if (ev === "root" || ev === "spawn") {
+      if (node !== null) nodes.add(node);
+    } else if (ev === "done") {
+      if (node !== null) finalizedNodes.add(node);
+    } else if (ev === "kill") {
+      for (const r of (toPlain(e["revoked"]) as string[] | null) ?? []) revokedNodes.add(r);
+    }
+
+    if (ev === "allow" || ev === "deny") {
+      const cid = toPlain(e["call_id"]) as string | null;
+      const seq = toPlain(e["seq"]) as number | null;
+      if (cid !== null && cid !== undefined) {
+        const prior = seenCallIds.get(cid);
+        if (prior !== undefined) {
+          failures.push(
+            `duplicate_call_id: call_id ${cid} on seq ${pyRepr(seq)} (${ev}) already used at seq ` +
+              `${pyRepr(prior[2])} (${prior[0]})`,
+          );
+        } else {
+          seenCallIds.set(cid, [ev, node, seq]);
+        }
+      }
+      const err = ev === "allow" ? validateAllow(e) : validateDeny(e);
+      if (err) {
+        failures.push(`invalid_${ev}: ${err} (seq ${pyRepr(seq)})`);
+        if (ev === "allow" && cid !== null && cid !== undefined) invalidAllowIds.add(cid);
+        continue;
+      }
+      if (ev === "allow" && cid !== null && cid !== undefined) allows.set(cid, e);
+    } else if (ev === "outcome") {
+      const cid = toPlain(e["call_id"]) as string | null;
+      const seq = toPlain(e["seq"]) as number | null;
+      const err = validateOutcome(e);
+      if (err) {
+        failures.push(`invalid_outcome: ${err} (seq ${pyRepr(seq)})`);
+        continue;
+      }
+      if (cid !== null && outcomes.has(cid)) {
+        failures.push(
+          `duplicate_outcome: call_id ${cid} at seq ${pyRepr(seq)} (first at seq ` +
+            `${pyRepr(toPlain(outcomes.get(cid)!["seq"]) as Json)})`,
+        );
+        continue;
+      }
+      if (cid !== null) outcomes.set(cid, e);
+    }
+  }
+
+  // Bind each outcome to its allow: outcome_without_allow / cross_ref / outcome_before_allow /
+  // params_mismatch.
+  for (const [cid, oc] of outcomes) {
+    const allowE = allows.get(cid);
+    if (allowE === undefined) {
+      failures.push(`outcome_without_allow: call_id ${cid} at seq ${pyRepr(toPlain(oc["seq"]) as Json)} has no allow in this chain`);
+      continue;
+    }
+    if (toPlain(allowE["node"]) !== toPlain(oc["node"])) {
+      failures.push(
+        `cross_ref: call_id ${cid} allow on node ${pyRepr(toPlain(allowE["node"]) as Json)} but ` +
+          `outcome on node ${pyRepr(toPlain(oc["node"]) as Json)}`,
+      );
+    }
+    const ocSeq = toPlain(oc["seq"]);
+    const allowSeq = toPlain(allowE["seq"]);
+    if (!(typeof ocSeq === "number" && typeof allowSeq === "number" && ocSeq > allowSeq)) {
+      failures.push(
+        `outcome_before_allow: call_id ${cid} outcome seq ${pyRepr((ocSeq as Json) ?? null)} not ` +
+          `after allow seq ${pyRepr((allowSeq as Json) ?? null)}`,
+      );
+    }
+    const ah = toPlain(allowE["authorized_params_hash"]);
+    const ih = toPlain(oc["invoked_params_hash"]);
+    if (ah !== null && ah !== undefined && ih !== null && ih !== undefined && ah !== ih) {
+      failures.push(`params_mismatch: call_id ${cid} authorized_params_hash ${ah} != invoked_params_hash ${ih}`);
+    }
+  }
+
+  // Per-call observation + per-node pending, from valid allows only.
+  const perCall: Record<string, "observed" | "unobserved" | "unaccounted"> = {};
+  const nodePending = new Map<string, string[]>();
+  for (const [cid, allowE] of allows) {
+    if (invalidAllowIds.has(cid)) continue;
+    // Spec order matters: "observed" (an outcome exists, bound correctly) is checked FIRST,
+    // unconditionally — an outcome that actually arrived is observed regardless of what capture
+    // was declared (or not declared) at allow time. Only once no outcome exists does capture
+    // decide unobserved (none was promised) vs unaccounted (one was, and is absent).
+    if (outcomes.has(cid)) {
+      perCall[cid] = "observed";
+      continue;
+    }
+    const capture = toPlain(allowE["capture"]);
+    if (capture === null || capture === undefined || capture === Capture.PRE_HOOK_ONLY) {
+      perCall[cid] = "unobserved";
+    } else {
+      perCall[cid] = "unaccounted";
+      const node = toPlain(allowE["node"]) as string;
+      const list = nodePending.get(node) ?? [];
+      list.push(cid);
+      nodePending.set(node, list);
+    }
+  }
+
+  // Per-node lifecycle. "revoked" (clean kill, nothing pending) is not one of the spec's three
+  // named states (finalized/in_progress/revoked_with_pending) — it names the gap those three
+  // leave for a cleanly-killed node, distinct from revoked_with_pending, and never escalates the
+  // aggregate (mirrors the Python reference implementation's report).
+  const lifecycle: Record<string, "finalized" | "in_progress" | "revoked" | "revoked_with_pending"> = {};
+  for (const n of nodes) {
+    if (finalizedNodes.has(n)) {
+      lifecycle[n] = "finalized";
+    } else if (revokedNodes.has(n)) {
+      lifecycle[n] = (nodePending.get(n)?.length ?? 0) > 0 ? "revoked_with_pending" : "revoked";
+    } else {
+      lifecycle[n] = "in_progress";
+    }
+  }
+
+  // Aggregate: clean < incomplete < failed — never downgrade once escalated.
+  const order: Record<string, number> = { clean: 0, incomplete: 1, failed: 2 };
+  let aggregate: "clean" | "incomplete" | "failed" = "clean";
+  const escalate = (level: "clean" | "incomplete" | "failed") => {
+    if (order[level]! > order[aggregate]!) aggregate = level;
+  };
+
+  if (failures.length > 0) {
+    // Any binding failure or invalid record is a genuine inconsistency, not a benign gap — worse
+    // than "incomplete", which the spec reserves for gaps that are no producer fault.
+    escalate("failed");
+  }
+  for (const [n, state] of Object.entries(lifecycle)) {
+    if (state === "finalized" && (nodePending.get(n)?.length ?? 0) > 0) {
+      escalate("failed"); // an unaccounted call in a finalized node (spec section 5)
+    } else if (state === "in_progress" || state === "revoked_with_pending") {
+      escalate("incomplete");
+    }
+  }
+  if (Object.values(perCall).some((s) => s === "unobserved")) escalate("incomplete");
+
+  return {
+    aggregate,
+    params_coverage: paramsCoverage(allows, outcomes),
+    per_call: perCall,
+    per_node_lifecycle: lifecycle,
+    failures,
+  };
+}
+
 export interface VerifyReport {
   ok: boolean;
   checks: VerifyChecks;
@@ -424,6 +755,7 @@ export interface VerifyReport {
   nodes: number;
   actions_checked: number;
   chain_id: Json;
+  execution_binding: ExecutionBinding;
 }
 
 /**
@@ -462,6 +794,20 @@ export function verifyBundle(bundle: Partial<Bundle>, signer: Signer | null = nu
   if (anchorPresent && anchorV !== bundleV) {
     versionOk = false;
     failures.push(`anchor_version_mismatch: anchor v=${pyRepr(anchorV)} != bundle v=${pyRepr(bundleV)}`);
+  }
+  // 0.9.0: a chain is created at ONE schema version and never mixes (spec section 9) — the root
+  // entry's v must equal the bundle's declared v, and no OTHER entry may carry a different v.
+  const rootEntry = entries.find((e) => toPlain(e["event"]) === "root");
+  if (rootEntry !== undefined && toPlain(rootEntry["v"]) !== bundleV) {
+    versionOk = false;
+    failures.push(`root_version_mismatch: root v=${pyRepr(toPlain(rootEntry["v"]) as Json)} != bundle v=${pyRepr(bundleV)}`);
+  }
+  const mixed = Array.from(new Set(entries.map((e) => toPlain(e["v"])).filter((v) => v !== bundleV))).sort(
+    (a, b) => (typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b))),
+  );
+  if (mixed.length > 0) {
+    versionOk = false;
+    failures.push(`mixed_entry_versions: entries declare v in [${mixed.map((v) => pyRepr(v as Json)).join(", ")}], bundle v=${pyRepr(bundleV)}`);
   }
   checks.version = versionOk;
 
@@ -539,6 +885,9 @@ export function verifyBundle(bundle: Partial<Bundle>, signer: Signer | null = nu
   }
   checks.containment = contained;
 
+  const eb: ExecutionBinding = versionOk ? executionBinding(entries, bundleV) : { status: "not applicable" };
+  if ("failures" in eb) failures.push(...eb.failures);
+
   const ok =
     checks.integrity &&
     checks.monotonicity &&
@@ -553,6 +902,7 @@ export function verifyBundle(bundle: Partial<Bundle>, signer: Signer | null = nu
     nodes: auth.size,
     actions_checked: actions,
     chain_id: orNull(bundle.chain_id),
+    execution_binding: eb,
   };
 }
 
