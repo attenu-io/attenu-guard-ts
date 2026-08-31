@@ -33,9 +33,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   — `{status: "not applicable"}` for a schema-version-1 bundle. `verifyBundle` also gains
   `root_version_mismatch`/`mixed_entry_versions` checks (a chain is created at one schema version
   and never mixes), requires exactly one root event (`checks.root`), does strict, null-aware,
-  type-checked schema validation on every conditional field, and accepts an optional
-  `expectedAnchor`/`expectedHead` to verify against an independently retained reference point
-  instead of only the bundle's own enclosed anchor. `AuditLog` gains `CommittedAuditError` (a
+  type-checked schema validation on every conditional field (`capture`/`adapter` are now
+  REQUIRED, not merely paired, on every v2 allow — a bare `check()` with no `capture` supplied
+  gets a truthful guard-attributed `pre_hook_only` default rather than leaving the ledger silent;
+  any allow-only field on a `deny`, or any v2-only field on a `schemaVersion: 1` entry
+  — `v2_field_on_v1` — is invalid), and accepts an optional `expectedAnchor`/`expectedHead` to
+  verify against an independently retained reference point instead of only the bundle's own
+  enclosed anchor. `AuditLog` gains `CommittedAuditError` (a
   post-commit persistence failure after the entry is already in the in-memory chain) and
   overwrite protection (constructing over a `path` that already names a non-empty ledger now
   throws unless `overwrite: true`). The LangGraph adapter (`adapters/langgraph`) is the reference
@@ -45,7 +49,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `abandoned`; wrapping an async callable on a `schemaVersion: 1` guard stays byte-and-type
   unchanged (never itself becomes an async function). Mirrors attenu-guard (Python) 0.9.0's
   execution-binding layer plus its post-review merge-gate hardening, byte-for-byte on every
-  reason-code string; ported test suite: `test/execution-binding.test.ts` (77 cases),
+  reason-code string; ported test suite: `test/execution-binding.test.ts` (82 cases),
   `test/params-c14n-vectors.test.ts` (the shared parity vectors), plus adapter and evidence
   coverage in `test/adapter-langgraph.test.ts`/`test/evidence.test.ts`.
 

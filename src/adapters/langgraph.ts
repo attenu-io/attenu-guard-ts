@@ -71,7 +71,7 @@ import type { Authority } from "../authority.js";
 import type { Json } from "../canonical.js";
 import type { Context } from "../ceilings.js";
 import { BodyState, Capture, type Decision } from "../reasons.js";
-import { VERSION } from "../index.js";
+import { VERSION } from "../version.js";
 
 /** Options shared by every guarded wrapper. */
 export interface GuardOptions {

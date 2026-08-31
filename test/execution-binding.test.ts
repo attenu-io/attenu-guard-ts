@@ -954,16 +954,116 @@ test("invalid allow: adapter value wrong type", () => {
 test("invalid allow: adapter present without capture", () => {
   const signer = new HS256TestSigner(Buffer.from("k"), "k");
   const g = v2Root();
-  g.check("crm.read");
+  g.check("crm.read"); // bare check(): the guard now supplies capture/adapter itself (merge-gate item 4)
   const bundle = bundleFor(g, signer);
   const entries = bundle.entries;
   const idx = entries.findIndex((e) => e["event"] === "allow");
-  entries[idx]!["adapter"] = adapterInfo() as unknown as Json; // adapter present, capture absent -- illegal pairing
+  // Its setup no longer produces a capture-absent allow now that the guard always supplies one,
+  // so delete capture explicitly to isolate "adapter present, capture absent -- illegal pairing".
+  delete entries[idx]!["capture"];
+  entries[idx]!["adapter"] = { module: "test", version: "0", hook_path: "t" } as unknown as Json;
   rehashFrom(entries, idx);
   bundle.anchor = anchorFor(entries, signer);
   const rep = verifyBundle(bundle, signer);
   const eb = rep.execution_binding as any;
   assert.ok(eb.failures.some((f: string) => f.startsWith("invalid_allow:")));
+});
+
+test("invalid allow: missing capture and adapter entirely", () => {
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  g.check("crm.read");
+  const bundle = bundleFor(g, signer);
+  const entries = bundle.entries;
+  const idx = entries.findIndex((e) => e["event"] === "allow");
+  delete entries[idx]!["capture"];
+  delete entries[idx]!["adapter"];
+  rehashFrom(entries, idx);
+  bundle.anchor = anchorFor(entries, signer);
+  const rep = verifyBundle(bundle, signer);
+  const eb = rep.execution_binding as any;
+  assert.ok(eb.failures.some((f: string) => f.startsWith("invalid_allow:")));
+});
+
+// =============================================================================================
+// merge-gate item 4 (a1556b4 completion): the guard now supplies a truthful default when a v2
+// check() gets no capture/adapter; capture+adapter are then REQUIRED on every v2 allow; allow-only
+// fields on a deny are invalid on any schema version; a v1 entry carrying any v2-only field is
+// mixed-version data.
+// =============================================================================================
+
+test("a bare check() gets a guard-supplied pre_hook_only default and still verifies", () => {
+  // A bare check() with no capture supplied is itself pre_hook_only observation, supplied
+  // truthfully by the guard -- not absent. It verifies, reported unobserved (no outcome was
+  // promised), aggregate incomplete (nothing wrong, just nothing more to know).
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  const d = g.check("crm.read"); // no capture/adapter passed by the caller
+  const allow = g.auditLog().entries.find((e) => e["event"] === "allow")!;
+  assert.equal(allow["capture"], Capture.PRE_HOOK_ONLY);
+  assert.equal((allow["adapter"] as any)?.module, "attenu-guard");
+  const rep = verifyBundle(bundleFor(g, signer), signer);
+  assert.equal(rep.ok, true);
+  const eb = rep.execution_binding as any;
+  assert.equal(eb.per_call[d.callId!], "unobserved");
+  assert.equal(eb.aggregate, "incomplete");
+});
+
+test("a v2 allow missing capture or adapter is invalid", () => {
+  // Now that Guard.check() always supplies a default, a v2 allow with neither field can only
+  // arise from a hand-crafted/tampered bundle -- and the verifier must reject it.
+  for (const drop of [["capture"], ["adapter"], ["capture", "adapter"]] as const) {
+    const signer = new HS256TestSigner(Buffer.from("k"), "k");
+    const g = v2Root();
+    g.check("crm.read");
+    const bundle = bundleFor(g, signer);
+    const entries = bundle.entries;
+    const idx = entries.findIndex((e) => e["event"] === "allow");
+    for (const k of drop) delete entries[idx]![k];
+    rehashFrom(entries, idx);
+    bundle.anchor = anchorFor(entries, signer);
+    const rep = verifyBundle(bundle, signer);
+    assert.equal(rep.ok, false, `drop=${drop.join(",")}`);
+    const eb = rep.execution_binding as any;
+    assert.ok(
+      eb.failures.some((f: string) => f.startsWith("invalid_allow:")),
+      `drop=${drop.join(",")}`,
+    );
+  }
+});
+
+test("a deny carrying an allow-only field is invalid", () => {
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  g.check("pay.transfer"); // denied: scope not granted
+  const bundle = bundleFor(g, signer);
+  const entries = bundle.entries;
+  const idx = entries.findIndex((e) => e["event"] === "deny");
+  entries[idx]!["capture"] = Capture.WRAPPER_SYNC; // allow-only field, forged onto a deny
+  rehashFrom(entries, idx);
+  bundle.anchor = anchorFor(entries, signer);
+  const rep = verifyBundle(bundle, signer);
+  assert.equal(rep.ok, false);
+  const eb = rep.execution_binding as any;
+  assert.ok(eb.failures.some((f: string) => f.includes("deny carries allow-only field")));
+});
+
+test("a v1 entry carrying a v2-only field is rejected as mixed-version data", () => {
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = Guard.issue("a", new Authority({ scopes: ["crm.read"], ttl: 60 })); // schemaVersion: 1
+  g.check("crm.read");
+  const bundle = bundleFor(g, signer);
+  const entries = bundle.entries;
+  const idx = entries.findIndex((e) => e["event"] === "allow");
+  entries[idx]!["call_id"] = "ab".repeat(16); // v2-only field forged onto a v1 entry
+  rehashFrom(entries, idx);
+  bundle.anchor = anchorFor(entries, signer);
+  const rep = verifyBundle(bundle, signer);
+  assert.equal(rep.ok, false);
+  assert.deepEqual(Object.keys(rep.execution_binding), ["status", "failures"]);
+  assert.equal((rep.execution_binding as any).status, "not applicable");
+  assert.ok((rep.execution_binding as any).failures.some((f: string) => f.startsWith("v2_field_on_v1:")));
+  assert.ok(rep.failures.some((f) => f.startsWith("v2_field_on_v1:")));
 });
 
 test("invalid allow: explicit null authorized_params_hash", () => {

@@ -149,4 +149,4 @@ export {
 } from "./canonical.js";
 export type { CJson, Json } from "./canonical.js";
 
-export const VERSION = "0.3.0";
+export { VERSION } from "./version.js";

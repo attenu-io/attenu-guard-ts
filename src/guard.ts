@@ -69,6 +69,7 @@ import {
   BODY_STATES,
   BodyState,
   CAPTURES,
+  Capture,
   CompletionResult,
   DISPOSITIONS,
   Decision,
@@ -78,6 +79,7 @@ import {
 } from "./reasons.js";
 import * as paramsMod from "./params.js";
 import { ParamsHashReason } from "./params.js";
+import { VERSION } from "./version.js";
 import { randomBytes } from "node:crypto";
 import type { StrikePolicy } from "./strikes.js";
 
@@ -654,6 +656,14 @@ export class Guard {
             version: adapter!.version,
             hook_path: adapter!.hookPath,
           } as unknown as Json;
+        } else {
+          // A bare check() with no wrapper IS itself an observation, honestly described:
+          // authorization was observed; execution was not. The guard supplies this default
+          // rather than leaving capture/adapter absent, so every v2 allow carries them — the
+          // verifier requires both (merge-gate item 4); the caller-facing API stays optional,
+          // the ledger is not.
+          extra["capture"] = Capture.PRE_HOOK_ONLY;
+          extra["adapter"] = { module: "attenu-guard", version: VERSION, hook_path: "Guard.check" } as unknown as Json;
         }
         const [ph, preason] = this.paramsCommitment(authorizedParams);
         if (ph !== null) extra["authorized_params_hash"] = ph;

@@ -518,29 +518,33 @@ function validateAllow(e: LedgerEntry): string | null {
   let err = validCallId(e);
   if (err) return err;
   if (presentButNull(e, "capture")) {
-    return "capture is explicitly null (must be a valid Capture value or absent)";
+    return "capture is explicitly null (must be a valid Capture value)";
   }
-  const capture = toPlain(e["capture"]) as Json;
+  if (presentButNull(e, "adapter")) {
+    return "adapter is explicitly null (must be a valid adapter object)";
+  }
+  const capture = toPlain(e["capture"]);
   const adapter = toPlain(e["adapter"]);
-  const captureGiven = capture !== null && capture !== undefined;
-  const adapterGiven = adapter !== null && adapter !== undefined;
-  if (captureGiven && !CAPTURES.has(capture as string)) {
-    return `capture ${pyRepr(capture)} not a known value`;
+  // Mandatory on every v2 allow (not merely paired with each other): a bare check() with no
+  // wrapper is ITSELF pre_hook_only observation, and Guard.check() supplies that truthfully —
+  // there is no honest reason for a v2 allow to lack capture/adapter, so absence is now invalid,
+  // not "no claim made" (merge-gate item 4).
+  if (capture === null || capture === undefined) {
+    return "capture is required on every v2 allow";
   }
-  // Pairing is symmetric: capture requires adapter (spec section 2, "together with"), and an
-  // adapter with no capture is meaningless — reject both directions, not only one.
-  if (captureGiven !== adapterGiven) {
-    return "capture and adapter must be present together, or both absent";
+  if (!CAPTURES.has(capture as string)) {
+    return `capture ${pyRepr(capture as Json)} not a known value`;
   }
-  if (adapterGiven) {
-    if (presentButNull(e, "adapter") || !isPlainRecord(adapter)) {
-      return "adapter must be an object with module/version/hook_path";
-    }
-    for (const k of ["module", "version", "hook_path"] as const) {
-      const v = (adapter as Record<string, Json>)[k];
-      if (typeof v !== "string" || !v) {
-        return `adapter[${JSON.stringify(k)}] must be a non-empty string`;
-      }
+  if (adapter === null || adapter === undefined) {
+    return "adapter is required alongside capture on every v2 allow";
+  }
+  if (!isPlainRecord(adapter)) {
+    return "adapter must be an object with module/version/hook_path";
+  }
+  for (const k of ["module", "version", "hook_path"] as const) {
+    const v = (adapter as Record<string, Json>)[k];
+    if (typeof v !== "string" || !v) {
+      return `adapter[${JSON.stringify(k)}] must be a non-empty string`;
     }
   }
   err = validHashField(e, "authorized_params_hash");
@@ -548,8 +552,17 @@ function validateAllow(e: LedgerEntry): string | null {
   return validParamsHashReason(e, "authorized_params_hash");
 }
 
+/** Fields that only ever belong on an `allow` entry — illegal on a `deny`, on any schema version. */
+const ALLOW_ONLY_FIELDS = ["capture", "adapter", "authorized_params_hash", "params_hash_reason"] as const;
+
 function validateDeny(e: LedgerEntry): string | null {
-  return validCallId(e);
+  const err = validCallId(e);
+  if (err) return err;
+  const leaked = ALLOW_ONLY_FIELDS.filter((f) => f in e).sort();
+  if (leaked.length > 0) {
+    return `deny carries allow-only field(s) ${JSON.stringify(leaked)}`;
+  }
+  return null;
 }
 
 function validateOutcome(e: LedgerEntry): string | null {
@@ -652,7 +665,10 @@ function paramsCoverage(
 }
 
 export type ExecutionBinding =
-  | { status: "not applicable" }
+  // `failures` is present on the "not applicable" (v1) shape only when a v2-only field leaked
+  // onto a v1 entry (merge-gate item 4/(c)) — a v1 bundle with no such leak omits it entirely,
+  // matching the historical `{status: "not applicable"}` shape byte for byte.
+  | { status: "not applicable"; failures?: string[] }
   | {
       aggregate: "clean" | "incomplete" | "failed";
       params_coverage: "complete" | "partial" | "none";
@@ -661,7 +677,48 @@ export type ExecutionBinding =
       failures: string[];
     };
 
+/**
+ * Every field the library ever writes only under `schemaVersion: 2` (spec sections 1-7). A
+ * `schemaVersion: 1` chain must carry NONE of them — including `call_id`: v1 never allocates one.
+ */
+const V2_ONLY_FIELDS = [
+  "call_id",
+  "capture",
+  "adapter",
+  "authorized_params_hash",
+  "params_hash_reason",
+  "params_salt",
+  "body_state",
+  "error_code",
+  "invoked_params_hash",
+  "duration_ms",
+  "receipt",
+  "pending_at_kill",
+] as const;
+
+/**
+ * Every v2-only field found on any entry of a `schemaVersion: 1` bundle — mixed-version data,
+ * invalid regardless of which field it is (merge-gate item 4/(c)).
+ */
+function v2FieldLeaksOnV1(entries: readonly LedgerEntry[]): string[] {
+  const failures: string[] = [];
+  for (const e of entries) {
+    const leaked = V2_ONLY_FIELDS.filter((f) => f in e).sort();
+    if (leaked.length > 0) {
+      failures.push(
+        `v2_field_on_v1: seq=${pyRepr(toPlain(e["seq"]) as Json)} event=${pyRepr(toPlain(e["event"]) as Json)} ` +
+          `carries v2-only field(s) ${JSON.stringify(leaked)} on a schemaVersion: 1 entry`,
+      );
+    }
+  }
+  return failures;
+}
+
 function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): ExecutionBinding {
+  if (bundleV === 1) {
+    const leaked = v2FieldLeaksOnV1(entries);
+    return leaked.length > 0 ? { status: "not applicable", failures: leaked } : { status: "not applicable" };
+  }
   if (bundleV !== 2) return { status: "not applicable" };
 
   const failures: string[] = [];
@@ -1046,7 +1103,7 @@ export function verifyBundle(
   checks.containment = contained;
 
   const eb: ExecutionBinding = versionOk ? executionBinding(entries, bundleV) : { status: "not applicable" };
-  if ("failures" in eb) failures.push(...eb.failures);
+  if (eb.failures !== undefined) failures.push(...eb.failures);
 
   // "anchor" and "expected_anchor" are excluded here — both carry a tri-state status string
   // ("not checked"/"verified"/"FAILED"), not a plain pass/fail boolean, and a failed check on
