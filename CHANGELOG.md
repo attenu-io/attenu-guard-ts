@@ -6,6 +6,53 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Execution binding**, opt-in per chain via `Guard.issue(agentId, authority, {schemaVersion: 2})`
+  (schema version 1 is unchanged and remains the default): `check`/`recordDenial` now allocate a
+  `callId` (fail-closed, with meters restored, if `crypto.randomBytes` throws) and return it on
+  `Decision.callId`; `check` gains `authorizedParams`/`capture`/`adapter` options and refuses
+  further calls once the node is `complete()`d (`ReasonCode.NODE_FINALIZED`).
+  `Guard.recordOutcome(callId, bodyState, options)` binds what a body-owning wrapper observed
+  afterwards — `returned`/`raised`/`abandoned`/`deferred`, with `errorCode` required exactly when
+  raised. `complete()` returns a plain `boolean` on a `schemaVersion: 1` chain (byte-and-type
+  unchanged from every prior release) and a `CompletionResult` on `schemaVersion: 2` only — see
+  its doc comment for the JavaScript limits of its truthiness bridge, since unlike Python's
+  `__bool__`, `if (guard.complete())` cannot be made to read `false` there — and refuses on v2
+  while calls are pending; `revoke`/`revokeAgent` snapshot still-pending callIds onto the `kill`
+  entry as `pending_at_kill` without clearing them, so a late `recordOutcome` after a kill is
+  still accepted. `check`/`recordOutcome` roll back meters and re-throw on ANY pre-commit failure
+  (not only a `crypto.randomBytes` failure), and `recordOutcome` marks a call outcomed only after
+  its append actually commits, so a pre-commit failure leaves the call retryable. `Guard.issue`
+  refuses `{schemaVersion: 2, auditOverwrite: true}` — the restart rule has no escape hatch on v2.
+  Arguments are committed via `params_c14n_v1` (`params.ts`): `SHA-256(rawSalt || JCS(params))`,
+  never the raw value; validated against the language-neutral vector file also published for
+  Python (`test/fixtures/params_c14n_v1.json`). `verifyBundle` gains `execution_binding`: per-call
+  observed/unobserved/unaccounted (an outcome must be bound correctly — right node, right order —
+  to count as observed), per-node finalized/in_progress/revoked/revoked_with_pending, an aggregate
+  clean/incomplete/failed, and `params_coverage` (computed over every valid allow) as its own axis
+  — `{status: "not applicable"}` for a schema-version-1 bundle. `verifyBundle` also gains
+  `root_version_mismatch`/`mixed_entry_versions` checks (a chain is created at one schema version
+  and never mixes), requires exactly one root event (`checks.root`), does strict, null-aware,
+  type-checked schema validation on every conditional field (`capture`/`adapter` are now
+  REQUIRED, not merely paired, on every v2 allow — a bare `check()` with no `capture` supplied
+  gets a truthful guard-attributed `pre_hook_only` default rather than leaving the ledger silent;
+  any allow-only field on a `deny`, or any v2-only field on a `schemaVersion: 1` entry
+  — `v2_field_on_v1` — is invalid), and accepts an optional `expectedAnchor`/`expectedHead` to
+  verify against an independently retained reference point instead of only the bundle's own
+  enclosed anchor. `AuditLog` gains `CommittedAuditError` (a
+  post-commit persistence failure after the entry is already in the in-memory chain) and
+  overwrite protection (constructing over a `path` that already names a non-empty ledger now
+  throws unless `overwrite: true`). The LangGraph adapter (`adapters/langgraph`) is the reference
+  wiring: `guardNode`/`guardTool` snapshot a call's arguments once, immutably, before invocation
+  and call `recordOutcome` on a `schemaVersion: 2` guard, sync and async, reporting a
+  generator/promise-like result as `deferred` and an `AbortController`-driven cancellation as
+  `abandoned`; wrapping an async callable on a `schemaVersion: 1` guard stays byte-and-type
+  unchanged (never itself becomes an async function). Mirrors attenu-guard (Python) 0.9.0's
+  execution-binding layer plus its post-review merge-gate hardening, byte-for-byte on every
+  reason-code string; ported test suite: `test/execution-binding.test.ts` (82 cases),
+  `test/params-c14n-vectors.test.ts` (the shared parity vectors), plus adapter and evidence
+  coverage in `test/adapter-langgraph.test.ts`/`test/evidence.test.ts`.
+
 ## [0.3.1] — 2026-08-30
 
 ### Fixed

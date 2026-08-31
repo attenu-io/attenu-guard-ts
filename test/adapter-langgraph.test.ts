@@ -22,13 +22,23 @@ import {
 import { Authority, AuthorityError } from "../src/authority.js";
 import { RowLimit } from "../src/ceilings.js";
 import { AuthorityDenied, Guard } from "../src/guard.js";
-import { Decision, ReasonCode } from "../src/reasons.js";
+import { BodyState, Capture, Decision, ReasonCode } from "../src/reasons.js";
 
 function supervisor(): Guard {
   return Guard.issue(
     "supervisor",
     new Authority({ scopes: ["crm.*"], ceilings: [new RowLimit(1000)], ttl: 3600 }),
     { chainId: "lg", task: "quarterly review" },
+  );
+}
+
+/** Same shape as `supervisor`, but on a `schemaVersion: 2` chain — the guard the
+ * execution-binding wiring tests below check against. */
+function supervisorV2(): Guard {
+  return Guard.issue(
+    "supervisor",
+    new Authority({ scopes: ["crm.*"], ceilings: [new RowLimit(1000)], ttl: 3600 }),
+    { chainId: "lg2", task: "quarterly review", schemaVersion: 2 },
   );
 }
 
@@ -253,4 +263,222 @@ test("a guarded tool drops into a real ToolNode", async (t) => {
 
   const events = g.auditLog().entries.slice(1).map((e) => e["event"]);
   assert.deepEqual(events.sort(), ["allow", "deny"]);
+});
+
+// =============================================================================================
+// 0.9.0: guardNode/guardTool as the reference wiring for recordOutcome — only active when the
+// guard's chain is schemaVersion: 2. Mirrors Python's TestExecutionBindingWiring.
+// =============================================================================================
+
+test("a sync guarded node records a returned outcome with wrapperSync capture", () => {
+  const g = supervisorV2();
+  const node = guardNode(g, "crm.read", (state: { rows: number }) => ({ ok: true, rows: state.rows }), {
+    contextFn: (state: { rows: number }) => ({ rows: state.rows }),
+  });
+  const result = node({ rows: 1 });
+  assert.deepEqual(result, { ok: true, rows: 1 });
+  const entries = g.auditLog().entries;
+  const allow = entries.find((e) => e["event"] === "allow")!;
+  const outcome = entries.find((e) => e["event"] === "outcome")!;
+  assert.equal(allow["capture"], Capture.WRAPPER_SYNC);
+  assert.equal((allow["adapter"] as any)?.module, "attenu-guard/adapters/langgraph");
+  assert.equal(outcome["call_id"], allow["call_id"]);
+  assert.equal(outcome["body_state"], BodyState.RETURNED);
+  assert.ok("authorized_params_hash" in allow);
+  assert.equal(allow["authorized_params_hash"], outcome["invoked_params_hash"]);
+});
+
+test("a sync guarded node that throws records a raised outcome with an errorCode", () => {
+  const g = supervisorV2();
+  const node = guardNode(
+    g,
+    "crm.read",
+    (_state: { rows: number }) => {
+      throw new RangeError("boom");
+    },
+    { contextFn: () => ({ rows: 1 }) },
+  );
+  assert.throws(() => node({ rows: 1 }), RangeError);
+  const outcome = g.auditLog().entries.find((e) => e["event"] === "outcome")!;
+  assert.equal(outcome["body_state"], BodyState.RAISED);
+  assert.equal(outcome["error_code"], "RangeError");
+});
+
+test("a denied guarded-node call never records an outcome", () => {
+  const g = supervisorV2();
+  const node = guardNode(g, "crm.read", (_state: { rows: number }) => ({ ok: true }), {
+    contextFn: (state: { rows: number }) => ({ rows: state.rows }),
+  });
+  assert.throws(() => node({ rows: 5_000 }), AuthorityDenied); // over supervisorV2's RowLimit(1000)
+  assert.deepEqual(g.auditLog().entries.filter((e) => e["event"] === "outcome"), []);
+});
+
+test("an async guarded node uses wrapperAsync capture", async () => {
+  const g = supervisorV2();
+  const node = guardNode(g, "crm.read", async (state: { rows: number }) => ({ ok: true, rows: state.rows }), {
+    contextFn: (state: { rows: number }) => ({ rows: state.rows }),
+  });
+  const result = await node({ rows: 1 });
+  assert.deepEqual(result, { ok: true, rows: 1 });
+  const entries = g.auditLog().entries;
+  const allow = entries.find((e) => e["event"] === "allow")!;
+  const outcome = entries.find((e) => e["event"] === "outcome")!;
+  assert.equal(allow["capture"], Capture.WRAPPER_ASYNC);
+  assert.equal(outcome["body_state"], BodyState.RETURNED);
+});
+
+test("an async guarded node that rejects records a raised outcome", async () => {
+  const g = supervisorV2();
+  const node = guardNode(
+    g,
+    "crm.read",
+    async (_state: { rows: number }) => {
+      throw new TypeError("async boom");
+    },
+    { contextFn: () => ({ rows: 1 }) },
+  );
+  await assert.rejects(() => node({ rows: 1 }), TypeError);
+  const outcome = g.auditLog().entries.find((e) => e["event"] === "outcome")!;
+  assert.equal(outcome["body_state"], BodyState.RAISED);
+  assert.equal(outcome["error_code"], "TypeError");
+});
+
+test("a v1 guard's guarded node gets no callId or outcome", () => {
+  const g = supervisor(); // schemaVersion: 1 (the default)
+  const node = guardNode(g, "crm.read", (_state: { rows: number }) => ({ ok: true }), {
+    contextFn: (state: { rows: number }) => ({ rows: state.rows }),
+  });
+  node({ rows: 1 });
+  const entries = g.auditLog().entries;
+  const allow = entries.find((e) => e["event"] === "allow")!;
+  assert.equal("call_id" in allow, false);
+  assert.equal("capture" in allow, false);
+  assert.deepEqual(entries.filter((e) => e["event"] === "outcome"), []);
+});
+
+test("a sync guarded tool's invoke also records an outcome", () => {
+  const g = supervisorV2();
+  const guarded = guardTool(g, fakeTool("crm_query", (input: any) => `read ${input?.limit ?? 0} rows`), {
+    scope: "crm.read",
+  });
+  const result = guarded.invoke({ limit: 5 });
+  assert.equal(result, "read 5 rows");
+  const entries = g.auditLog().entries;
+  const allow = entries.find((e) => e["event"] === "allow")!;
+  const outcome = entries.find((e) => e["event"] === "outcome")!;
+  assert.equal(allow["capture"], Capture.WRAPPER_SYNC);
+  assert.equal(outcome["body_state"], BodyState.RETURNED);
+  assert.equal(allow["authorized_params_hash"], outcome["invoked_params_hash"]);
+});
+
+test("an async guarded tool's invoke uses wrapperAsync capture and still records", async () => {
+  const g = supervisorV2();
+  const guarded = guardTool(
+    g,
+    fakeTool("crm_query", async (input: any) => `read ${input?.limit ?? 0} rows`),
+    { scope: "crm.read" },
+  );
+  const result = await guarded.invoke({ limit: 5 });
+  assert.equal(result, "read 5 rows");
+  const entries = g.auditLog().entries;
+  const allow = entries.find((e) => e["event"] === "allow")!;
+  const outcome = entries.find((e) => e["event"] === "outcome")!;
+  assert.equal(allow["capture"], Capture.WRAPPER_ASYNC);
+  assert.equal(outcome["body_state"], BodyState.RETURNED);
+});
+
+test("a denied guarded-tool call with onDenied never records an outcome", () => {
+  const g = supervisorV2();
+  const guarded = guardTool(g, fakeTool("wire_money"), {
+    scope: "payments.send",
+    onDenied: (decision) => `refused: ${decision.explain()}`,
+  });
+  const result = guarded.invoke({});
+  assert.match(String(result), /^refused: denied: scope_not_granted/);
+  assert.deepEqual(g.auditLog().entries.filter((e) => e["event"] === "outcome"), []);
+});
+
+// =============================================================================================
+// merge-gate item 3: honest boundary capture — a snapshot taken BEFORE invocation, deferred
+// results, and cancellation. "An async callable object" (an instance whose __call__ is async) is
+// NOT ported: JavaScript has no equivalent — invocation via `fn(...)` requires `fn` to literally
+// be a function, unlike Python where any object can make itself callable via `__call__`, so
+// GuardOptions' `fn` type already rules this case out structurally.
+// =============================================================================================
+
+test("a callable that mutates its own input does not cause a params mismatch", () => {
+  const g = supervisorV2();
+  const received: { seen?: unknown } = {};
+  const node = guardNode(
+    g,
+    "crm.read",
+    (payload: { original: boolean; mutated?: boolean }, rows: number) => {
+      received.seen = { ...payload };
+      payload.mutated = true; // mutate the wrapper's own input in place
+      return { ok: true };
+    },
+    { contextFn: (_payload: unknown, rows: number) => ({ rows }) },
+  );
+  const arg: { original: boolean; mutated?: boolean } = { original: true };
+  node(arg, 1);
+  assert.deepEqual(received.seen, { original: true }); // the body saw it BEFORE mutation
+  assert.equal(arg.mutated, true); // the mutation still happened
+  const entries = g.auditLog().entries;
+  const allow = entries.find((e) => e["event"] === "allow")!;
+  const outcome = entries.find((e) => e["event"] === "outcome")!;
+  // both hashes come from the SAME pre-invocation snapshot -- no false mismatch
+  assert.equal(allow["authorized_params_hash"], outcome["invoked_params_hash"]);
+});
+
+test("a generator return value is reported deferred, not returned", () => {
+  const g = supervisorV2();
+  const node = guardNode(
+    g,
+    "crm.read",
+    function* (): Generator<number> {
+      yield 1;
+      yield 2;
+    },
+    { contextFn: () => ({ rows: 1 }) },
+  );
+  const result = node();
+  assert.deepEqual([...(result as Iterable<number>)], [1, 2]); // the generator itself still works
+  const outcome = g.auditLog().entries.find((e) => e["event"] === "outcome")!;
+  assert.equal(outcome["body_state"], BodyState.DEFERRED);
+});
+
+test("async cancellation via AbortController is reported abandoned and still propagates", async () => {
+  const g = supervisorV2();
+  const node = guardNode(
+    g,
+    "crm.read",
+    async (signal: AbortSignal) => {
+      await new Promise<void>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason));
+      });
+      return { ok: true }; // never reached
+    },
+    { contextFn: () => ({ rows: 1 }) },
+  );
+  const controller = new AbortController();
+  const promise = node(controller.signal);
+  controller.abort();
+  await assert.rejects(
+    () => promise,
+    (err: unknown) => err instanceof Error && err.name === "AbortError",
+  );
+  const outcome = g.auditLog().entries.find((e) => e["event"] === "outcome")!;
+  assert.equal(outcome["body_state"], BodyState.ABANDONED);
+  assert.equal("error_code" in outcome, false);
+});
+
+test("a v1 guard's guarded async node stays sync and returns an unawaited promise", async () => {
+  const g = supervisor(); // schemaVersion: 1 (the default)
+  const node = guardNode(g, "crm.read", async (state: { rows: number }) => ({ ok: true, rows: state.rows }), {
+    contextFn: (state: { rows: number }) => ({ rows: state.rows }),
+  });
+  assert.notEqual(node.constructor.name, "AsyncFunction"); // not itself an async function
+  const result = node({ rows: 1 });
+  assert.ok(result instanceof Promise); // ...that returned an unawaited promise
+  assert.deepEqual(await result, { ok: true, rows: 1 });
 });

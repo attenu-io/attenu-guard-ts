@@ -12,7 +12,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import {
@@ -22,6 +22,7 @@ import {
   toPlain,
   type CJson,
 } from "./canonical.js";
+import type { Decision } from "./reasons.js";
 import type { Signer } from "./wire.js";
 
 export const SCHEMA_VERSION = 1;
@@ -71,17 +72,64 @@ function withoutHash(entry: LedgerEntry): LedgerEntry {
   return out;
 }
 
+/**
+ * Thrown by `AuditLog.append` when the entry was committed to the in-memory chain but persisting
+ * it afterward (the audit-path file write, or a sink) threw.
+ *
+ * The entry IS committed — it is in `.entries`/`.head()` and every later `hash`/`prev_hash` is
+ * computed on top of it. Callers must not retry the operation that produced this entry merely
+ * because this was thrown: retrying would record it a second time. The original error is chained
+ * as `.cause` (the standard `Error` cause, same as Python's `__cause__`).
+ */
+export class CommittedAuditError extends Error {
+  /**
+   * Set by `Guard.check`/`Guard.recordDenial` before this propagates out of them (0.9.0
+   * execution binding — spec section 1: "carries the committed entry and the decision"). Absent
+   * for a `CommittedAuditError` raised by an `AuditLog` used directly, without a `Guard`.
+   */
+  decision?: Decision;
+
+  constructor(
+    readonly entry: LedgerEntry,
+    cause: unknown,
+  ) {
+    super(
+      `entry seq=${String(toPlain(entry["seq"]))} was committed to the audit log, but persisting ` +
+        `it failed: ${String(cause)}`,
+      { cause },
+    );
+    this.name = "CommittedAuditError";
+  }
+}
+
 export interface AuditLogInit {
   /** Where to append the `.jsonl` ledger. Omit for an in-memory log. */
   path?: string | null;
   /** Local sinks; each gets every entry after the file write. */
   sinks?: readonly Sink[];
+  /**
+   * 0.9.0: the schema version this WHOLE chain is created at (1, the default and unchanged
+   * behaviour, or 2 — execution binding). Stated once, on `v` of every entry (see
+   * `Guard.issue({schemaVersion})`); a chain never mixes schema versions.
+   */
+  schemaVersion?: number;
+  /**
+   * Allow constructing over a `path` that already names a non-empty file, replacing it. Default
+   * `false`: refuse (`Error`) rather than silently truncate a pre-existing ledger.
+   */
+  overwrite?: boolean;
 }
 
 /** Append-only, hash-chained decision log. */
 export class AuditLog {
   readonly path: string | null;
-  private readonly sinks: readonly Sink[];
+  readonly schemaVersion: number;
+  /**
+   * Local sinks; each gets every entry after the file write. Public and mutable (not just
+   * constructor-supplied) so a caller — or a test simulating a post-commit persistence failure —
+   * can swap them in after construction.
+   */
+  sinks: readonly Sink[];
   private prev = GENESIS;
   private seq = 0;
   private readonly _entries: LedgerEntry[] = [];
@@ -95,15 +143,25 @@ export class AuditLog {
     const opts: AuditLogInit = typeof init === "string" || init === null ? { path: init } : init;
     this.path = opts.path ?? null;
     this.sinks = opts.sinks ?? [];
+    this.schemaVersion = opts.schemaVersion ?? SCHEMA_VERSION;
+    if (this.schemaVersion !== 1 && this.schemaVersion !== 2) {
+      throw new Error(`unsupported schemaVersion ${this.schemaVersion}; expected 1 or 2`);
+    }
     if (this.path) {
       mkdirSync(dirname(this.path), { recursive: true });
+      if (existsSync(this.path) && statSync(this.path).size > 0 && !opts.overwrite) {
+        throw new Error(
+          `${this.path} already has a ledger; pass overwrite: true to replace it ` +
+            "(this permanently discards the existing entries)",
+        );
+      }
       writeFileSync(this.path, ""); // fresh log
     }
   }
 
   append(event: string, ts: number | string, fields: LedgerEntry = {}): LedgerEntry {
     const payload: LedgerEntry = {
-      v: SCHEMA_VERSION,
+      v: this.schemaVersion,
       c14n: "JCS",
       seq: this.seq,
       ts,
@@ -114,11 +172,15 @@ export class AuditLog {
     payload["hash"] = hashEntry(this.prev, payload);
     this.prev = payload["hash"] as string;
     this.seq += 1;
-    this._entries.push(payload);
-    if (this.path) {
-      appendFileSync(this.path, canonicalJson(payload) + "\n");
+    this._entries.push(payload); // committed: the entry now exists in the chain
+    try {
+      if (this.path) {
+        appendFileSync(this.path, canonicalJson(payload) + "\n");
+      }
+      for (const sink of this.sinks) sink.write(payload); // local files only — never the network
+    } catch (cause) {
+      throw new CommittedAuditError(payload, cause);
     }
-    for (const sink of this.sinks) sink.write(payload);
     return payload;
   }
 
@@ -155,7 +217,7 @@ export class AuditLog {
    */
   anchor(signer: Signer, ts: number | string = 0): Anchor {
     const [seq, head] = this.head();
-    const body = { v: SCHEMA_VERSION, c14n: "JCS" as const, chain_id: this.chainIdHint(), seq, head, ts };
+    const body = { v: this.schemaVersion, c14n: "JCS" as const, chain_id: this.chainIdHint(), seq, head, ts };
     return {
       ...body,
       kid: signer.kid ?? null,

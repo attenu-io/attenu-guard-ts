@@ -286,6 +286,8 @@ test("recordDenial puts an adapter-level refusal on the same trail", () => {
 test("complete is an idempotent lifecycle marker that never changes authority", () => {
   const g = Guard.issue("a", new Authority({ scopes: ["crm.read"], ttl: 60 }), { chainId: "t" });
   assert.equal(g.isComplete, false);
+  // v1 chain (the default): complete() returns a plain boolean, byte-and-type identical to
+  // every release before 0.9.0 — CompletionResult only appears on a schemaVersion: 2 chain.
   assert.equal(g.complete(), true);
   assert.equal(g.complete(), false);
   assert.equal(g.isComplete, true);
