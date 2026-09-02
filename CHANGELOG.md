@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-02
+
 ### Added
 - **The bundle-level interop test vectors, and the structured failures they are scored
   against.** The delegation-chain vectors under `test/fixtures/vectors/` have always let this
