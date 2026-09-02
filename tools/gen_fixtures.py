@@ -27,6 +27,13 @@ What lands in `test/fixtures/`:
   vectors/*.json           the Internet-Draft's delegation-chain interop vectors, copied
                            verbatim from the installed package: one chain that must verify
                            with each accepted or rejected outcome declared
+  vectors/bundles/         the bundle-level interop vectors, copied verbatim the same way:
+                           whole evidence bundles for the LEDGER verifier, each declaring the
+                           minimal set of {reason, seq, node} failures it must report.
+                           Written only when the installed attenu-guard ships them
+                           (attenu_guard.vectors.load_bundle_vectors); an older release simply
+                           leaves the committed copy alone, so CI's fixture-drift check stays
+                           green until the pin is bumped to a release that has them.
 """
 from __future__ import annotations
 
@@ -437,6 +444,21 @@ def chain_vectors() -> dict[str, str]:
     }
 
 
+def bundle_vectors() -> str | None:
+    """The bundle-level interop vectors, copied VERBATIM out of the installed `attenu_guard`
+    package — raw bytes, not re-serialised, exactly as `chain_vectors` does for the token set.
+
+    Returns None when the installed release predates them. That is not a failure: this script
+    runs in CI against a PINNED Python version, and the committed copy is checked out from the
+    Python repository ahead of the release that ships it. Once the pin names a release that
+    HAS them, this starts writing and the fixture-drift check starts comparing.
+    """
+    read = getattr(attenu_vectors, "read_bundle_vectors_bytes", None)
+    if read is None:
+        return None
+    return read().decode("utf-8")
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     print(f"writing fixtures to {OUT.relative_to(ROOT)}/")
@@ -466,7 +488,7 @@ def main() -> None:
     clean_ed = evidence.export_bundle(root.audit_log(), ed)
     redacted = evidence.export_bundle(root.audit_log(), hs, redact_task=True)
 
-    bundles = {
+    bundle_files = {
         "clean_hs256": (clean_hs, hs),
         "clean_ed25519": (clean_ed, ed),
         "redacted_hs256": (redacted, hs),
@@ -480,7 +502,7 @@ def main() -> None:
 
     reports: dict[str, dict] = {}
     cli: dict[str, dict] = {}
-    for name, (bundle, signer) in bundles.items():
+    for name, (bundle, signer) in bundle_files.items():
         write(f"{name}.bundle.json", bundle)
         with_key = report_of(bundle, signer)
         without_key = report_of(bundle, None)
@@ -500,6 +522,12 @@ def main() -> None:
     vectors = chain_vectors()
     for filename, text in vectors.items():
         write(f"vectors/{filename}", text)
+
+    bundles = bundle_vectors()
+    if bundles is not None:
+        write("vectors/bundles/bundle_vectors_v1.json", bundles)
+    else:
+        print("  (installed attenu-guard has no bundle vectors; committed copy left as is)")
 
     ok, reason = AuditLog.verify(entries)
     write(
@@ -524,7 +552,7 @@ def main() -> None:
             "generated_by": "tools/gen_fixtures.py",
         },
     )
-    print(f"done · {len(entries)} ledger entries · {len(bundles)} bundles "
+    print(f"done · {len(entries)} ledger entries · {len(bundle_files)} bundles "
           f"· {len(vectors)} chain vectors")
 
 

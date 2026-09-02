@@ -178,6 +178,17 @@ dual-signing mode. The 19 committed interop vectors include the separating cases
 for number spelling, raw Unicode, UTF-16 member ordering, large integers,
 duplicates, non-finite values and an unmarked canonical header.
 
+`test/fixtures/vectors/bundles/bundle_vectors_v1.json` is the second, bundle-level
+suite: whole evidence bundles for `verifyBundle`, the check an auditor runs on a
+published ledger with no engine and no vendor in the loop. The token vectors pin
+what a delegation token means; these pin what the LEDGER of a run has to satisfy.
+A bundle verifier reports a LIST of failures rather than one reject reason, so
+each rejecting case declares the minimal set of `{reason, seq, node}` that MUST
+appear, at that exact position. A conformant verifier may report more, never
+fewer and never elsewhere. `verifyBundle` returns those positions as
+`failure_details`, the structured twin of `failures`: one
+`{reason, seq, node, call_id, detail}` entry per string, in the same order.
+
 ## What it does not do
 
 - It does not decide what permissions a task needs. You state them; this library

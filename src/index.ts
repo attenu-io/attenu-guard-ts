@@ -110,6 +110,7 @@ export type {
   DenialRow,
   ExecutionBinding,
   ExportOptions,
+  FailureDetail,
   GraphNode,
   RedactionReport,
   RedactionViolation,

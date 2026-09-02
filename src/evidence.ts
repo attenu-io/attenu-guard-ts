@@ -18,6 +18,14 @@
  *     const bundle = exportBundle(guard.auditLog(), signer);
  *     const report = verifyBundle(bundle, signer);
  *
+ * `report.failures` is the human-readable list — its strings are a published
+ * contract, other implementations parse them — and `report.failure_details` is
+ * its machine-readable twin: one entry per string, same order, same count,
+ * `{reason, seq, node, call_id, detail}`. It exists so a conformance suite can
+ * assert WHICH check failed and WHERE, not merely that something did. The
+ * bundle-level interop vectors under `test/fixtures/vectors/bundles/` are scored
+ * against exactly that shape.
+ *
  * No engine state is consulted — the bundle is the whole input, which is the
  * point. This is byte-compatible with the Python library's
  * `attenu_guard.evidence`.
@@ -279,10 +287,72 @@ function orNull(value: CJson | undefined): Json {
   return plain === undefined ? null : plain;
 }
 
+/**
+ * One structured failure — the machine-readable twin of one `failures` string.
+ *
+ * `reason` is a stable token: the text before the first `:` in `detail`, with
+ * the two historical exceptions whose message names a NODE there
+ * (`unreadable_authority`, `unreadable_granted`) and so state their reason
+ * explicitly. `seq`/`node` are the offending entry's own fields, both `null`
+ * when the failure is chain-level with nothing single to point at. Same field
+ * names and same values as the Python implementation's `failure_details`.
+ */
+export interface FailureDetail {
+  reason: string;
+  seq: Json;
+  node: Json;
+  call_id: Json;
+  detail: string;
+}
+
+/** Where a failure happened, when the failure is about one entry. */
+interface FailurePosition {
+  seq?: Json;
+  node?: Json;
+  callId?: Json;
+}
+
+/**
+ * The verifier's failure list, kept in two shapes that cannot drift apart.
+ *
+ * `messages` is the string list `verifyBundle` has always returned as
+ * `failures`; those exact strings are a published contract, so they are never
+ * reworded here. `details` is the structured twin of each one, appended in the
+ * same call. Every failure in this module goes through `add`, so a new check
+ * cannot add a message without its twin — `test/bundle-vectors.test.ts` greps
+ * this file for a direct append to a failure list and fails on one, and asserts
+ * the two lists stay in step at every site.
+ */
+class FailureLog {
+  readonly messages: string[] = [];
+  readonly details: FailureDetail[] = [];
+
+  add(reason: string, detail: string, position: FailurePosition = {}): void {
+    const { seq = null, node = null, callId = null } = position;
+    this.messages.push(detail);
+    this.details.push({ reason, seq, node, call_id: callId, detail });
+  }
+
+  extend(other: FailureLog): void {
+    this.messages.push(...other.messages);
+    this.details.push(...other.details);
+  }
+
+  get length(): number {
+    return this.messages.length;
+  }
+}
+
 interface NodeAuthorities {
   auth: Map<string, Authority>;
   parent: Map<string, string | null>;
-  failures: string[];
+  failures: FailureLog;
+  /**
+   * The `root`/`spawn` entry each node was DEFINED by, so a node-level failure
+   * (monotonicity) can name the seq of the delegation that caused it, not only
+   * the node.
+   */
+  definedBy: Map<string, LedgerEntry>;
 }
 
 /**
@@ -292,26 +362,37 @@ interface NodeAuthorities {
 function nodeAuthorities(entries: readonly LedgerEntry[]): NodeAuthorities {
   const auth = new Map<string, Authority>();
   const parent = new Map<string, string | null>();
-  const failures: string[] = [];
+  const failures = new FailureLog();
+  const definedBy = new Map<string, LedgerEntry>();
   for (const e of entries) {
     const ev = toPlain(e["event"]);
     const node = toPlain(e["node"]) as string;
     if (ev === "root") {
+      definedBy.set(node, e);
       try {
         auth.set(node, Authority.fromWire(e["authority"] ?? null));
       } catch (exc) {
-        failures.push(`root ${node}: unreadable authority (${(exc as Error).message})`);
+        // One of the two historical messages that name a node before their colon rather than a
+        // reason token, so the reason is stated here instead of parsed out of the string.
+        failures.add("unreadable_authority", `root ${node}: unreadable authority (${(exc as Error).message})`, {
+          seq: orNull(e["seq"]),
+          node: orNull(e["node"]),
+        });
       }
     } else if (ev === "spawn") {
+      definedBy.set(node, e);
       parent.set(node, (toPlain(e["parent"]) as string | null) ?? null);
       try {
         auth.set(node, Authority.fromWire(e["granted"] ?? null));
       } catch (exc) {
-        failures.push(`spawn ${node}: unreadable granted (${(exc as Error).message})`);
+        failures.add("unreadable_granted", `spawn ${node}: unreadable granted (${(exc as Error).message})`, {
+          seq: orNull(e["seq"]),
+          node: orNull(e["node"]),
+        });
       }
     }
   }
-  return { auth, parent, failures };
+  return { auth, parent, failures, definedBy };
 }
 
 export interface GraphNode {
@@ -700,28 +781,37 @@ const V2_ONLY_FIELDS = [
  * Every v2-only field found on any entry of a `schemaVersion: 1` bundle — mixed-version data,
  * invalid regardless of which field it is (merge-gate item 4/(c)).
  */
-function v2FieldLeaksOnV1(entries: readonly LedgerEntry[]): string[] {
-  const failures: string[] = [];
+function v2FieldLeaksOnV1(entries: readonly LedgerEntry[]): FailureLog {
+  const failures = new FailureLog();
   for (const e of entries) {
     const leaked = V2_ONLY_FIELDS.filter((f) => f in e).sort();
     if (leaked.length > 0) {
-      failures.push(
+      failures.add(
+        "v2_field_on_v1",
         `v2_field_on_v1: seq=${pyRepr(toPlain(e["seq"]) as Json)} event=${pyRepr(toPlain(e["event"]) as Json)} ` +
           `carries v2-only field(s) ${JSON.stringify(leaked)} on a schemaVersion: 1 entry`,
+        { seq: orNull(e["seq"]), node: orNull(e["node"]) },
       );
     }
   }
   return failures;
 }
 
-function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): ExecutionBinding {
+/**
+ * `[the execution_binding report, its failures]`. The report's own `failures` key keeps its
+ * historical list-of-strings shape — the structured twins ride alongside it rather than inside
+ * it, so this sub-report's published shape is unchanged.
+ */
+function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [ExecutionBinding, FailureLog] {
   if (bundleV === 1) {
     const leaked = v2FieldLeaksOnV1(entries);
-    return leaked.length > 0 ? { status: "not applicable", failures: leaked } : { status: "not applicable" };
+    return leaked.length > 0
+      ? [{ status: "not applicable", failures: leaked.messages }, leaked]
+      : [{ status: "not applicable" }, new FailureLog()];
   }
-  if (bundleV !== 2) return { status: "not applicable" };
+  if (bundleV !== 2) return [{ status: "not applicable" }, new FailureLog()];
 
-  const failures: string[] = [];
+  const failures = new FailureLog();
   const seenCallIds = new Map<string, [string, string | null, number | null]>(); // callId -> [event, node, seq]
   const allows = new Map<string, LedgerEntry>();
   const outcomes = new Map<string, LedgerEntry>();
@@ -737,7 +827,12 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): Execu
     if (ev === "root") {
       if (node !== null) nodes.add(node);
       const err = validateRoot(e);
-      if (err) failures.push(`invalid_root: ${err} (seq ${pyRepr(seqForEvent)})`);
+      if (err) {
+        failures.add("invalid_root", `invalid_root: ${err} (seq ${pyRepr(seqForEvent)})`, {
+          seq: orNull(e["seq"]),
+          node: orNull(e["node"]),
+        });
+      }
     } else if (ev === "spawn") {
       if (node !== null) nodes.add(node);
     } else if (ev === "done") {
@@ -745,7 +840,12 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): Execu
     } else if (ev === "kill") {
       for (const r of (toPlain(e["revoked"]) as string[] | null) ?? []) revokedNodes.add(r);
       const err = validateKill(e);
-      if (err) failures.push(`invalid_kill: ${err} (seq ${pyRepr(seqForEvent)})`);
+      if (err) {
+        failures.add("invalid_kill", `invalid_kill: ${err} (seq ${pyRepr(seqForEvent)})`, {
+          seq: orNull(e["seq"]),
+          node: orNull(e["node"]),
+        });
+      }
     }
 
     if (ev === "allow" || ev === "deny") {
@@ -754,9 +854,13 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): Execu
       if (cid !== null && cid !== undefined) {
         const prior = seenCallIds.get(cid);
         if (prior !== undefined) {
-          failures.push(
+          // Positioned on the SECOND sighting: the entry that re-used a call_id is the offending
+          // record, the first one having been legitimate when it was written.
+          failures.add(
+            "duplicate_call_id",
             `duplicate_call_id: call_id ${cid} on seq ${pyRepr(seq)} (${ev}) already used at seq ` +
               `${pyRepr(prior[2])} (${prior[0]})`,
+            { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: cid },
           );
         } else {
           seenCallIds.set(cid, [ev, node, seq]);
@@ -764,7 +868,11 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): Execu
       }
       const err = ev === "allow" ? validateAllow(e) : validateDeny(e);
       if (err) {
-        failures.push(`invalid_${ev}: ${err} (seq ${pyRepr(seq)})`);
+        failures.add(`invalid_${ev}`, `invalid_${ev}: ${err} (seq ${pyRepr(seq)})`, {
+          seq: orNull(e["seq"]),
+          node: orNull(e["node"]),
+          callId: cid ?? null,
+        });
         if (ev === "allow" && cid !== null && cid !== undefined) invalidAllowIds.add(cid);
         continue;
       }
@@ -774,13 +882,19 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): Execu
       const seq = toPlain(e["seq"]) as number | null;
       const err = validateOutcome(e);
       if (err) {
-        failures.push(`invalid_outcome: ${err} (seq ${pyRepr(seq)})`);
+        failures.add("invalid_outcome", `invalid_outcome: ${err} (seq ${pyRepr(seq)})`, {
+          seq: orNull(e["seq"]),
+          node: orNull(e["node"]),
+          callId: cid ?? null,
+        });
         continue;
       }
       if (cid !== null && outcomes.has(cid)) {
-        failures.push(
+        failures.add(
+          "duplicate_outcome",
           `duplicate_outcome: call_id ${cid} at seq ${pyRepr(seq)} (first at seq ` +
             `${pyRepr(toPlain(outcomes.get(cid)!["seq"]) as Json)})`,
+          { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: cid },
         );
         continue;
       }
@@ -795,33 +909,48 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): Execu
   // its recorded content disagrees with what was authorized (spec: "parameter equality is
   // established only for calls where both hashes are present; elsewhere only identity and order
   // binding was checked" — params_mismatch is that separate concern).
+  // Every failure in this loop is about a PAIR, and is positioned on the `outcome` entry: the
+  // allow was a complete, valid record when it was written, and it is the outcome that fails to
+  // bind to it (or reports different arguments than were authorized).
   const boundOk = new Set<string>();
   for (const [cid, oc] of outcomes) {
     const allowE = allows.get(cid);
     if (allowE === undefined) {
-      failures.push(`outcome_without_allow: call_id ${cid} at seq ${pyRepr(toPlain(oc["seq"]) as Json)} has no allow in this chain`);
+      failures.add(
+        "outcome_without_allow",
+        `outcome_without_allow: call_id ${cid} at seq ${pyRepr(toPlain(oc["seq"]) as Json)} has no allow in this chain`,
+        { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid },
+      );
       continue;
     }
     const nodeOk = toPlain(allowE["node"]) === toPlain(oc["node"]);
     if (!nodeOk) {
-      failures.push(
+      failures.add(
+        "cross_ref",
         `cross_ref: call_id ${cid} allow on node ${pyRepr(toPlain(allowE["node"]) as Json)} but ` +
           `outcome on node ${pyRepr(toPlain(oc["node"]) as Json)}`,
+        { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid },
       );
     }
     const ocSeq = toPlain(oc["seq"]);
     const allowSeq = toPlain(allowE["seq"]);
     const orderOk = typeof ocSeq === "number" && typeof allowSeq === "number" && ocSeq > allowSeq;
     if (!orderOk) {
-      failures.push(
+      failures.add(
+        "outcome_before_allow",
         `outcome_before_allow: call_id ${cid} outcome seq ${pyRepr((ocSeq as Json) ?? null)} not ` +
           `after allow seq ${pyRepr((allowSeq as Json) ?? null)}`,
+        { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid },
       );
     }
     const ah = toPlain(allowE["authorized_params_hash"]);
     const ih = toPlain(oc["invoked_params_hash"]);
     if (ah !== null && ah !== undefined && ih !== null && ih !== undefined && ah !== ih) {
-      failures.push(`params_mismatch: call_id ${cid} authorized_params_hash ${ah} != invoked_params_hash ${ih}`);
+      failures.add(
+        "params_mismatch",
+        `params_mismatch: call_id ${cid} authorized_params_hash ${ah} != invoked_params_hash ${ih}`,
+        { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid },
+      );
     }
     if (nodeOk && orderOk) boundOk.add(cid);
   }
@@ -888,19 +1017,62 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): Execu
   }
   if (Object.values(perCall).some((s) => s === "unobserved")) escalate("incomplete");
 
-  return {
-    aggregate,
-    params_coverage: paramsCoverage(allows, outcomes, invalidAllowIds),
-    per_call: perCall,
-    per_node_lifecycle: lifecycle,
+  return [
+    {
+      aggregate,
+      params_coverage: paramsCoverage(allows, outcomes, invalidAllowIds),
+      per_call: perCall,
+      per_node_lifecycle: lifecycle,
+      failures: failures.messages,
+    },
     failures,
-  };
+  ];
+}
+
+/**
+ * `[seq, node]` of the FIRST entry the hash chain does not reproduce at — position only.
+ *
+ * `AuditLog.verify` stays the authority on WHETHER the chain is broken and on the message this
+ * module reports; this walk exists so the structured twin of that message can say WHERE, which
+ * the message's own text does not expose in a parseable form. Mirrors `AuditLog.verify`'s walk
+ * exactly (same seq/prev_hash/hash order). `[null, null]` when nothing entry-local is wrong — a
+ * consistently re-hashed ledger fails against the signed anchor, not here, and that failure is
+ * chain-level.
+ */
+function integrityPosition(entries: readonly LedgerEntry[]): [Json, Json] {
+  let prev: Json = GENESIS;
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i]!;
+    const payload: LedgerEntry = {};
+    for (const [k, v] of Object.entries(e)) {
+      if (k !== "hash") payload[k] = v;
+    }
+    let broken: boolean;
+    try {
+      broken =
+        orNull(e["seq"]) !== i ||
+        orNull(payload["prev_hash"]) !== prev ||
+        hashEntry(prev as string, payload) !== orNull(e["hash"]);
+    } catch {
+      // An unhashable payload is itself the break, at this entry.
+      return [orNull(e["seq"]), orNull(e["node"])];
+    }
+    if (broken) return [orNull(e["seq"]), orNull(e["node"])];
+    prev = orNull(e["hash"]);
+  }
+  return [null, null];
 }
 
 export interface VerifyReport {
   ok: boolean;
   checks: VerifyChecks;
   failures: string[];
+  /**
+   * The structured twin of `failures`: same order, same count, one
+   * `{reason, seq, node, call_id, detail}` per string, so a conformance suite can assert the
+   * reason AND the position of every failure instead of matching prose.
+   */
+  failure_details: FailureDetail[];
   nodes: number;
   actions_checked: number;
   chain_id: Json;
@@ -927,6 +1099,9 @@ export interface VerifyReport {
  * the bundle's actual `(seq, hash, chainId, v)` must equal it exactly, or `checks.expected_anchor`
  * reports `"FAILED"` and the mismatch lands in `failures`. `report.verified_against` names which
  * mode ran.
+ *
+ * `failure_details` is the structured twin of `failures`: same order, same count, one
+ * `{reason, seq, node, call_id, detail}` entry per string.
  */
 export interface VerifyBundleOptions {
   /** An independently retained anchor object to verify the bundle's actual head against. */
@@ -953,7 +1128,7 @@ export function verifyBundle(
     root: false,
     expected_anchor: "not checked",
   };
-  const failures: string[] = [];
+  const log = new FailureLog();
 
   // (0) version: the bundle must declare a schema version this build understands, and — when
   // an anchor is present — the anchor must be anchoring THAT version, not a different one.
@@ -961,12 +1136,15 @@ export function verifyBundle(
   let versionOk = typeof bundleV === "number" && SUPPORTED_BUNDLE_VERSIONS.has(bundleV);
   if (!versionOk) {
     const supported = Array.from(SUPPORTED_BUNDLE_VERSIONS).sort((a, b) => a - b);
-    failures.push(`unsupported_version: bundle v=${pyRepr(bundleV)} not in [${supported.join(", ")}]`);
+    log.add("unsupported_version", `unsupported_version: bundle v=${pyRepr(bundleV)} not in [${supported.join(", ")}]`);
   }
   const anchorV = toPlain(anchor["v"]) as Json;
   if (anchorPresent && anchorV !== bundleV) {
     versionOk = false;
-    failures.push(`anchor_version_mismatch: anchor v=${pyRepr(anchorV)} != bundle v=${pyRepr(bundleV)}`);
+    log.add(
+      "anchor_version_mismatch",
+      `anchor_version_mismatch: anchor v=${pyRepr(anchorV)} != bundle v=${pyRepr(bundleV)}`,
+    );
   }
 
   // (0a) exactly one root: a rootless bundle (or one splicing in a second root) would otherwise
@@ -974,7 +1152,7 @@ export function verifyBundle(
   const rootEvents = entries.filter((e) => toPlain(e["event"]) === "root");
   checks.root = rootEvents.length === 1;
   if (!checks.root) {
-    failures.push(`missing_root: bundle has ${rootEvents.length} root event(s), expected exactly 1`);
+    log.add("missing_root", `missing_root: bundle has ${rootEvents.length} root event(s), expected exactly 1`);
   }
   const rootEntry = rootEvents.length === 1 ? rootEvents[0] : undefined;
 
@@ -982,14 +1160,25 @@ export function verifyBundle(
   // entry's v must equal the bundle's declared v, and no OTHER entry may carry a different v.
   if (rootEntry !== undefined && toPlain(rootEntry["v"]) !== bundleV) {
     versionOk = false;
-    failures.push(`root_version_mismatch: root v=${pyRepr(toPlain(rootEntry["v"]) as Json)} != bundle v=${pyRepr(bundleV)}`);
+    log.add(
+      "root_version_mismatch",
+      `root_version_mismatch: root v=${pyRepr(toPlain(rootEntry["v"]) as Json)} != bundle v=${pyRepr(bundleV)}`,
+      { seq: orNull(rootEntry["seq"]), node: orNull(rootEntry["node"]) },
+    );
   }
-  const mixed = Array.from(new Set(entries.map((e) => toPlain(e["v"])).filter((v) => v !== bundleV))).sort(
+  const mixedEntries = entries.filter((e) => toPlain(e["v"]) !== bundleV);
+  const mixed = Array.from(new Set(mixedEntries.map((e) => toPlain(e["v"])))).sort(
     (a, b) => (typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b))),
   );
   if (mixed.length > 0) {
     versionOk = false;
-    failures.push(`mixed_entry_versions: entries declare v in [${mixed.map((v) => pyRepr(v as Json)).join(", ")}], bundle v=${pyRepr(bundleV)}`);
+    // One aggregate message over every offending entry (unchanged); the twin is positioned on
+    // the first of them, which is where a reader looks.
+    log.add(
+      "mixed_entry_versions",
+      `mixed_entry_versions: entries declare v in [${mixed.map((v) => pyRepr(v as Json)).join(", ")}], bundle v=${pyRepr(bundleV)}`,
+      { seq: orNull(mixedEntries[0]!["seq"]), node: orNull(mixedEntries[0]!["node"]) },
+    );
   }
   checks.version = versionOk;
 
@@ -1004,7 +1193,8 @@ export function verifyBundle(
       const [expSeq, expHash] = expectedHead;
       if (actualSeq !== expSeq || actualHead !== expHash) {
         expectedOk = false;
-        failures.push(
+        log.add(
+          "expected_head_mismatch",
           `expected_head_mismatch: bundle head is (seq=${actualSeq}, hash=${actualHead}) but the ` +
             `independently retained expected head is (seq=${expSeq}, hash=${expHash})`,
         );
@@ -1019,7 +1209,8 @@ export function verifyBundle(
         toPlain(ea["v"]) !== bundleV
       ) {
         expectedOk = false;
-        failures.push(
+        log.add(
+          "expected_anchor_mismatch",
           "expected_anchor_mismatch: the bundle's actual (seq, head, chainId, v) does not match " +
             "the independently retained expected anchor",
         );
@@ -1032,14 +1223,19 @@ export function verifyBundle(
   // must all name the SAME chain. Without this a correctly-signed, internally-consistent bundle
   // for a DIFFERENT chain could be handed to a verifier who believes it is checking this one.
   const bundleChainId = orNull(bundle.chain_id as CJson | undefined);
-  const entriesOk = entries.every((e) => orNull(e["chain_id"]) === bundleChainId);
-  if (!entriesOk) {
-    failures.push(`chain_id_mismatch: an entry does not carry chain_id=${pyRepr(bundleChainId)}`);
+  const foreign = entries.find((e) => orNull(e["chain_id"]) !== bundleChainId);
+  const entriesOk = foreign === undefined;
+  if (foreign !== undefined) {
+    log.add("chain_id_mismatch", `chain_id_mismatch: an entry does not carry chain_id=${pyRepr(bundleChainId)}`, {
+      seq: orNull(foreign["seq"]),
+      node: orNull(foreign["node"]),
+    });
   }
   const anchorChainId = orNull(anchor["chain_id"]);
   const anchorChainOk = !anchorPresent || anchorChainId === bundleChainId;
   if (!anchorChainOk) {
-    failures.push(
+    log.add(
+      "chain_id_mismatch",
       `chain_id_mismatch: anchor chain_id=${pyRepr(anchorChainId)} != bundle chain_id=${pyRepr(bundleChainId)}`,
     );
   }
@@ -1047,18 +1243,23 @@ export function verifyBundle(
 
   // (1) integrity: the hash chain, plus the signed anchor when a key is given.
   const [okChain, err] = AuditLog.verify(entries);
-  if (!okChain) failures.push(`integrity: ${err}`);
+  if (!okChain) {
+    const [badSeq, badNode] = integrityPosition(entries);
+    log.add("integrity", `integrity: ${err}`, { seq: badSeq, node: badNode });
+  }
   if (signer !== null) {
     const [okAnchor, aerr] = AuditLog.verifyAnchor(entries, anchor, signer);
     checks.anchor = okAnchor ? "verified" : "FAILED";
-    if (!okAnchor) failures.push(`integrity(anchor): ${aerr}`);
+    // Chain-level by construction: the anchor commits to the head of the WHOLE ledger, so a
+    // consistently re-hashed chain has no single offending entry to point at.
+    if (!okAnchor) log.add("integrity(anchor)", `integrity(anchor): ${aerr}`);
     checks.integrity = okChain && okAnchor;
   } else {
     checks.integrity = okChain;
   }
 
-  const { auth, parent, failures: afail } = nodeAuthorities(entries);
-  failures.push(...afail);
+  const { auth, parent, failures: afail, definedBy } = nodeAuthorities(entries);
+  log.extend(afail);
 
   // (2) monotonicity: every child ⊆ its parent.
   let mono = true;
@@ -1069,9 +1270,12 @@ export function verifyBundle(
     const extra = Array.from(child.scopes).filter((s) => !p.scopes.has(s));
     if (!child.isNarrowerThan(p) && extra.length > 0) {
       mono = false;
-      failures.push(
+      const spawnE = definedBy.get(node);
+      log.add(
+        "monotonicity",
         `monotonicity: ${node} not ⊆ parent ${pid} (child scopes ` +
           `[${extra.sort(compareCodePoints).map((s) => `'${s}'`).join(", ")}] not held by parent)`,
+        { seq: spawnE === undefined ? null : orNull(spawnE["seq"]), node },
       );
     }
   }
@@ -1089,21 +1293,29 @@ export function verifyBundle(
     const a = auth.get(node);
     if (a === undefined) {
       contained = false;
-      failures.push(`containment: allow on unknown node ${node}`);
+      log.add("containment", `containment: allow on unknown node ${node}`, {
+        seq: orNull(e["seq"]),
+        node: orNull(e["node"]),
+        callId: orNull(e["call_id"]),
+      });
       continue;
     }
     if (!a.permits(scope, ctx).allowed) {
       contained = false;
-      failures.push(
+      log.add(
+        "containment",
         `containment: allow of '${scope}' on ${node} outside its authority ` +
           `[${Array.from(a.scopes).sort(compareCodePoints).map((s) => `'${s}'`).join(", ")}]`,
+        { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: orNull(e["call_id"]) },
       );
     }
   }
   checks.containment = contained;
 
-  const eb: ExecutionBinding = versionOk ? executionBinding(entries, bundleV) : { status: "not applicable" };
-  if (eb.failures !== undefined) failures.push(...eb.failures);
+  const [eb, ebFailures]: [ExecutionBinding, FailureLog] = versionOk
+    ? executionBinding(entries, bundleV)
+    : [{ status: "not applicable" }, new FailureLog()];
+  if (eb.failures !== undefined && eb.failures.length > 0) log.extend(ebFailures);
 
   // "anchor" and "expected_anchor" are excluded here — both carry a tri-state status string
   // ("not checked"/"verified"/"FAILED"), not a plain pass/fail boolean, and a failed check on
@@ -1115,11 +1327,12 @@ export function verifyBundle(
     checks.version &&
     checks.chain_id &&
     checks.root &&
-    failures.length === 0;
+    log.length === 0;
   return {
     ok,
     checks,
-    failures,
+    failures: log.messages,
+    failure_details: log.details,
     nodes: auth.size,
     actions_checked: actions,
     chain_id: orNull(bundle.chain_id),
