@@ -64,6 +64,28 @@ function bundleFor(name: string): Bundle {
 
 const NAMES = Object.keys(expected);
 
+/**
+ * `expected_reports.json` is written by the PINNED Python release CI installs, which predates
+ * `checks.envelopes` (added in 0.13.0 with observer envelopes). So the fixture cannot carry that
+ * key, and a strict `deepEqual` on `checks` would fail for a reason that is not a parity defect.
+ *
+ * Every check the fixture DOES name must still match exactly. The only keys this build may add on
+ * top are the ones named here, so a genuine divergence is still caught. When the Python pin moves
+ * to a release that writes the key, this list must be emptied — the second assertion fails until
+ * it is, which is the point.
+ */
+const CHECKS_ADDED_SINCE_THE_PYTHON_PIN: readonly string[] = ["envelopes"];
+
+function assertChecksMatch(got: object, want: object, label: string): void {
+  const shared = Object.fromEntries(Object.entries(got).filter(([k]) => k in want));
+  assert.deepEqual(shared, want, label);
+  assert.deepEqual(
+    Object.keys(got).filter((k) => !(k in want)).sort(),
+    [...CHECKS_ADDED_SINCE_THE_PYTHON_PIN].sort(),
+    `${label}: unexpected extra checks`,
+  );
+}
+
 test("the fixture set covers a clean bundle and every tamper mode", () => {
   for (const required of [
     "clean_hs256",
@@ -84,7 +106,7 @@ for (const name of NAMES) {
   test(`verifyBundle(${name}) matches Python, with the key`, () => {
     const report = verifyBundle(bundleFor(name), signerFor(name));
     const want = expected[name]!.with_key;
-    assert.deepEqual(report.checks, want.checks);
+    assertChecksMatch(report.checks, want.checks, `${name} with key`);
     assert.deepEqual(report.failures, want.failures);
     assert.equal(report.ok, want.ok);
     assert.equal(report.nodes, want.nodes);
@@ -95,7 +117,7 @@ for (const name of NAMES) {
   test(`verifyBundle(${name}) matches Python, without the key`, () => {
     const report = verifyBundle(bundleFor(name), null);
     const want = expected[name]!.without_key;
-    assert.deepEqual(report.checks, want.checks);
+    assertChecksMatch(report.checks, want.checks, `${name} without key`);
     assert.deepEqual(report.failures, want.failures);
     assert.equal(report.ok, want.ok);
   });
@@ -183,6 +205,7 @@ test("a bundle this library exports verifies here and reports no leak", () => {
     chain_id: true,
     root: true,
     expected_anchor: "not checked",
+    envelopes: "not present",   // 0.13.0: this bundle carries no observer envelopes
   });
   assert.equal(report.verified_against, "bundle_anchor");
   assert.equal(bundle.redaction.ok, true);

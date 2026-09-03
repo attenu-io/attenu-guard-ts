@@ -27,6 +27,12 @@ What lands in `test/fixtures/`:
   vectors/*.json           the Internet-Draft's delegation-chain interop vectors, copied
                            verbatim from the installed package: one chain that must verify
                            with each accepted or rejected outcome declared
+  vectors/envelopes/       the observer-envelope interop vectors, copied verbatim the same way:
+                           the same bundles carrying a witness's Ed25519 signature over the
+                           identity of a ledger entry, each declaring the per-entry state and
+                           the minimal set of {reason, seq, node} failures. Written only when
+                           the installed attenu-guard ships them (0.13.0 and later); an older
+                           release leaves the committed copy alone.
   vectors/bundles/         the bundle-level interop vectors, copied verbatim the same way:
                            whole evidence bundles for the LEDGER verifier, each declaring the
                            minimal set of {reason, seq, node} failures it must report.
@@ -459,6 +465,21 @@ def bundle_vectors() -> str | None:
     return read().decode("utf-8")
 
 
+def envelope_vectors() -> str | None:
+    """The observer-envelope interop vectors, copied VERBATIM out of the installed
+    `attenu_guard` package — raw bytes, not re-serialised, exactly as `bundle_vectors` does.
+
+    Returns None when the installed release predates them (0.13.0), on the same reasoning: this
+    script runs in CI against a PINNED Python version, and the committed copy is checked out from
+    the Python repository ahead of the release that ships it. Once the pin names a release that
+    HAS them, this starts writing and the fixture-drift check starts comparing.
+    """
+    read = getattr(attenu_vectors, "read_envelope_vectors_bytes", None)
+    if read is None:
+        return None
+    return read().decode("utf-8")
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     print(f"writing fixtures to {OUT.relative_to(ROOT)}/")
@@ -528,6 +549,12 @@ def main() -> None:
         write("vectors/bundles/bundle_vectors_v1.json", bundles)
     else:
         print("  (installed attenu-guard has no bundle vectors; committed copy left as is)")
+
+    envelopes = envelope_vectors()
+    if envelopes is not None:
+        write("vectors/envelopes/envelope_vectors_v1.json", envelopes)
+    else:
+        print("  (installed attenu-guard has no envelope vectors; committed copy left as is)")
 
     ok, reason = AuditLog.verify(entries)
     write(

@@ -6,6 +6,17 @@ Versions follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-04
+
+### Added
+- Observer envelopes (envelope v1), matching Python 0.13.0 byte for byte — a witness's Ed25519 signature over the IDENTITY of one committed ledger entry (`chain_id`, `node`, `seq`, `entry_hash`, `event`, and `call_id` on an allow), carried beside the ledger in a bundle's top-level `envelopes` array. `signEnvelope()`, `verifyEnvelopes()`, `envelopeSubject()`, `envelopeSigningInput()`, and `exportBundle(..., { envelopes })`. The signature is over `JCS(envelope minus "sig")`, the same canonicalization every other signed surface uses
+- `verifyBundle()` — `witnessKeys` (the trust set: `[{kid, alg, public_key_hex}]` or a `{kid: publicKey}` record) and `envelopeBytes` (the envelope bytes as received, which only `envelope_non_canonical` needs). Per-entry state `witness-signed` / `process-asserted` in `report.envelopes`, with the report line `witness-signed (matched|not_matched|indeterminate)`; a process-asserted entry gets no result. `checks.envelopes` is `"not present"` on a bundle carrying none, which is every bundle written before this release
+- Six named envelope failures, in `ENVELOPE_FAILURES` and in the same `failures`/`failure_details` list as every other bundle failure: `envelope_unknown_version`, `envelope_unknown_member`, `envelope_subject_mismatch`, `envelope_non_canonical`, `envelope_unknown_witness`, `envelope_bad_signature`
+- Vendored observer-envelope interop vectors (`test/fixtures/vectors/envelopes/envelope_vectors_v1.json`), revision `envelope_vectors_v1.0`, sixteen cases, copied byte for byte from the Python repository where the generator is their single writer. `test/envelope-vectors.test.ts` scores all sixteen, pins the file's sha256, and proves cross-language byte parity two ways: the witness seeds derive to the public keys the file carries, and signing the same entry with the same seed reproduces the same signature (Ed25519 is deterministic)
+
+### Changed
+- `test/evidence.test.ts` compares `checks` against `expected_reports.json` as a superset rather than exactly: the fixture is written by the PINNED Python release, which predates `checks.envelopes`. Every check the fixture names must still match, and the only permitted extra key is named in the test
+
 ## [0.7.1] - 2026-09-03
 
 ### Added

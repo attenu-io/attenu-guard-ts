@@ -189,6 +189,21 @@ fewer and never elsewhere. `verifyBundle` returns those positions as
 `failure_details`, the structured twin of `failures`: one
 `{reason, seq, node, call_id, detail}` entry per string, in the same order.
 
+`test/fixtures/vectors/envelopes/envelope_vectors_v1.json` is the third suite:
+observer envelopes. An envelope is a witness's Ed25519 signature over the
+IDENTITY of one committed ledger entry — `chain_id`, `node`, `seq`,
+`entry_hash`, `event`, and `call_id` on an allow — carried beside the ledger in
+a bundle's top-level `envelopes` array. It answers the one question the other
+two suites cannot: was this delegation event signed by something outside the
+process that wrote it? An envelope is never required, and a bundle without them
+verifies exactly as before with every entry reporting `process-asserted`. A
+present one has to verify, and a broken one lands in the same failure list under
+one of six named reasons. Pass the trust set as
+`verifyBundle(bundle, signer, { witnessKeys })`; the report carries the
+per-entry state, the result and the report line — `witness-signed (matched)`,
+and so on — for every entry, so a reader sees which hops were covered before
+reading which one failed.
+
 ## What it does not do
 
 - It does not decide what permissions a task needs. You state them; this library

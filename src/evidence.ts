@@ -36,6 +36,8 @@ import {
   compareCodePoints,
   parseJson,
   pyNumber,
+  RawNumber,
+  sortedStrings,
   toPlain,
   type CJson,
   type Json,
@@ -47,7 +49,7 @@ import { Authority } from "./authority.js";
 import { describe as describeCeiling, type Context } from "./ceilings.js";
 import { CAPTURES, BODY_STATES, BodyState, Capture } from "./reasons.js";
 import { PARAMS_HASH_REASONS } from "./params.js";
-import type { Signer } from "./wire.js";
+import { Ed25519Signer, Ed25519Verifier, type Signer } from "./wire.js";
 
 /**
  * The COMPLETE set of top-level ledger field names the library emits. Custody
@@ -152,6 +154,12 @@ export interface Bundle {
   anchor: Anchor;
   redaction: RedactionReport;
   note: string;
+  /**
+   * Observer envelopes, when the bundle carries any: a witness's signature over the identity of
+   * a ledger entry. Omitted entirely when there are none, so a bundle without them is
+   * byte-for-byte what `exportBundle` has always produced.
+   */
+  envelopes?: Envelope[];
 }
 
 function redactTask(t: CJson | undefined): CJson | undefined {
@@ -221,6 +229,11 @@ export interface ExportOptions {
   redactTask?: boolean;
   /** Throw `EvidenceLeakError` on any field outside the allow-list. */
   strict?: boolean;
+  /**
+   * Observer envelopes (`signEnvelope`) to carry beside the ledger. Omitted from the bundle
+   * entirely when absent or empty, so a bundle without them is unchanged.
+   */
+  envelopes?: readonly Envelope[] | null;
 }
 
 /**
@@ -266,7 +279,7 @@ export function exportBundle(
   }
   const anchor = anchorFor(entries, signer, options.ts ?? 0);
   anchor.verified = AuditLog.verifyAnchor(entries, anchor as Record<string, CJson>, signer)[0];
-  return {
+  const bundle: Bundle = {
     v: bundleVersion(entries),
     c14n: "JCS",
     chain_id: chainIdOf(entries),
@@ -275,6 +288,9 @@ export function exportBundle(
     redaction: report,
     note: "offline-verifiable: attenu_guard.evidence.verify_bundle(bundle, signer)",
   };
+  const envelopes = options.envelopes ?? null;
+  if (envelopes !== null && envelopes.length > 0) bundle.envelopes = [...envelopes];
+  return bundle;
 }
 
 /**
@@ -581,6 +597,12 @@ export interface VerifyChecks {
   chain_id: boolean;
   root: boolean;
   expected_anchor: "not checked" | "verified" | "FAILED";
+  /**
+   * `"not present"` on a bundle with no `envelopes` array, which is every bundle written before
+   * observer envelopes existed. Like `anchor`, it is a status string rather than a pass/fail
+   * boolean, and a failed envelope already lands its own entry in `failures`.
+   */
+  envelopes: "not present" | "verified" | "FAILED";
 }
 
 /** Python-style repr for the small set of value types these failure messages carry. */
@@ -589,6 +611,530 @@ function pyRepr(value: Json): string {
   if (typeof value === "number") return String(value);
   if (typeof value === "string") return `'${value}'`;
   return JSON.stringify(value);
+}
+
+// =============================================================================================
+// Observer envelopes (envelope v1) — the TypeScript half of `attenu_guard.evidence`'s.
+//
+// One question a reader of a bundle cannot answer today: was this delegation event signed by
+// something OUTSIDE the process that wrote it? An envelope is a witness's signature over the
+// IDENTITY of one committed ledger entry — never over its contents, which the entry's own hash
+// already covers. Envelopes travel beside the ledger in a top-level `envelopes` array; no entry
+// changes, so a bundle without them stays valid exactly as it is today.
+//
+// An envelope is never REQUIRED. An absent one is the status quo and changes nothing. A present
+// one has to verify: a broken envelope lands in the same failure list as the chain-level checks
+// and the bundle rejects. Byte-compatible with the Python implementation, and scored against the
+// same `envelope_vectors_v1.json`.
+// =============================================================================================
+
+/**
+ * The only envelope version this build knows. The version commits the exact signed member set of
+ * the WHOLE envelope, the subject included, so a member added anywhere is a new version and the
+ * digest cannot widen silently.
+ */
+export const ENVELOPE_VERSION = 1;
+/** The only `typ` at v1. A different one is a different contract, not a different envelope. */
+export const ENVELOPE_TYP = "delegation-event-observation";
+/** The envelope's own member set at v1. */
+export const ENVELOPE_MEMBERS: ReadonlySet<string> = new Set([
+  "v",
+  "typ",
+  "subject",
+  "observed",
+  "witness",
+  "sig",
+]);
+/**
+ * The subject member set, keyed by `event`. v1 defines a subject for `spawn` and `allow` and for
+ * no other event. `entry_hash` is the BINDING member — the only evidence of WHICH entry the
+ * witness signed — and the rest are locators, whose job is to find the entry without hashing
+ * every entry.
+ */
+export const ENVELOPE_SUBJECT_MEMBERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["spawn", new Set(["chain_id", "node", "seq", "entry_hash", "event"])],
+  ["allow", new Set(["chain_id", "node", "seq", "entry_hash", "event", "call_id"])],
+]);
+const ENVELOPE_OBSERVED_MEMBERS: ReadonlySet<string> = new Set(["result", "at", "method"]);
+const ENVELOPE_WITNESS_MEMBERS: ReadonlySet<string> = new Set(["kid", "alg"]);
+/**
+ * `observed.result`'s closed vocabulary. `not_matched` requires evidence that CONTRADICTS the
+ * event; `indeterminate` is the residual state, and covers thin or absent evidence. No verifier
+ * decision turns on the result: it is reported next to the state, never instead of it.
+ */
+export const ENVELOPE_RESULTS = ["matched", "not_matched", "indeterminate"] as const;
+export type EnvelopeResult = (typeof ENVELOPE_RESULTS)[number];
+/** The JOSE identifier for Ed25519, and the only `witness.alg` v1 defines. */
+export const ENVELOPE_ALG = "EdDSA";
+/**
+ * A verifying envelope's state. It says where the signature came from and NOTHING about
+ * authority — the witness is whoever holds the key `witness.kid` names, which nothing in the
+ * envelope makes the delegation parent.
+ */
+export const WITNESS_SIGNED = "witness-signed";
+/**
+ * No envelope, or one that does not verify. It covers two facts a bundle does not separate — a
+ * hop nobody undertook to cover, and a hop a witness undertook to cover and never did — and v1
+ * takes the weaker reading of the two.
+ */
+export const PROCESS_ASSERTED = "process-asserted";
+export type EnvelopeState = typeof WITNESS_SIGNED | typeof PROCESS_ASSERTED;
+
+/** The six named envelope failures, in the order this build checks them. */
+export const ENVELOPE_FAILURES = [
+  "envelope_unknown_version",
+  "envelope_unknown_member",
+  "envelope_subject_mismatch",
+  "envelope_non_canonical",
+  "envelope_unknown_witness",
+  "envelope_bad_signature",
+] as const;
+
+/** One observer envelope, as it appears in `bundle.envelopes`. */
+export interface Envelope {
+  v: number;
+  typ: string;
+  subject: Record<string, CJson>;
+  observed: Record<string, CJson>;
+  witness: Record<string, CJson>;
+  sig: string;
+}
+
+/** One trusted witness key, in the shape the vector file carries. */
+export interface WitnessKey {
+  kid: string;
+  alg: string;
+  public_key_hex: string;
+}
+
+/**
+ * The bytes a witness signs: `JCS(envelope minus its "sig" member)`.
+ *
+ * The same RFC 8785 canonicalization the ledger has signed with since 0.7.0 — one
+ * implementation, not a second one for envelopes.
+ */
+export function envelopeSigningInput(envelope: Record<string, CJson>): Buffer {
+  const body: Record<string, CJson> = {};
+  for (const [k, v] of Object.entries(envelope)) if (k !== "sig") body[k] = v;
+  return canonicalBytes(body);
+}
+
+/**
+ * seq -> the entry's hash RECOMPUTED from the bundle, never read off the entry.
+ *
+ * `entry_hash` in a subject is checked against this. The walk mirrors `AuditLog.verify`, so an
+ * entry whose stored `hash` was replaced does not get to supply the value it is compared against.
+ */
+function recomputedHashes(entries: readonly LedgerEntry[]): Map<Json, string | null> {
+  const out = new Map<Json, string | null>();
+  let prev = GENESIS;
+  entries.forEach((e, i) => {
+    const payload: LedgerEntry = {};
+    for (const [k, v] of Object.entries(e)) if (k !== "hash") payload[k] = v;
+    let computed: string | null;
+    try {
+      computed = hashEntry(prev, payload);
+    } catch {
+      // An unhashable payload has no recomputable hash; that IS the break, at this entry.
+      computed = null;
+    }
+    out.set(orNull(e["seq"]) ?? i, computed);
+    prev = computed ?? GENESIS;
+  });
+  return out;
+}
+
+/**
+ * The v1 subject for the entry at `seq`, recomputed from the ledger.
+ *
+ * Throws when `seq` names no entry, or names one whose `event` v1 defines no subject for.
+ */
+export function envelopeSubject(entries: readonly LedgerEntry[], seq: number): Record<string, CJson> {
+  const entry = entries.find((e) => toPlain(e["seq"]) === seq);
+  if (entry === undefined) throw new Error(`no entry at seq ${seq}`);
+  const event = toPlain(entry["event"]) as string;
+  if (!ENVELOPE_SUBJECT_MEMBERS.has(event)) {
+    throw new Error(`envelope v${ENVELOPE_VERSION} defines no subject for event '${event}'`);
+  }
+  const subject: Record<string, CJson> = {
+    chain_id: orNull(entry["chain_id"]) as CJson,
+    node: orNull(entry["node"]) as CJson,
+    seq,
+    entry_hash: recomputedHashes(entries).get(seq) ?? null,
+    event,
+  };
+  if (event === "allow") subject["call_id"] = orNull(entry["call_id"]) as CJson;
+  return subject;
+}
+
+/** What a witness asserts about the event it signed. */
+export interface Observation {
+  result?: EnvelopeResult;
+  at: string;
+  method: string;
+}
+
+/**
+ * An observer envelope over the entry at `seq`, signed with the 32-byte Ed25519 `seed`.
+ *
+ * `entries` is the ledger the subject is recomputed from — a witness signs the identity of an
+ * entry that already exists, never a claim it composes itself.
+ */
+export function signEnvelope(
+  entries: readonly LedgerEntry[],
+  seq: number,
+  seed: Buffer,
+  kid: string,
+  observed: Observation,
+): Envelope {
+  const result = observed.result ?? "matched";
+  if (!(ENVELOPE_RESULTS as readonly string[]).includes(result)) {
+    throw new Error(`observed.result must be one of [${ENVELOPE_RESULTS.join(", ")}], got '${result}'`);
+  }
+  const body: Record<string, CJson> = {
+    v: ENVELOPE_VERSION,
+    typ: ENVELOPE_TYP,
+    subject: envelopeSubject(entries, seq),
+    observed: { result, at: observed.at, method: observed.method },
+    witness: { kid, alg: ENVELOPE_ALG },
+  };
+  const sig = Ed25519Signer.fromPrivateBytes(seed, kid).sign(envelopeSigningInput(body));
+  return { ...body, sig: sig.toString("hex") } as unknown as Envelope;
+}
+
+/**
+ * kid -> `[alg, raw public key]`, from the vector file's own `witness_keys` shape or from a plain
+ * `{kid: publicKeyBytes}` record.
+ *
+ * `null`/absent means no trust anchor is configured, which is an EMPTY set, not an absent check:
+ * an envelope naming a kid nobody trusts is `envelope_unknown_witness`, and that is the honest
+ * answer whether the trust set is empty or merely does not contain it.
+ */
+function trustedWitnesses(
+  witnessKeys: readonly WitnessKey[] | Record<string, Buffer | string> | null | undefined,
+): Map<string, [string, Buffer]> {
+  const trusted = new Map<string, [string, Buffer]>();
+  if (witnessKeys === null || witnessKeys === undefined) return trusted;
+  if (Array.isArray(witnessKeys)) {
+    for (const k of witnessKeys) {
+      trusted.set(k.kid, [k.alg, Buffer.from(k.public_key_hex ?? "", "hex")]);
+    }
+    return trusted;
+  }
+  for (const [kid, key] of Object.entries(witnessKeys)) {
+    trusted.set(kid, [ENVELOPE_ALG, typeof key === "string" ? Buffer.from(key, "hex") : key]);
+  }
+  return trusted;
+}
+
+/**
+ * The report line: the state and the result together, in the same form for all three results. A
+ * process-asserted entry gets no result.
+ */
+function envelopeLine(state: EnvelopeState, result: Json): string {
+  return state === WITNESS_SIGNED ? `${state} (${String(result)})` : state;
+}
+
+/** What `verifyEnvelopes` and `verifyBundle`'s `envelopes` field report. */
+export interface EnvelopeSummary {
+  status: "verified" | "FAILED" | "not present";
+  count: number;
+  /** The seqs a verifying envelope covers, ascending. */
+  witness_signed: number[];
+  /** Every entry's seq -> its state. Coverage is explicit, never assumed dense. */
+  states: Record<string, EnvelopeState>;
+  /** The `observed.result` of each witness-signed entry. */
+  results: Record<string, Json>;
+  /** The report line for each entry: `witness-signed (matched)`, or `process-asserted`. */
+  lines: Record<string, string>;
+  failures: string[];
+}
+
+export interface VerifyEnvelopesOptions {
+  /** The trust set: the vector file's `witness_keys`, or a `{kid: publicKey}` record. */
+  witnessKeys?: readonly WitnessKey[] | Record<string, Buffer | string> | null;
+  /**
+   * The envelope bytes AS RECEIVED, positionally aligned with `bundle.envelopes` (entries may be
+   * null). Only `envelope_non_canonical` needs them, and only where a deployment kept them.
+   */
+  envelopeBytes?: readonly (Buffer | string | null)[] | null;
+}
+
+/**
+ * Score every envelope in the bundle and derive the per-entry state.
+ *
+ * Two rules bind where a failure may land: an envelope failure lands only on the hop that
+ * envelope covers, never on a hop coverage skipped; and no chain-level integrity failure is ever
+ * raised because an envelope failed — that one comes from a real anchor mismatch and from
+ * nothing else.
+ */
+function scoreEnvelopes(
+  entries: readonly LedgerEntry[],
+  envelopes: readonly Envelope[],
+  trusted: Map<string, [string, Buffer]>,
+  rawBytes: readonly (Buffer | string | null)[] | null,
+): [EnvelopeSummary, FailureLog] {
+  const fail = new FailureLog();
+  const states: Record<string, EnvelopeState> = {};
+  const results: Record<string, Json> = {};
+  entries.forEach((e, i) => {
+    states[String(orNull(e["seq"]) ?? i)] = PROCESS_ASSERTED;
+  });
+
+  // The hash walk is what an envelope's binding member is checked against; a bundle carrying
+  // none does not pay for it. Every entry is process-asserted in that case, which is the status
+  // quo and exactly what this reports.
+  const bySeq = new Map<Json, LedgerEntry>();
+  let recomputed = new Map<Json, string | null>();
+  if (envelopes.length > 0) {
+    entries.forEach((e, i) => bySeq.set(orNull(e["seq"]) ?? i, e));
+    recomputed = recomputedHashes(entries);
+  }
+
+  envelopes.forEach((envelope, index) => {
+    const raw = rawBytes !== null && index < rawBytes.length ? rawBytes[index] ?? null : null;
+    const covered = scoreEnvelope(envelope, index, bySeq, recomputed, trusted, raw, fail);
+    if (covered === null) return;
+    states[String(covered.seq)] = WITNESS_SIGNED;
+    results[String(covered.seq)] = covered.result;
+  });
+
+  const lines: Record<string, string> = {};
+  for (const [seq, state] of Object.entries(states)) {
+    lines[seq] = envelopeLine(state, results[seq] ?? null);
+  }
+  const summary: EnvelopeSummary = {
+    status: fail.length === 0 ? "verified" : "FAILED",
+    count: envelopes.length,
+    witness_signed: Object.entries(states)
+      .filter(([, state]) => state === WITNESS_SIGNED)
+      .map(([seq]) => Number(seq))
+      .sort((a, b) => a - b),
+    states,
+    results,
+    lines,
+    failures: [...fail.messages],
+  };
+  return [summary, fail];
+}
+
+/** Python `repr` for a member set, so both implementations print the same failure strings. */
+function reprList(values: readonly string[]): string {
+  return `[${values.map((v) => `'${v}'`).join(", ")}]`;
+}
+
+/**
+ * One envelope, checked in the order the six named failures are defined in.
+ *
+ * Returns the covered entry for an envelope that verified, and `null` for one that did not.
+ * Every failure is positioned on the entry the envelope COVERS, found by `subject.seq` — the
+ * locators are checked against that entry, not used to find it.
+ */
+function scoreEnvelope(
+  envelope: Envelope,
+  index: number,
+  bySeq: Map<Json, LedgerEntry>,
+  recomputed: Map<Json, string | null>,
+  trusted: Map<string, [string, Buffer]>,
+  raw: Buffer | string | null,
+  fail: FailureLog,
+): { seq: Json; node: Json; result: Json } | null {
+  const isRecord = (v: unknown): v is Record<string, CJson> =>
+    v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof RawNumber);
+
+  const subject: unknown = isRecord(envelope) ? envelope["subject"] : undefined;
+
+  function position(): [Json, Json] {
+    const s = isRecord(subject) ? (toPlain(subject["seq"]) as Json) : null;
+    const entry = bySeq.get(s);
+    if (entry === undefined) return [typeof s === "number" ? s : null, null];
+    return [orNull(entry["seq"]), orNull(entry["node"])];
+  }
+
+  function report(reason: string, detail: string): null {
+    const [seq, node] = position();
+    fail.add(reason, `${reason}: ${detail}`, { seq, node });
+    return null;
+  }
+
+  if (!isRecord(envelope)) {
+    fail.add("envelope_unknown_version", `envelope_unknown_version: envelope #${index} is not a JSON object`);
+    return null;
+  }
+
+  // (1) version — a `v` or `typ` this build does not know is a DIFFERENT CONTRACT, and nothing
+  // further about it can be read safely.
+  const v = toPlain(envelope["v"] as CJson) as Json;
+  const typ = toPlain(envelope["typ"] as CJson) as Json;
+  if (v !== ENVELOPE_VERSION || typ !== ENVELOPE_TYP) {
+    return report(
+      "envelope_unknown_version",
+      `envelope v=${pyRepr(v)} typ=${pyRepr(typ)}, this build knows v=${ENVELOPE_VERSION} ` +
+        `typ='${ENVELOPE_TYP}'`,
+    );
+  }
+
+  // (2) member sets — the version commits the exact signed member set of the whole envelope, so
+  // a member added ANYWHERE is a new version that did not declare itself.
+  const levels: [string, unknown, ReadonlySet<string>][] = [
+    ["envelope", envelope, ENVELOPE_MEMBERS],
+    ["observed", envelope["observed"], ENVELOPE_OBSERVED_MEMBERS],
+    ["witness", envelope["witness"], ENVELOPE_WITNESS_MEMBERS],
+  ];
+  for (const [label, value, expected] of levels) {
+    const members = isRecord(value) ? sortedStrings(Object.keys(value)) : null;
+    if (members === null || members.length !== expected.size || members.some((m) => !expected.has(m))) {
+      const got = members === null ? (value === null ? "null" : typeof value) : reprList(members);
+      return report(
+        "envelope_unknown_member",
+        `${label} member set is ${got}, expected ${reprList(sortedStrings(expected))}`,
+      );
+    }
+  }
+
+  // (3) subject — the event decides the member set; a member ADDED to it is unknown_member, one
+  // MISSING is subject_mismatch (a subject that does not say what it covers).
+  if (!isRecord(subject)) {
+    const kind = subject === null ? "null" : typeof subject;
+    return report("envelope_subject_mismatch", `subject is ${kind}, expected a JSON object`);
+  }
+  const event = toPlain(subject["event"]) as Json;
+  const expectedMembers = typeof event === "string" ? ENVELOPE_SUBJECT_MEMBERS.get(event) : undefined;
+  if (expectedMembers === undefined) {
+    return report(
+      "envelope_subject_mismatch",
+      `subject event=${pyRepr(event)}; envelope v${ENVELOPE_VERSION} defines a subject for ` +
+        `${reprList(sortedStrings(ENVELOPE_SUBJECT_MEMBERS.keys()))} and no other event`,
+    );
+  }
+  const present = sortedStrings(Object.keys(subject));
+  const added = present.filter((m) => !expectedMembers.has(m));
+  if (added.length > 0) {
+    return report(
+      "envelope_unknown_member",
+      `subject member set is ${reprList(present)}, expected ` +
+        `${reprList(sortedStrings(expectedMembers))} for a ${event} subject`,
+    );
+  }
+  const missing = sortedStrings(expectedMembers).filter((m) => !(m in subject));
+  if (missing.length > 0) {
+    return report(
+      "envelope_subject_mismatch",
+      `subject is missing ${reprList(missing)}, which a ${event} subject requires`,
+    );
+  }
+
+  // (3a) the binding member. `seq` is the lookup key, so there is nothing to compare it against;
+  // the entry it finds supplies the hash the subject is checked against.
+  const subjectSeq = toPlain(subject["seq"]) as Json;
+  const entry = bySeq.get(subjectSeq);
+  if (entry === undefined) {
+    return report("envelope_subject_mismatch", `no entry at seq ${pyRepr(subjectSeq)} in this bundle`);
+  }
+  const seq = orNull(entry["seq"]);
+  const computed = recomputed.get(seq) ?? null;
+  const claimed = toPlain(subject["entry_hash"]) as Json;
+  if (claimed !== computed) {
+    return report(
+      "envelope_subject_mismatch",
+      `subject entry_hash ${pyRepr(claimed)} != the hash recomputed for seq ${String(seq)} from ` +
+        `this bundle (${pyRepr(computed)})`,
+    );
+  }
+
+  // (3b) the locators, checked against the SAME entry `seq` found. A matching locator attests
+  // nothing on its own; a disagreeing one is the same failure at the same position.
+  const locators: [string, Json][] = [
+    ["chain_id", orNull(entry["chain_id"])],
+    ["node", orNull(entry["node"])],
+    ["event", orNull(entry["event"])],
+  ];
+  if (event === "allow") locators.push(["call_id", orNull(entry["call_id"])]);
+  for (const [member, actual] of locators) {
+    const stated = toPlain(subject[member]) as Json;
+    if (stated !== actual) {
+      return report(
+        "envelope_subject_mismatch",
+        `subject ${member}=${pyRepr(stated)} != ${pyRepr(actual)} on the entry at seq ${String(seq)}`,
+      );
+    }
+  }
+
+  // (4) canonicality — an invariant SEPARATE from the signature: the received bytes must equal
+  // JCS of what they parse to. It can only be raised where the bytes as received are supplied,
+  // because formatting and escaping do not survive a parse.
+  let nonCanonical = false;
+  if (raw !== null) {
+    const received = typeof raw === "string" ? Buffer.from(raw, "hex") : raw;
+    let recanonicalized: Buffer | null = null;
+    try {
+      recanonicalized = canonicalBytes(envelope as unknown as CJson);
+    } catch (err) {
+      nonCanonical = true;
+      report("envelope_non_canonical", `the envelope cannot be canonicalized: ${String(err)}`);
+    }
+    if (recanonicalized !== null && !recanonicalized.equals(received)) {
+      nonCanonical = true;
+      report(
+        "envelope_non_canonical",
+        "the bytes as received are not JCS of what they parse to " +
+          `(${received.length} received, ${recanonicalized.length} canonical)`,
+      );
+    }
+  }
+
+  // (5) the witness key. A signature that verifies under some OTHER trusted key is not
+  // witness-signed: the kid names the key, and that is the key it has to verify under.
+  const witness = envelope["witness"] as Record<string, CJson>;
+  const kid = toPlain(witness["kid"]) as Json;
+  const alg = toPlain(witness["alg"]) as Json;
+  const known = typeof kid === "string" ? trusted.get(kid) : undefined;
+  if (known === undefined || known[0] !== alg) {
+    return report(
+      "envelope_unknown_witness",
+      `witness kid=${pyRepr(kid)} alg=${pyRepr(alg)} is not in the trusted witness keys ` +
+        `(${reprList(sortedStrings(trusted.keys()))})`,
+    );
+  }
+
+  // (6) the signature, over JCS(envelope minus "sig").
+  const sigHex = toPlain(envelope["sig"]) as Json;
+  const signature = typeof sigHex === "string" && /^[0-9a-fA-F]*$/.test(sigHex)
+    ? Buffer.from(sigHex, "hex")
+    : Buffer.alloc(0);
+  let verified = false;
+  try {
+    verified = new Ed25519Verifier(known[1], kid as string).verify(
+      envelopeSigningInput(envelope),
+      signature,
+    );
+  } catch {
+    verified = false;
+  }
+  if (!verified) {
+    return report("envelope_bad_signature", `the signature does not verify under the key kid=${pyRepr(kid)} names`);
+  }
+  if (nonCanonical) return null;
+  return { seq, node: orNull(entry["node"]), result: toPlain(envelope["observed"]["result"]) as Json };
+}
+
+/**
+ * Score a bundle's observer envelopes on their own, without the ledger checks.
+ *
+ * Returns `{ok, ...summary, failure_details}`. `states` maps every entry's seq to
+ * `witness-signed` or `process-asserted`; `lines` is the report line for each.
+ */
+export function verifyEnvelopes(
+  bundle: Partial<Bundle>,
+  options: VerifyEnvelopesOptions = {},
+): EnvelopeSummary & { ok: boolean; failure_details: FailureDetail[] } {
+  const [summary, fail] = scoreEnvelopes(
+    bundle.entries ?? [],
+    bundle.envelopes ?? [],
+    trustedWitnesses(options.witnessKeys ?? null),
+    options.envelopeBytes ?? null,
+  );
+  return { ok: fail.length === 0, ...summary, failure_details: fail.details };
 }
 
 // =============================================================================================
@@ -1135,6 +1681,11 @@ export interface VerifyReport {
   actions_checked: number;
   chain_id: Json;
   execution_binding: ExecutionBinding;
+  /**
+   * The observer-envelope layer: the per-entry state for EVERY entry, the result and report line
+   * for each, and the failures (which are also in `failures`/`failure_details`).
+   */
+  envelopes: EnvelopeSummary;
   /** Which anchor mode this verification ran against. */
   verified_against: "expected_anchor" | "bundle_anchor";
 }
@@ -1166,6 +1717,18 @@ export interface VerifyBundleOptions {
   expectedAnchor?: Record<string, CJson> | Anchor | null;
   /** An independently retained `[seq, hash]` to verify the bundle's actual head against. */
   expectedHead?: readonly [number, string] | null;
+  /**
+   * The trust set for the bundle's observer envelopes, if it carries any: the vector file's
+   * `[{kid, alg, public_key_hex}]` shape, or a `{kid: publicKey}` record. Absent is an EMPTY
+   * trust set, not a skipped check — an envelope naming a key nobody trusts is
+   * `envelope_unknown_witness`.
+   */
+  witnessKeys?: readonly WitnessKey[] | Record<string, Buffer | string> | null;
+  /**
+   * The envelope bytes AS RECEIVED, positionally aligned with `bundle.envelopes`. Only
+   * `envelope_non_canonical` needs them, and only where a deployment kept them.
+   */
+  envelopeBytes?: readonly (Buffer | string | null)[] | null;
 }
 
 export function verifyBundle(
@@ -1185,6 +1748,7 @@ export function verifyBundle(
     chain_id: false,
     root: false,
     expected_anchor: "not checked",
+    envelopes: "not present",
   };
   const log = new FailureLog();
 
@@ -1377,9 +1941,26 @@ export function verifyBundle(
     : [{ status: "not applicable" }, new FailureLog()];
   if (eb.failures !== undefined && eb.failures.length > 0) log.extend(ebFailures);
 
-  // "anchor" and "expected_anchor" are excluded here — both carry a tri-state status string
-  // ("not checked"/"verified"/"FAILED"), not a plain pass/fail boolean, and a failed check on
-  // either already lands its own entry in `failures`, which the `ok` computation still gates on.
+  // (4) observer envelopes. Never required — an absent envelope is the status quo and changes
+  // nothing — but a PRESENT one has to verify, and a broken one lands in this same list. The
+  // per-entry state is reported either way, so a reader sees which hops were covered before
+  // reading which one failed.
+  const [envelopeSummary, envelopeFailures] = scoreEnvelopes(
+    entries,
+    bundle.envelopes ?? [],
+    trustedWitnesses(options.witnessKeys ?? null),
+    options.envelopeBytes ?? null,
+  );
+  if (bundle.envelopes === undefined) {
+    envelopeSummary.status = "not present";
+  } else {
+    checks.envelopes = envelopeSummary.status;
+    log.extend(envelopeFailures);
+  }
+
+  // "anchor", "expected_anchor" and "envelopes" are excluded here — each carries a status
+  // string, not a plain pass/fail boolean, and a failed check on any of them already lands its
+  // own entry in `failures`, which the `ok` computation still gates on.
   const ok =
     checks.integrity &&
     checks.monotonicity &&
@@ -1397,6 +1978,7 @@ export function verifyBundle(
     actions_checked: actions,
     chain_id: orNull(bundle.chain_id),
     execution_binding: eb,
+    envelopes: envelopeSummary,
     verified_against: expectedAnchor !== null || expectedHead !== null ? "expected_anchor" : "bundle_anchor",
   };
 }
