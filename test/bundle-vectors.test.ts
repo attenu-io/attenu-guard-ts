@@ -110,7 +110,7 @@ test("the vector file declares its version and every expected case, in order", (
   // implementation that scored bundle_vectors_v1 still scores it. `revision` is the additive
   // counter that does move. Cases are appended, never inserted: a position is stable for life.
   assert.equal(DOCUMENT.version, "bundle_vectors_v1");
-  assert.equal(DOCUMENT.revision, "bundle_vectors_v1.1");
+  assert.equal(DOCUMENT.revision, "bundle_vectors_v1.2");
   assert.deepEqual(
     DOCUMENT.cases.map((c) => c.name),
     [
@@ -128,6 +128,14 @@ test("the vector file declares its version and every expected case, in order", (
       "reject_uncontained_allow",
       "reject_increased_ttl",
       "reject_loosened_ceiling",
+      // revision v1.2 — the literal-subset base and the four rows that can fail ONLY on ttl or a
+      // ceiling. The two v1.1 rows above are also rejected, for a scope reason, by a verifier
+      // that compares scope lists literally and skips both dimensions (0.11.0 / 0.6.0 did).
+      "valid_bundle_v2_literal",
+      "reject_increased_ttl_literal",
+      "reject_loosened_ceiling_literal",
+      "reject_null_ttl_literal",
+      "reject_omitted_ceiling_literal",
     ],
   );
 });
@@ -218,9 +226,59 @@ test("the vendored copy is the file the fixtures directory documents, read as ra
   // copied, or is copied with a rewritten serialisation, fails here.
   const raw = readFileSync(resolve(FIXTURES, "vectors", "bundles", "bundle_vectors_v1.json"), "utf8");
   assert.equal(JSON.parse(raw).version, "bundle_vectors_v1");
-  assert.equal(JSON.parse(raw).revision, "bundle_vectors_v1.1");
-  assert.equal(JSON.parse(raw).cases.length, 12);
+  assert.equal(JSON.parse(raw).revision, "bundle_vectors_v1.2");
+  assert.equal(JSON.parse(raw).cases.length, 17);
   assert.ok(raw.endsWith("\n"), "the Python writer terminates the file with a newline");
+});
+
+test("the literal base differs from valid_bundle_v2 in the root authority only", () => {
+  const byName = new Map(DOCUMENT.cases.map((c) => [c.name, c]));
+  const a = byName.get("valid_bundle_v2")!.bundle.entries;
+  const b = byName.get("valid_bundle_v2_literal")!.bundle.entries;
+  assert.equal(a.length, b.length);
+  const strip = (e: Record<string, CJson>) => {
+    const { hash: _h, prev_hash: _p, ...rest } = e;
+    return JSON.stringify(rest);
+  };
+  const differing = a.map((e, i) => (strip(e) !== strip(b[i]!) ? i : -1)).filter((i) => i >= 0);
+  assert.deepEqual(differing, [0]);
+  assert.deepEqual((a[0]!["authority"] as Record<string, CJson>)["scopes"], ["crm.*", "mail.send"]);
+  assert.deepEqual((b[0]!["authority"] as Record<string, CJson>)["scopes"], ["crm.read", "mail.send"]);
+  assert.deepEqual(a[1]!["granted"], b[1]!["granted"]);
+});
+
+test("the literal rows show no scope difference to a literal comparison", () => {
+  // What revision v1.2 exists for. A verifier that compares scope LISTS and never looks at ttl or
+  // ceilings rejects the two v1.1 rows anyway, for a scope reason at the declared position:
+  // crm.read is not literally in {crm.*, mail.send}. It passes them without checking the
+  // dimension they are about. On the four v1.2 rows that comparison finds nothing, so only a
+  // ttl or ceiling check can produce the required failure.
+  const byName = new Map(DOCUMENT.cases.map((c) => [c.name, c]));
+  const literalWidening = (name: string): string[] => {
+    const es = byName.get(name)!.bundle.entries;
+    const parent = new Set((es[0]!["authority"] as Record<string, CJson>)["scopes"] as string[]);
+    const child = (es[1]!["granted"] as Record<string, CJson>)["scopes"] as string[];
+    return child.filter((s) => !parent.has(s)).sort();
+  };
+  for (const name of ["reject_increased_ttl", "reject_loosened_ceiling"]) {
+    assert.deepEqual(literalWidening(name), ["crm.read"], name);
+  }
+  const base = byName.get("valid_bundle_v2_literal")!.bundle.entries[1]!["granted"] as Record<string, CJson>;
+  for (const name of [
+    "reject_increased_ttl_literal",
+    "reject_loosened_ceiling_literal",
+    "reject_null_ttl_literal",
+    "reject_omitted_ceiling_literal",
+  ]) {
+    assert.deepEqual(literalWidening(name), [], name);
+    const granted = byName.get(name)!.bundle.entries[1]!["granted"] as Record<string, CJson>;
+    assert.deepEqual(granted["scopes"], base["scopes"], name);
+    assert.ok(
+      JSON.stringify(granted["ttl"]) !== JSON.stringify(base["ttl"]) ||
+        JSON.stringify(granted["constraints"]) !== JSON.stringify(base["constraints"]),
+      `${name}: only ttl or constraints may differ from the base`,
+    );
+  }
 });
 
 // =============================================================================================
