@@ -6,7 +6,7 @@ Versions follow semantic versioning.
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-09-04
+## [0.8.0] - 2026-09-03
 
 ### Added
 - Observer envelopes (envelope v1), matching Python 0.13.0 byte for byte — a witness's Ed25519 signature over the IDENTITY of one committed ledger entry (`chain_id`, `node`, `seq`, `entry_hash`, `event`, and `call_id` on an allow), carried beside the ledger in a bundle's top-level `envelopes` array. `signEnvelope()`, `verifyEnvelopes()`, `envelopeSubject()`, `envelopeSigningInput()`, and `exportBundle(..., { envelopes })`. The signature is over `JCS(envelope minus "sig")`, the same canonicalization every other signed surface uses
