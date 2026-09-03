@@ -6,6 +6,8 @@ Versions follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-03
+
 ### Fixed
 - `verifyBundle()` monotonicity: a delegation that widened only ttl or only a ceiling verified CLEAN whenever the child's scopes were literally a subset of the parent's — the check was gated on a literal, non-wildcard-aware scope difference, so a `false` from `isNarrowerThan` was discarded. A child that outlived its parent, raised a ceiling, dropped a ceiling its parent held, or carried no ttl at all now fails, and the message names the dimension (`ttl 7200 > parent 3600`, `ceiling max_rows<=250 looser than parent max_rows<=100`), byte-identical to Python. The scope-widening string is unchanged
 
