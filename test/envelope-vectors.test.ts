@@ -56,7 +56,7 @@ import {
 import { Authority } from "../src/authority.js";
 import { RowLimit } from "../src/ceilings.js";
 import { Guard } from "../src/guard.js";
-import { HS256TestSigner } from "../src/wire.js";
+import { Ed25519Signer, HS256TestSigner } from "../src/wire.js";
 import { fixturePath, fixtureText } from "./helpers.js";
 
 const VECTOR_FILE = "vectors/envelopes/envelope_vectors_v1.json";
@@ -355,10 +355,9 @@ function witnessSeed(name: string): Buffer {
 
 test("the witness keys derive to the same public keys the file carries", () => {
   const keys = byName("valid_spawn_envelope").witness_keys;
-  const derived = ["witness-a", "witness-b"].map((n) => {
-    const { Ed25519Signer } = require("../src/wire.js") as typeof import("../src/wire.js");
-    return Ed25519Signer.fromPrivateBytes(witnessSeed(n)).publicBytesRaw().toString("hex");
-  });
+  const derived = ["witness-a", "witness-b"].map((n) =>
+    Ed25519Signer.fromPrivateBytes(witnessSeed(n)).publicBytesRaw().toString("hex"),
+  );
   assert.deepEqual(keys.map((k) => k.public_key_hex), derived);
 });
 
@@ -391,7 +390,6 @@ function envelope(result: "matched" | "not_matched" | "indeterminate" = "matched
 }
 
 function resign(e: Envelope): Envelope {
-  const { Ed25519Signer } = require("../src/wire.js") as typeof import("../src/wire.js");
   const body: Record<string, CJson> = {};
   for (const [k, v] of Object.entries(e)) if (k !== "sig") body[k] = v as CJson;
   return { ...body, sig: Ed25519Signer.fromPrivateBytes(SEED, KID).sign(envelopeSigningInput(body)).toString("hex") } as unknown as Envelope;
@@ -476,7 +474,6 @@ test("no trust set is an empty one rather than a skipped check", () => {
 });
 
 test("a trust set may be given as a plain kid-to-key record", () => {
-  const { Ed25519Signer } = require("../src/wire.js") as typeof import("../src/wire.js");
   const keys = { [KID]: Ed25519Signer.fromPrivateBytes(SEED).publicBytesRaw() };
   assert.ok(
     verifyEnvelopes({ entries: BASE.bundle.entries, envelopes: [envelope()] }, { witnessKeys: keys }).ok,
