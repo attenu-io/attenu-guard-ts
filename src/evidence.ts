@@ -621,8 +621,19 @@ export interface VerifyChecks {
 /** Python-style repr for the small set of value types these failure messages carry. */
 function pyRepr(value: Json): string {
   if (value === null) return "None";
+  if (typeof value === "boolean") return value ? "True" : "False";
   if (typeof value === "number") return String(value);
   if (typeof value === "string") return `'${value}'`;
+  // Containers reach here only on hostile input — a subject member that is a list or an object
+  // where the contract wants a scalar. Rendered the way Python's repr renders them, because the
+  // two implementations report the same failure strings and a JSON spelling would not match.
+  if (Array.isArray(value)) return `[${value.map((v) => pyRepr(v as Json)).join(", ")}]`;
+  if (typeof value === "object") {
+    const body = Object.entries(value as Record<string, unknown>)
+      .map(([k, v]) => `${pyRepr(k)}: ${pyRepr(v as Json)}`)
+      .join(", ");
+    return `{${body}}`;
+  }
   return JSON.stringify(value);
 }
 
@@ -821,28 +832,101 @@ export function signEnvelope(
 }
 
 /**
+ * The 32-byte Ed25519 public key for `kid`, or an `Error` naming it.
+ *
+ * A trust set is CALLER CONFIGURATION, not bundle content, so a malformed row is a mistake in the
+ * deployment and failing loudly is the only way it does not become a silent downgrade: coercing a
+ * number would fabricate zero bytes, and every envelope from that witness would then fail on its
+ * SIGNATURE, reading as a witness who signed badly rather than as a trust set never configured.
+ */
+function witnessPublicKey(kid: string, value: unknown): Buffer {
+  if (typeof value === "string") {
+    if (value.length !== 64) {
+      throw new Error(
+        `witness key '${kid}': public_key_hex must be 64 hex characters (a 32-byte Ed25519 key), ` +
+          `got ${value.length}`,
+      );
+    }
+    if (!/^[0-9a-fA-F]{64}$/.test(value)) {
+      throw new Error(`witness key '${kid}': public_key_hex is not hexadecimal`);
+    }
+    return Buffer.from(value, "hex");
+  }
+  if (value instanceof Uint8Array) {
+    if (value.length !== 32) {
+      throw new Error(`witness key '${kid}': an Ed25519 public key is 32 bytes, got ${value.length}`);
+    }
+    return Buffer.from(value);
+  }
+  throw new Error(`witness key '${kid}': expected 64 hex characters or 32 bytes`);
+}
+
+/**
  * kid -> `[alg, raw public key]`, from the vector file's own `witness_keys` shape or from a plain
  * `{kid: publicKeyBytes}` record.
  *
  * `null`/absent means no trust anchor is configured, which is an EMPTY set, not an absent check:
  * an envelope naming a kid nobody trusts is `envelope_unknown_witness`, and that is the honest
  * answer whether the trust set is empty or merely does not contain it.
+ *
+ * Every row is validated here and a bad one throws, naming its kid. This is the one envelope
+ * input that is NOT attacker-supplied — the deployment chose these keys — so a mistake in them is
+ * reported to the caller rather than folded into a finding about the bundle. v1 defines Ed25519
+ * and no other algorithm, so a row declaring anything else is refused too.
  */
 function trustedWitnesses(
   witnessKeys: readonly WitnessKey[] | Record<string, Buffer | string> | null | undefined,
 ): Map<string, [string, Buffer]> {
   const trusted = new Map<string, [string, Buffer]>();
   if (witnessKeys === null || witnessKeys === undefined) return trusted;
-  if (Array.isArray(witnessKeys)) {
-    for (const k of witnessKeys) {
-      trusted.set(k.kid, [k.alg, Buffer.from(k.public_key_hex ?? "", "hex")]);
+  const rows: [unknown, unknown][] = Array.isArray(witnessKeys)
+    ? witnessKeys.map((k) => [isRecordLike(k) ? k["kid"] : undefined, k])
+    : Object.entries(witnessKeys);
+  for (const [kid, value] of rows) {
+    if (typeof kid !== "string") throw new Error("witness key kid must be a string");
+    let key: unknown = value;
+    if (isRecordLike(value)) {
+      const alg = value["alg"];
+      if (alg !== ENVELOPE_ALG) {
+        throw new Error(`witness key '${kid}': alg must be '${ENVELOPE_ALG}', got ${pyRepr(alg as Json)}`);
+      }
+      key = value["public_key_hex"];
     }
-    return trusted;
-  }
-  for (const [kid, key] of Object.entries(witnessKeys)) {
-    trusted.set(kid, [ENVELOPE_ALG, typeof key === "string" ? Buffer.from(key, "hex") : key]);
+    trusted.set(kid, [ENVELOPE_ALG, witnessPublicKey(kid, key)]);
   }
   return trusted;
+}
+
+/** A plain object (not an array, not null, not a Buffer). */
+function isRecordLike(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Uint8Array);
+}
+
+/**
+ * One `envelopeBytes` element as bytes, or null when it is not bytes at all.
+ *
+ * Coercing a number would fabricate that many ZERO bytes, turning a caller's mistake into a
+ * canonicality finding about the bundle; hex that does not parse is the same mistake in a
+ * different shape. Neither is coerced.
+ */
+function receivedBytes(raw: unknown): Buffer | null {
+  if (typeof raw === "string") {
+    if (raw.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(raw)) return null;
+    return Buffer.from(raw, "hex");
+  }
+  if (raw instanceof Uint8Array) return Buffer.from(raw);
+  return null;
+}
+
+/**
+ * A subject `seq` this build will look an entry up by: a JSON integer, and never a boolean.
+ *
+ * The type check comes first and every use of `seq` is behind it — in Python an unguarded lookup
+ * raises on a list or an object and finds the entry at seq 1 for `true`, and the two
+ * implementations report the same failure for the same bundle.
+ */
+function isSeq(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value);
 }
 
 /**
@@ -988,9 +1072,13 @@ function scoreEnvelope(
   const subject: unknown = isRecord(envelope) ? envelope["subject"] : undefined;
 
   function position(): [Json, Json] {
+    // Every failure is positioned by `subject.seq`, and `subject` is attacker-supplied, so the
+    // lookup is guarded: a seq that is not an integer positions nothing, which is honest — it
+    // names no entry — and it is never used as a key.
     const s = isRecord(subject) ? (toPlain(subject["seq"]) as Json) : null;
+    if (!isSeq(s)) return [null, null];
     const entry = bySeq.get(s);
-    if (entry === undefined) return [typeof s === "number" ? s : null, null];
+    if (entry === undefined) return [s, null];
     return [orNull(entry["seq"]), orNull(entry["node"])];
   }
 
@@ -1027,7 +1115,9 @@ function scoreEnvelope(
   for (const [label, value, expected] of levels) {
     const members = isRecord(value) ? sortedStrings(Object.keys(value)) : null;
     if (members === null || members.length !== expected.size || members.some((m) => !expected.has(m))) {
-      const got = members === null ? (value === null ? "null" : typeof value) : reprList(members);
+      // "not an object" rather than the type's name: the two languages spell their type names
+      // differently and both implementations report the same failure strings for the same bundle.
+      const got = members === null ? "not an object" : reprList(members);
       return report(
         "envelope_unknown_member",
         `${label} member set is ${got}, expected ${reprList(sortedStrings(expected))}`,
@@ -1038,11 +1128,17 @@ function scoreEnvelope(
   // (3) subject — the event decides the member set; a member ADDED to it is unknown_member, one
   // MISSING is subject_mismatch (a subject that does not say what it covers).
   if (!isRecord(subject)) {
-    const kind = subject === null ? "null" : typeof subject;
-    return report("envelope_subject_mismatch", `subject is ${kind}, expected a JSON object`);
+    // No type name, for the same reason as the member-set message above: the two languages spell
+    // their type names differently and report the same strings for the same bundle.
+    return report("envelope_subject_mismatch", "subject is not a JSON object");
   }
   const event = toPlain(subject["event"]) as Json;
-  const expectedMembers = typeof event === "string" ? ENVELOPE_SUBJECT_MEMBERS.get(event) : undefined;
+  if (typeof event !== "string") {
+    // `event` selects the subject member set, so it is a lookup key as well; in Python an
+    // unhashable one raises. Found by the hostile-value suite, not by review.
+    return report("envelope_subject_mismatch", "subject event is not a string");
+  }
+  const expectedMembers = ENVELOPE_SUBJECT_MEMBERS.get(event);
   if (expectedMembers === undefined) {
     return report(
       "envelope_subject_mismatch",
@@ -1068,8 +1164,12 @@ function scoreEnvelope(
   }
 
   // (3a) the binding member. `seq` is the lookup key, so there is nothing to compare it against;
-  // the entry it finds supplies the hash the subject is checked against.
+  // the entry it finds supplies the hash the subject is checked against. It is also the one
+  // subject member used as a KEY, so its type is checked before it is used as one.
   const subjectSeq = toPlain(subject["seq"]) as Json;
+  if (!isSeq(subjectSeq)) {
+    return report("envelope_subject_mismatch", "subject seq is not an integer");
+  }
   const entry = bySeq.get(subjectSeq);
   if (entry === undefined) {
     return report("envelope_subject_mismatch", `no entry at seq ${pyRepr(subjectSeq)} in this bundle`);
@@ -1124,15 +1224,20 @@ function scoreEnvelope(
   // because formatting and escaping do not survive a parse.
   let nonCanonical = false;
   if (raw !== null) {
-    const received = typeof raw === "string" ? Buffer.from(raw, "hex") : raw;
-    let recanonicalized: Buffer | null = null;
+    const received = receivedBytes(raw);
+    if (received === null) {
+      return report("envelope_non_canonical", "envelope_bytes entry is not hex or bytes");
+    }
+    let recanonicalized: Buffer;
     try {
       recanonicalized = canonicalBytes(envelope as unknown as CJson);
     } catch (err) {
-      nonCanonical = true;
-      report("envelope_non_canonical", `the envelope cannot be canonicalized: ${String(err)}`);
+      // A value JCS cannot represent at all — a non-finite number, an integer outside the
+      // binary64 safe range, a lone surrogate. There is no canonical form to compare the
+      // received bytes with and none to verify a signature over, so this is the end of it.
+      return report("envelope_non_canonical", `the envelope cannot be canonicalized: ${String(err)}`);
     }
-    if (recanonicalized !== null && !recanonicalized.equals(received)) {
+    if (!recanonicalized.equals(received)) {
       nonCanonical = true;
       report(
         "envelope_non_canonical",
@@ -1147,8 +1252,21 @@ function scoreEnvelope(
   const witness = envelope["witness"] as Record<string, CJson>;
   const kid = toPlain(witness["kid"]) as Json;
   const alg = toPlain(witness["alg"]) as Json;
-  const known = typeof kid === "string" ? trusted.get(kid) : undefined;
-  if (known === undefined || known[0] !== alg) {
+  if (typeof kid !== "string") {
+    // `kid` names a key, so it is a lookup key here too, and in Python an unhashable one raises.
+    return report("envelope_unknown_witness", "witness kid is not a string");
+  }
+  if (alg !== ENVELOPE_ALG) {
+    // v1 defines Ed25519 and nothing else. Without this, `"alg": "none"` on both sides — in the
+    // envelope and in a trust-set row — agreed with each other and read as witness-signed.
+    return report(
+      "envelope_unknown_witness",
+      `witness alg=${pyRepr(alg)} is not '${ENVELOPE_ALG}'; envelope v${ENVELOPE_VERSION} ` +
+        "defines Ed25519 and no other algorithm",
+    );
+  }
+  const known = trusted.get(kid);
+  if (known === undefined) {
     return report(
       "envelope_unknown_witness",
       `witness kid=${pyRepr(kid)} alg=${pyRepr(alg)} is not in the trusted witness keys ` +
@@ -1158,15 +1276,25 @@ function scoreEnvelope(
 
   // (6) the signature, over JCS(envelope minus "sig").
   const sigHex = toPlain(envelope["sig"]) as Json;
-  const signature = typeof sigHex === "string" && /^[0-9a-fA-F]*$/.test(sigHex)
+  if (typeof sigHex !== "string") {
+    // A `sig` that is not a string is not a signature. In Python it reached `bytes.fromhex` and
+    // raised a TypeError the surrounding `except ValueError` does not catch.
+    return report("envelope_bad_signature", "sig is not a hex string");
+  }
+  const signature = /^[0-9a-fA-F]*$/.test(sigHex) && sigHex.length % 2 === 0
     ? Buffer.from(sigHex, "hex")
     : Buffer.alloc(0);
+  let signingInput: Buffer;
+  try {
+    signingInput = envelopeSigningInput(envelope);
+  } catch (err) {
+    // Reached only when no `envelopeBytes` were supplied, so step (4) did not run: the envelope
+    // holds a value JCS cannot represent and there is nothing to verify OVER.
+    return report("envelope_non_canonical", `the envelope cannot be canonicalized: ${String(err)}`);
+  }
   let verified = false;
   try {
-    verified = new Ed25519Verifier(known[1], kid as string).verify(
-      envelopeSigningInput(envelope),
-      signature,
-    );
+    verified = new Ed25519Verifier(known[1], kid).verify(signingInput, signature);
   } catch {
     verified = false;
   }

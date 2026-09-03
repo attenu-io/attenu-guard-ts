@@ -212,6 +212,23 @@ the covered entry, and that entry reports `process-asserted`: two observations
 of one event contradict each other by construction, and an entry whose coverage
 is disputed must not read as clean.
 
+`witness.alg` is checked against the contract, not against the trust-set row.
+v1 defines `EdDSA` and no other algorithm, so an envelope naming anything else
+is `envelope_unknown_witness` whatever the row it is compared with happens to
+say, and a trust-set row declaring another algorithm is refused when the trust
+set is built.
+
+A bundle is attacker-supplied, so `verifyBundle` reports and never throws.
+Every envelope member is an untrusted JSON value of any type: a `seq` that is
+not an integer, an `event` or a `witness.kid` that is not a string, a `sig`
+that is not a hex string, and a value JCS cannot represent are each a named
+reason at a defined position. `witnessKeys` is the one envelope input that is
+not attacker-supplied — the deployment chose those keys — so a malformed row
+there throws, naming its `kid`, rather than being folded into a finding about
+the bundle. Python and TypeScript are checked against each other on a matrix of
+hostile values in every envelope member: same verdict, same reason, same
+position, same failure string.
+
 ## What it does not do
 
 - It does not decide what permissions a task needs. You state them; this library

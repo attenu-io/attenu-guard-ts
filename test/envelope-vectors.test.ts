@@ -57,7 +57,9 @@ import { Authority } from "../src/authority.js";
 import { RowLimit } from "../src/ceilings.js";
 import { Guard } from "../src/guard.js";
 import { Ed25519Signer, HS256TestSigner } from "../src/wire.js";
-import { fixturePath, fixtureText } from "./helpers.js";
+import { resolve } from "node:path";
+
+import { REPO_ROOT, fixturePath, fixtureText } from "./helpers.js";
 
 const VECTOR_FILE = "vectors/envelopes/envelope_vectors_v1.json";
 
@@ -65,7 +67,7 @@ const VECTOR_FILE = "vectors/envelopes/envelope_vectors_v1.json";
  * The sha256 of the vendored file. It pins WHICH bytes this suite scored, the way an independent
  * run pins the corpus it ran. It moves only when a case is appended, which also moves `revision`.
  */
-const VECTOR_SHA256 = "3d67e7a79eb9f293127192126abae761176f9371be13b403d6b31b26701576ee";
+const VECTOR_SHA256 = "6a57d75ebec881d39d5a1805793a20f9a6d7bff021b70782dcb57c43b276df64";
 
 interface ExpectedFailure {
   reason: string;
@@ -164,8 +166,9 @@ test("the vector file declares its version and every expected case, in order", (
       "reject_unknown_witness",
       // Appended at @safal207's proposal, so nothing above it moved.
       "reject_locator_mismatch",
-      // Appended at revision v1.1, with the duplicate-subject rule it pins.
+      // Appended at revision v1.1: the duplicate-subject rule, and the algorithm check.
       "reject_duplicate_subject",
+      "reject_unknown_alg",
     ],
   );
 });
@@ -596,4 +599,243 @@ test("the envelope version and typ constants match the contract", () => {
   assert.equal(ENVELOPE_VERSION, 1);
   assert.equal(ENVELOPE_TYP, "delegation-event-observation");
   assert.equal(ENVELOPE_ALG, "EdDSA");
+});
+
+// =============================================================================================
+// Hostile bundle content: verifyBundle reports, it never throws
+// =============================================================================================
+//
+// A bundle is attacker-supplied. Every envelope member is therefore an untrusted JSON value of
+// ANY type, and the one thing a verifier may never do with one is throw: a caller that has to
+// wrap `verifyBundle` in try/catch cannot tell a rejected bundle from a crashed verifier, and a
+// crash on a malformed bundle is a denial of service against whoever is checking it. Python
+// raised on five of these; TypeScript's Map lookups do not throw but MIS-FIND, which is worse.
+// Both now report the same reason at the same position for the same value.
+
+/** JSON values a parser yields and the scorer must survive. */
+const HOSTILE: Json[] = [
+  { a: 1 } as unknown as Json,
+  [1] as unknown as Json,
+  true,
+  false,
+  null,
+  1.5,
+  -1,
+  0,
+  "",
+  "zz",
+  "0".repeat(63),
+  Number.MAX_SAFE_INTEGER + 2,
+];
+
+/** Every member of the envelope, at every level v1 defines. */
+const MEMBER_PATHS: string[][] = [
+  ["v"], ["typ"], ["sig"], ["subject"], ["observed"], ["witness"],
+  ["subject", "chain_id"], ["subject", "node"], ["subject", "seq"],
+  ["subject", "entry_hash"], ["subject", "event"],
+  ["observed", "result"], ["observed", "at"], ["observed", "method"],
+  ["witness", "kid"], ["witness", "alg"],
+];
+
+function mutated(path: string[], value: Json): Bundle {
+  const bundle = JSON.parse(JSON.stringify(BASE.bundle)) as Bundle;
+  const envelope = bundle.envelopes![0]! as unknown as Record<string, unknown>;
+  let target = envelope;
+  for (const member of path.slice(0, -1)) target = target[member] as Record<string, unknown>;
+  target[path[path.length - 1]!] = value;
+  return bundle;
+}
+
+test("no hostile value in any envelope member makes verifyBundle throw", () => {
+  const signer = signerFor(BASE);
+  const honest = canonicalBytes(BASE.bundle.envelopes![0]! as unknown as CJson);
+  const rawVariants: (readonly (Buffer | string | null)[] | null)[] = [
+    null, [honest], ["zz"], [null],
+  ];
+  const allowed = new Set<string>([...ENVELOPE_FAILURES, "integrity(anchor)"]);
+  for (const path of MEMBER_PATHS) {
+    for (const value of HOSTILE) {
+      for (const envelopeBytes of rawVariants) {
+        const label = `${path.join(".")}=${JSON.stringify(value) ?? "undefined"}`;
+        const report = verifyBundle(mutated(path, value), signer, {
+          witnessKeys: BASE.witness_keys,
+          envelopeBytes,
+        });
+        // Every mutation moves the envelope away from the bytes the witness signed, so every one
+        // must reject — surviving is not the same as being accepted.
+        assert.equal(report.ok, false, label);
+        assert.ok(report.failures.length > 0, label);
+        for (const d of report.failure_details) assert.ok(allowed.has(d.reason), `${label}: ${d.reason}`);
+      }
+    }
+  }
+});
+
+test("a subject seq that is not an integer is a mismatch positioned nowhere", () => {
+  // `seq` is the one subject member used as a lookup KEY. Python raised on an unhashable one and
+  // found the entry at seq 1 for `true`; a JS Map silently finds nothing and then reports at the
+  // wrong position. The guard makes both say the same thing.
+  for (const value of [{ a: 1 } as unknown as Json, [1] as unknown as Json, true, false, 1.5, "1", null]) {
+    const report = verifyEnvelopes(mutated(["subject", "seq"], value), {
+      witnessKeys: BASE.witness_keys,
+    });
+    const detail = report.failure_details[0]!;
+    assert.equal(detail.reason, "envelope_subject_mismatch", JSON.stringify(value));
+    assert.deepEqual([detail.seq, detail.node], [null, null], JSON.stringify(value));
+    assert.match(detail.detail, /subject seq is not an integer/);
+  }
+});
+
+test("a subject event that is not a string is a subject mismatch", () => {
+  for (const value of [{ a: 1 } as unknown as Json, [1] as unknown as Json, true, 5, null]) {
+    const report = verifyEnvelopes(mutated(["subject", "event"], value), {
+      witnessKeys: BASE.witness_keys,
+    });
+    assert.equal(report.failure_details[0]!.reason, "envelope_subject_mismatch");
+    assert.match(report.failure_details[0]!.detail, /subject event is not a string/);
+  }
+});
+
+test("a witness kid that is not a string is an unknown witness", () => {
+  for (const value of [{ a: 1 } as unknown as Json, [1] as unknown as Json, 5, null, true]) {
+    const report = verifyEnvelopes(mutated(["witness", "kid"], value), {
+      witnessKeys: BASE.witness_keys,
+    });
+    const detail = report.failure_details[0]!;
+    assert.equal(detail.reason, "envelope_unknown_witness");
+    assert.match(detail.detail, /witness kid is not a string/);
+  }
+});
+
+test("a sig that is not a string is a bad signature", () => {
+  for (const value of [12345, true, ["ab"] as unknown as Json, { a: 1 } as unknown as Json, 0, false, null]) {
+    const report = verifyEnvelopes(mutated(["sig"], value), { witnessKeys: BASE.witness_keys });
+    const detail = report.failure_details[0]!;
+    assert.equal(detail.reason, "envelope_bad_signature", JSON.stringify(value));
+    assert.match(detail.detail, /sig is not a hex string/);
+  }
+});
+
+// =============================================================================================
+// witness.alg, and the trust set as caller configuration
+// =============================================================================================
+
+function withAlg(alg: Json): Bundle {
+  const bundle = JSON.parse(JSON.stringify(BASE.bundle)) as Bundle;
+  const e = bundle.envelopes![0]! as unknown as Record<string, unknown>;
+  (e["witness"] as Record<string, unknown>)["alg"] = alg;
+  bundle.envelopes = [resign(e as unknown as Envelope)];
+  return bundle;
+}
+
+test("an alg other than EdDSA is an unknown witness", () => {
+  // "none" is the row the corpus pins; HS256 is the other shape of the same hole — it reached
+  // the Ed25519 verifier and was reported as a SIGNATURE failure, naming the wrong cause.
+  for (const alg of ["none", "HS256", "ES256", "", null, 1] as Json[]) {
+    const report = verifyEnvelopes(withAlg(alg), { witnessKeys: BASE.witness_keys });
+    const detail = report.failure_details[0]!;
+    assert.equal(detail.reason, "envelope_unknown_witness", JSON.stringify(alg));
+    assert.match(detail.detail, /is not 'EdDSA'/);
+  }
+});
+
+test("a trust set row naming another algorithm is refused", () => {
+  // The other half: "none" on BOTH sides used to agree with itself and verify. It cannot even
+  // be configured now.
+  const rows = BASE.witness_keys.map((k) => ({ ...k }));
+  rows[0]!.alg = "none";
+  assert.throws(() => verifyEnvelopes(BASE.bundle, { witnessKeys: rows }), /witness-interop-v1.*EdDSA/s);
+});
+
+test("a trust set key that is not a key is refused and names the kid", () => {
+  // A number coerced to bytes would fabricate zero bytes, and every envelope from that witness
+  // would then fail on its signature — a misconfiguration read as a bad witness.
+  const bad: unknown[] = [32, Buffer.from("short"), "zz".repeat(32), "aa".repeat(31), null];
+  for (const value of bad) {
+    assert.throws(
+      () => verifyEnvelopes(BASE.bundle, { witnessKeys: { [KID]: value } as never }),
+      new RegExp(KID),
+      String(value),
+    );
+  }
+  assert.throws(() => verifyEnvelopes(BASE.bundle, { witnessKeys: [{ kid: 5 }] as never }), /kid must be a string/);
+});
+
+test("a list row with a bad public key is refused and names the kid", () => {
+  for (const bad of ["zz".repeat(32), "aa".repeat(31), "", null, 32]) {
+    const rows = BASE.witness_keys.map((k) => ({ ...k })) as unknown as Record<string, unknown>[];
+    rows[0]!["public_key_hex"] = bad;
+    assert.throws(() => verifyEnvelopes(BASE.bundle, { witnessKeys: rows as never }), new RegExp(KID));
+  }
+});
+
+test("a well formed trust set still verifies in both forms", () => {
+  // The validation must not have narrowed what a correct caller may pass.
+  const publicKey = Ed25519Signer.fromPrivateBytes(SEED).publicBytesRaw();
+  const forms: (readonly WitnessKey[] | Record<string, Buffer | string>)[] = [
+    BASE.witness_keys,
+    { [KID]: publicKey },
+    { [KID]: publicKey.toString("hex") },
+  ];
+  for (const witnessKeys of forms) {
+    assert.ok(verifyEnvelopes(BASE.bundle, { witnessKeys }).ok);
+  }
+});
+
+test("envelope bytes that are not hex or bytes are reported, not coerced", () => {
+  for (const raw of [12345, ["ab"], { a: 1 }, "zz", "abc", 0.5]) {
+    const report = verifyEnvelopes(BASE.bundle, {
+      witnessKeys: BASE.witness_keys,
+      envelopeBytes: [raw as never],
+    });
+    const detail = report.failure_details[0]!;
+    assert.equal(detail.reason, "envelope_non_canonical", String(raw));
+    assert.match(detail.detail, /envelope_bytes entry is not hex or bytes/);
+  }
+});
+
+test("the received bytes still verify when they are hex or bytes", () => {
+  const honest = canonicalBytes(BASE.bundle.envelopes![0]! as unknown as CJson);
+  for (const raw of [honest, honest.toString("hex"), new Uint8Array(honest)]) {
+    assert.ok(
+      verifyEnvelopes(BASE.bundle, {
+        witnessKeys: BASE.witness_keys,
+        envelopeBytes: [raw as never],
+      }).ok,
+    );
+  }
+});
+
+test("pyRepr renders hostile values the way Python's repr does", () => {
+  // The two implementations report the same failure strings, and a JSON spelling of a container
+  // or a boolean would not match. These are the exact strings Python produced for the same
+  // envelopes: `witness alg=<repr> is not 'EdDSA'`.
+  const expected: [Json, string][] = [
+    [true, "True"],
+    [false, "False"],
+    [null, "None"],
+    [1, "1"],
+    ["none", "'none'"],
+    [{ a: 1 } as unknown as Json, "{'a': 1}"],
+    [[1, "x"] as unknown as Json, "[1, 'x']"],
+  ];
+  for (const [value, repr] of expected) {
+    const report = verifyEnvelopes(withAlg(value), { witnessKeys: BASE.witness_keys });
+    assert.equal(
+      report.failure_details[0]!.detail,
+      `envelope_unknown_witness: witness alg=${repr} is not 'EdDSA'; envelope v1 defines ` +
+        "Ed25519 and no other algorithm",
+    );
+  }
+});
+
+test("the scorer reports exactly the seven declared envelope failures", () => {
+  // The TypeScript half of the Python anti-drift guard: the reasons are read out of
+  // `scoreEnvelope`'s own body rather than taken from the tuple that names them, so a reason
+  // added to one implementation and not the other cannot pass unnoticed in either direction.
+  const source = readFileSync(resolve(REPO_ROOT, "src", "evidence.ts"), "utf8");
+  const body = source.split("\nfunction scoreEnvelope(")[1]!.split("\nfunction ")[0]!;
+  const found = new Set([...body.matchAll(/(?:report|fail\.add)\(\s*"([^"]+)"/g)].map((m) => m[1]!));
+  assert.ok(found.size > 0, "no reason literals found in scoreEnvelope");
+  assert.deepEqual([...found].sort(), [...ENVELOPE_FAILURES].sort());
 });
