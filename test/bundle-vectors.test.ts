@@ -68,7 +68,10 @@ interface VectorCase {
 }
 
 interface VectorFile {
+  /** The compatibility contract. Does not move when cases are appended. */
   version: string;
+  /** The additive counter. Moves with each appended case; what a report should name. */
+  revision: string;
   description: string;
   cases: VectorCase[];
 }
@@ -103,7 +106,11 @@ function includesPosition(reported: ExpectedFailure[], expected: ExpectedFailure
 // =============================================================================================
 
 test("the vector file declares its version and every expected case, in order", () => {
+  // `version` is the compatibility contract and does not move when cases are appended — an
+  // implementation that scored bundle_vectors_v1 still scores it. `revision` is the additive
+  // counter that does move. Cases are appended, never inserted: a position is stable for life.
   assert.equal(DOCUMENT.version, "bundle_vectors_v1");
+  assert.equal(DOCUMENT.revision, "bundle_vectors_v1.1");
   assert.deepEqual(
     DOCUMENT.cases.map((c) => c.name),
     [
@@ -115,6 +122,12 @@ test("the vector file declares its version and every expected case, in order", (
       "reject_duplicate_call_id",
       "reject_rehashed_chain",
       "reject_tampered_entry",
+      // revision v1.1 — the delegation checks no rejecting case covered. The last two add no
+      // scope at all: a verifier comparing scope sets alone accepts both and reports nothing.
+      "reject_widened_scope",
+      "reject_uncontained_allow",
+      "reject_increased_ttl",
+      "reject_loosened_ceiling",
     ],
   );
 });
@@ -205,7 +218,8 @@ test("the vendored copy is the file the fixtures directory documents, read as ra
   // copied, or is copied with a rewritten serialisation, fails here.
   const raw = readFileSync(resolve(FIXTURES, "vectors", "bundles", "bundle_vectors_v1.json"), "utf8");
   assert.equal(JSON.parse(raw).version, "bundle_vectors_v1");
-  assert.equal(JSON.parse(raw).cases.length, 8);
+  assert.equal(JSON.parse(raw).revision, "bundle_vectors_v1.1");
+  assert.equal(JSON.parse(raw).cases.length, 12);
   assert.ok(raw.endsWith("\n"), "the Python writer terminates the file with a newline");
 });
 
@@ -590,4 +604,157 @@ test("no failure list is appended to directly", () => {
       `use FailureLog.add(reason, detail, position) instead of ${forbidden}`,
     );
   }
+});
+
+// =============================================================================================
+// Monotonicity across EVERY dimension of the lattice, not just scopes
+// =============================================================================================
+//
+// A delegation widens if it grows on ANY dimension `Authority.isNarrowerThan` compares: scopes,
+// ceilings, or ttl. Through 0.6.0 the bundle verifier's monotonicity check was gated on a
+// literal, non-wildcard-aware scope difference, so a child that only outlived its parent or only
+// raised a ceiling was reported ONLY when its scopes happened not to be literally a subset.
+// Every widening bundle below verified clean before that gate was removed, and the misdirected
+// case reported a scope message for a ttl violation. Mirrors Python's
+// `TestMonotonicityDimensions`, message for message.
+
+const MONO_PARENT = () =>
+  new Authority({ scopes: ["crm.read", "mail.send"], ceilings: [new RowLimit(100)], ttl: 3600 });
+
+interface GrantedWire {
+  scopes: string[];
+  constraints: Array<Record<string, Json>>;
+  ttl: number | null;
+}
+
+function granted(
+  overrides: { scopes?: string[]; maxRows?: number | null; ttl?: number | null } = {},
+): GrantedWire {
+  const maxRows = overrides.maxRows === undefined ? 50 : overrides.maxRows;
+  return {
+    scopes: overrides.scopes ?? ["crm.read"],
+    constraints: maxRows === null ? [] : [{ key: "max_rows", max: maxRows }],
+    ttl: overrides.ttl === undefined ? 900 : overrides.ttl,
+  };
+}
+
+/**
+ * An honest two-node v2 chain with the spawn's `granted` replaced wholesale, the chain re-hashed
+ * and a fresh anchor signed over it. That detour is the only way to get an unsound delegation
+ * into a ledger: `Guard.delegate` refuses to create one, which is why this is a verifier test.
+ */
+function monoBundle(grantedWire: GrantedWire, parent?: Authority): Bundle {
+  const root = Guard.issue("orchestrator", parent ?? MONO_PARENT(), {
+    chainId: "t",
+    schemaVersion: 2,
+  });
+  const child = root.delegate(
+    "summarizer",
+    new Authority({ scopes: ["crm.read"], ceilings: [new RowLimit(50)], ttl: 900 }),
+    "summarize",
+  );
+  child.complete();
+  root.complete();
+  const bundle = exportBundle(root.auditLog(), TWIN_SIGNER);
+  bundle.entries[indexOf(bundle, "spawn")]!["granted"] = grantedWire as unknown as CJson;
+  rehash(bundle);
+  reanchor(bundle);
+  return bundle;
+}
+
+function assertWidens(grantedWire: GrantedWire, expectedDetail: string, parent?: Authority): void {
+  const bundle = monoBundle(grantedWire, parent);
+  const spawn = bundle.entries[indexOf(bundle, "spawn")]!;
+  const node = spawn["node"] as string;
+  const pid = spawn["parent"] as string;
+  const report = verifyBundle(bundle, TWIN_SIGNER);
+  assert.equal(report.ok, false, "a widening delegation must not verify");
+  assert.equal(report.checks.monotonicity, false);
+  // Integrity stays green: the chain was re-hashed and re-anchored, so monotonicity is the only
+  // thing wrong and the failure cannot be an artifact of a broken ledger.
+  assert.equal(report.checks.integrity, true);
+  assert.deepEqual(report.failures, [
+    `monotonicity: ${node} not ⊆ parent ${pid} (${expectedDetail})`,
+  ]);
+  assert.deepEqual(
+    report.failure_details.map((d) => [d.reason, d.seq, d.node]),
+    [["monotonicity", 1, node]],
+  );
+}
+
+test("a child that outlives its parent is not narrower", () => {
+  assertWidens(granted({ ttl: 7200 }), "ttl 7200 > parent 3600");
+});
+
+test("a child with a looser ceiling is not narrower", () => {
+  assertWidens(granted({ maxRows: 250 }), "ceiling max_rows<=250 looser than parent max_rows<=100");
+});
+
+test("a child unbounded where its parent bounds is not narrower", () => {
+  // Dropping a ceiling is not attenuation: no ceiling means unbounded on that dimension, which
+  // is MORE authority than the parent held, not less.
+  assertWidens(granted({ maxRows: null }), "ceiling max_rows unbounded, parent holds max_rows<=100");
+});
+
+test("a child that never expires under a parent that does is not narrower", () => {
+  assertWidens(granted({ ttl: null }), "ttl unbounded, parent 3600");
+});
+
+test("a ttl widening under a wildcard parent names ttl, not scopes", () => {
+  // The misdirected case. {crm.read} is covered by a parent holding {crm.*} but is NOT literally
+  // in its scope set, so the old gate fired and printed a scope message for a violation that was
+  // entirely about ttl.
+  assertWidens(
+    granted({ ttl: 7200 }),
+    "ttl 7200 > parent 3600",
+    new Authority({ scopes: ["crm.*"], ceilings: [new RowLimit(100)], ttl: 3600 }),
+  );
+});
+
+test("the scope widening message is unchanged", () => {
+  assertWidens(
+    granted({ scopes: ["crm.read", "pay.transfer"] }),
+    "child scopes ['pay.transfer'] not held by parent",
+  );
+});
+
+test("a scope widening under a wildcard parent keeps its historical wording", () => {
+  // The published string lists the LITERAL set difference, so a scope the parent covers by
+  // wildcard appears in it alongside the one it does not. Unchanged on purpose: it is the
+  // wording the released vectors and two independent verifiers already score.
+  assertWidens(
+    granted({ scopes: ["crm.read", "pay.transfer"] }),
+    "child scopes ['crm.read', 'pay.transfer'] not held by parent",
+    new Authority({ scopes: ["crm.*"], ceilings: [new RowLimit(100)], ttl: 3600 }),
+  );
+});
+
+test("an honestly narrower child still verifies", () => {
+  // The other half of the fix: removing the gate must not make a sound delegation fail.
+  const report = verifyBundle(monoBundle(granted({ maxRows: 10, ttl: 60 })), TWIN_SIGNER);
+  assert.equal(report.ok, true, JSON.stringify(report.failures));
+  assert.deepEqual(report.failures, []);
+});
+
+test("an identical regrant still verifies", () => {
+  // The boundary of the relation: equal is narrower-or-equal, so a child granted exactly what
+  // its parent holds is sound and must not be reported.
+  const report = verifyBundle(
+    monoBundle({
+      scopes: ["crm.read", "mail.send"],
+      constraints: [{ key: "max_rows", max: 100 }],
+      ttl: 3600,
+    }),
+    TWIN_SIGNER,
+  );
+  assert.equal(report.ok, true, JSON.stringify(report.failures));
+});
+
+test("the first failing dimension is the one reported", () => {
+  // Ceilings are compared before ttl, matching Authority.isNarrowerThan, so a child that widens
+  // both names the ceiling. One message per unsound delegation, as before.
+  assertWidens(
+    granted({ maxRows: 250, ttl: 7200 }),
+    "ceiling max_rows<=250 looser than parent max_rows<=100",
+  );
 });

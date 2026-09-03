@@ -35,6 +35,7 @@ import {
   canonicalBytes,
   compareCodePoints,
   parseJson,
+  pyNumber,
   toPlain,
   type CJson,
   type Json,
@@ -43,7 +44,7 @@ import { createHash } from "node:crypto";
 
 import { AuditLog, SCHEMA_VERSION, chainIdOf, hashEntry, GENESIS, type Anchor, type LedgerEntry } from "./audit.js";
 import { Authority } from "./authority.js";
-import type { Context } from "./ceilings.js";
+import { describe as describeCeiling, type Context } from "./ceilings.js";
 import { CAPTURES, BODY_STATES, BodyState, Capture } from "./reasons.js";
 import { PARAMS_HASH_REASONS } from "./params.js";
 import type { Signer } from "./wire.js";
@@ -359,6 +360,63 @@ interface NodeAuthorities {
  * `node -> Authority` and `node -> parent`, reconstructed from `root` and
  * `spawn` events alone. No engine state.
  */
+/**
+ * Why `child` is not ⊆ `parent`, rendered for the monotonicity failure message.
+ *
+ * Called only once `Authority.isNarrowerThan` has already returned false, and it walks the
+ * dimensions in the ORDER that relation compares them — scopes, then ceilings by key, then ttl
+ * — so the message names the dimension that actually failed. Every dimension the relation can
+ * fail on has a branch here:
+ *
+ *   scopes    a scope the parent does not cover (wildcard-aware);
+ *   ceilings  a key the parent bounds and the child does not (child unbounded there, so MORE
+ *             powerful), or one the child bounds more loosely than the parent;
+ *   ttl       a child that never expires under a parent that does, or one that outlives it.
+ *
+ * Reports the FIRST failing dimension: one message per unsound delegation. Byte-identical to
+ * the Python `evidence._monotonicity_detail`, since these strings are a published contract that
+ * both implementations are scored against.
+ */
+function monotonicityDetail(child: Authority, parent: Authority): string {
+  // Unchanged since 0.1.0, byte for byte. A scope failure always leaves this list non-empty:
+  // a scope literally present in the parent's set is covered by it, so anything the parent
+  // does not cover is also absent from that set.
+  if (!Array.from(child.scopes).every((s) => parent.coversScope(s))) {
+    const extra = Array.from(child.scopes).filter((s) => !parent.scopes.has(s));
+    return (
+      `child scopes [${extra.sort(compareCodePoints).map((s) => `'${s}'`).join(", ")}] ` +
+      `not held by parent`
+    );
+  }
+
+  const childByKey = new Map(child.ceilings.map((c) => [String(c.key), c]));
+  const parentKeys = parent.ceilings.map((c) => String(c.key)).sort(compareCodePoints);
+  for (const key of parentKeys) {
+    const parentCeiling = parent.ceilings.find((c) => String(c.key) === key)!;
+    const childCeiling = childByKey.get(key);
+    if (childCeiling === undefined) {
+      return `ceiling ${key} unbounded, parent holds ${describeCeiling(parentCeiling)}`;
+    }
+    if (!parentCeiling.subsumes(childCeiling)) {
+      return (
+        `ceiling ${describeCeiling(childCeiling)} looser than parent ` +
+        `${describeCeiling(parentCeiling)}`
+      );
+    }
+  }
+
+  if (parent.ttl !== null) {
+    if (child.ttl === null) return `ttl unbounded, parent ${pyNumber(parent.ttl)}`;
+    if (child.ttl > parent.ttl) {
+      return `ttl ${pyNumber(child.ttl)} > parent ${pyNumber(parent.ttl)}`;
+    }
+  }
+
+  // Only reachable if a future dimension is added to `isNarrowerThan` without a branch here;
+  // it exists so that such a dimension cannot fail SILENTLY.
+  return "child not narrower than parent";
+}
+
 function nodeAuthorities(entries: readonly LedgerEntry[]): NodeAuthorities {
   const auth = new Map<string, Authority>();
   const parent = new Map<string, string | null>();
@@ -1267,14 +1325,16 @@ export function verifyBundle(
     if (pid === null || !auth.has(pid) || !auth.has(node)) continue;
     const child = auth.get(node)!;
     const p = auth.get(pid)!;
-    const extra = Array.from(child.scopes).filter((s) => !p.scopes.has(s));
-    if (!child.isNarrowerThan(p) && extra.length > 0) {
+    // 0.6.x: the subsumption relation ALONE decides. This used to be gated on a literal,
+    // non-wildcard-aware scope difference, which silently accepted a delegation that widened
+    // only ttl or a ceiling whenever the child's scopes happened to be literally a subset of
+    // the parent's — the child was more powerful and the bundle verified clean.
+    if (!child.isNarrowerThan(p)) {
       mono = false;
       const spawnE = definedBy.get(node);
       log.add(
         "monotonicity",
-        `monotonicity: ${node} not ⊆ parent ${pid} (child scopes ` +
-          `[${extra.sort(compareCodePoints).map((s) => `'${s}'`).join(", ")}] not held by parent)`,
+        `monotonicity: ${node} not ⊆ parent ${pid} (${monotonicityDetail(child, p)})`,
         { seq: spawnE === undefined ? null : orNull(spawnE["seq"]), node },
       );
     }
