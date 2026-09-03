@@ -198,11 +198,19 @@ two suites cannot: was this delegation event signed by something outside the
 process that wrote it? An envelope is never required, and a bundle without them
 verifies exactly as before with every entry reporting `process-asserted`. A
 present one has to verify, and a broken one lands in the same failure list under
-one of six named reasons. Pass the trust set as
-`verifyBundle(bundle, signer, { witnessKeys })`; the report carries the
-per-entry state, the result and the report line — `witness-signed (matched)`,
-and so on — for every entry, so a reader sees which hops were covered before
-reading which one failed.
+one of seven named reasons. Pass the trust set as
+`verifyBundle(bundle, signer, { witnessKeys })`, or `attenu-guard verify
+--witness-keys FILE` from the command line; whose signatures count is yours to
+decide, so the keys come from you and never from the bundle. The report carries
+the per-entry state, the result and the report line — `witness-signed
+(matched)`, and so on — for every entry, so a reader sees which hops were
+covered before reading which one failed.
+
+One entry, at most one envelope. A second envelope naming a `subject.seq` an
+earlier one in the same array already named is `envelope_duplicate_subject` at
+the covered entry, and that entry reports `process-asserted`: two observations
+of one event contradict each other by construction, and an entry whose coverage
+is disputed must not read as clean.
 
 ## What it does not do
 

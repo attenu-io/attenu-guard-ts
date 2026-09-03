@@ -65,7 +65,7 @@ const VECTOR_FILE = "vectors/envelopes/envelope_vectors_v1.json";
  * The sha256 of the vendored file. It pins WHICH bytes this suite scored, the way an independent
  * run pins the corpus it ran. It moves only when a case is appended, which also moves `revision`.
  */
-const VECTOR_SHA256 = "952fa1b4e33f13d8e0f205773300785e33f64017416845ee21e71934b10dbb85";
+const VECTOR_SHA256 = "3d67e7a79eb9f293127192126abae761176f9371be13b403d6b31b26701576ee";
 
 interface ExpectedFailure {
   reason: string;
@@ -142,7 +142,7 @@ test("the vector file declares its version and every expected case, in order", (
   // `version` is the compatibility contract and does not move when cases are appended;
   // `revision` is the additive counter that does. Cases are appended, never inserted.
   assert.equal(DOCUMENT.version, "envelope_vectors_v1");
-  assert.equal(DOCUMENT.revision, "envelope_vectors_v1.0");
+  assert.equal(DOCUMENT.revision, "envelope_vectors_v1.1");
   assert.deepEqual(
     DOCUMENT.cases.map((c) => c.name),
     [
@@ -164,6 +164,8 @@ test("the vector file declares its version and every expected case, in order", (
       "reject_unknown_witness",
       // Appended at @safal207's proposal, so nothing above it moved.
       "reject_locator_mismatch",
+      // Appended at revision v1.1, with the duplicate-subject rule it pins.
+      "reject_duplicate_subject",
     ],
   );
 });
@@ -226,7 +228,7 @@ test("the declared minimal set is minimal", () => {
   }
 });
 
-test("each of the six named envelope failures is required by a row", () => {
+test("each of the seven named envelope failures is required by a row", () => {
   const required = new Set<string>();
   for (const c of DOCUMENT.cases) {
     for (const f of c.expect_failures) if (f.reason.startsWith("envelope_")) required.add(f.reason);
@@ -498,15 +500,96 @@ test("exportBundle omits the envelopes member when there are none", () => {
   assert.deepEqual(withEnvelope.envelopes, [envelope()]);
 });
 
-test("two envelopes on the same entry both have to verify", () => {
-  const good = envelope();
-  const broken = JSON.parse(JSON.stringify(good)) as Envelope;
-  broken.subject["entry_hash"] = "0".repeat(64);
-  const report = scored([good, resign(broken)]);
+// ---- one entry, at most one envelope (v1.1) -------------------------------------------------
+
+test("a second envelope over a covered entry is a duplicate subject", () => {
+  // The committed row scores the two-valid-envelopes case; this pins the surface it reports
+  // through, including that the first witness's result survives in `results`.
+  const report = scored([envelope(), envelope("not_matched")]);
   assert.equal(report.ok, false);
-  // The good one still puts the entry in witness-signed; the broken one is still reported.
-  assert.equal(report.states[String(SPAWN_SEQ)], WITNESS_SIGNED);
-  assert.deepEqual(report.failure_details.map((d) => d.reason), ["envelope_subject_mismatch"]);
+  assert.deepEqual(report.failure_details.map((d) => d.reason), ["envelope_duplicate_subject"]);
+  const detail = report.failure_details[0]!;
+  assert.deepEqual([detail.seq, detail.node], [SPAWN_SEQ, BASE.bundle.entries[SPAWN_SEQ]!["node"]]);
+  assert.equal(report.states[String(SPAWN_SEQ)], PROCESS_ASSERTED);
+  assert.deepEqual(report.witness_signed, []);
+  assert.equal(report.lines[String(SPAWN_SEQ)], PROCESS_ASSERTED);
+  assert.equal(report.results[String(SPAWN_SEQ)], "matched");
+});
+
+test("the duplicate rule makes the score independent of array order", () => {
+  // The defect this rule closes: with the states keyed by seq and overwritten per envelope, the
+  // SAME two envelopes in the other order reported the other result and no failure at all.
+  const first = envelope();
+  const second = envelope("not_matched");
+  for (const envelopes of [[first, second], [second, first]]) {
+    const report = scored(envelopes);
+    assert.equal(report.ok, false);
+    assert.deepEqual(report.failure_details.map((d) => d.reason), ["envelope_duplicate_subject"]);
+    assert.equal(report.states[String(SPAWN_SEQ)], PROCESS_ASSERTED);
+  }
+});
+
+test("an entry claimed by a broken envelope is claimed", () => {
+  // "Valid or not": the FIRST envelope names seq 1 and fails on its own subject, so a later
+  // honest one over the same entry is still the second observation of it.
+  const broken = JSON.parse(JSON.stringify(envelope())) as Envelope;
+  broken.subject["entry_hash"] = "0".repeat(64);
+  const report = scored([resign(broken), envelope()]);
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.failure_details.map((d) => d.reason), [
+    "envelope_subject_mismatch",
+    "envelope_duplicate_subject",
+  ]);
+  assert.equal(report.states[String(SPAWN_SEQ)], PROCESS_ASSERTED);
+});
+
+test("envelopes over different entries are not duplicates", () => {
+  const allow = signEnvelope(BASE.bundle.entries, ALLOW_SEQ, SEED, KID, {
+    result: "matched",
+    at: "2026-09-01T11:00:00Z",
+    method: "sidecar:ledger-tail",
+  });
+  const report = scored([envelope(), allow]);
+  assert.ok(report.ok, report.failures.join(" | "));
+  assert.deepEqual(report.witness_signed, [SPAWN_SEQ, ALLOW_SEQ]);
+});
+
+test("a duplicate naming a seq this bundle has no entry for is not a duplicate", () => {
+  // An entry is claimed only once `subject.seq` FINDS one.
+  const stray = JSON.parse(JSON.stringify(envelope())) as Envelope;
+  stray.subject["seq"] = 99;
+  const report = scored([resign(stray), resign(JSON.parse(JSON.stringify(stray)) as Envelope)]);
+  assert.deepEqual(report.failure_details.map((d) => d.reason), [
+    "envelope_subject_mismatch",
+    "envelope_subject_mismatch",
+  ]);
+});
+
+test("exportBundle refuses to redact and carry envelopes in one call", () => {
+  // Redaction rewrites every entry hash, so envelopes signed over the unredacted ledger would
+  // ship bound to entries that no longer exist and fail envelope_subject_mismatch.
+  const signer = new HS256TestSigner(Buffer.from("k", "utf8"), "k");
+  const guard = Guard.issue("a", new Authority({ scopes: ["crm.read"], ceilings: [new RowLimit(1)], ttl: 60 }), {
+    chainId: "t",
+  });
+  guard.delegate("b", new Authority({ scopes: ["crm.read"], ceilings: [new RowLimit(1)], ttl: 30 }), "secret prompt");
+  const redacted = exportBundle(guard.auditLog(), signer, { redactTask: true });
+  const witness = signEnvelope(redacted.entries, 1, SEED, KID, {
+    result: "matched",
+    at: "2026-09-01T11:00:00Z",
+    method: "sidecar:ledger-tail",
+  });
+  assert.throws(
+    () => exportBundle(guard.auditLog(), signer, { redactTask: true, envelopes: [witness] }),
+    /sign envelopes over the redacted ledger/,
+  );
+  // The documented order works: export redacted, sign over ITS entries, export again.
+  const bundle = exportBundle(guard.auditLog(), signer, { redactTask: true });
+  bundle.envelopes = [witness];
+  const keys = { [KID]: Ed25519Signer.fromPrivateBytes(SEED).publicBytesRaw() };
+  const report = verifyEnvelopes(bundle, { witnessKeys: keys });
+  assert.ok(report.ok, report.failures.join(" | "));
+  assert.deepEqual(report.witness_signed, [1]);
 });
 
 test("the envelope version and typ constants match the contract", () => {

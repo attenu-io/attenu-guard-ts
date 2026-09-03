@@ -231,7 +231,8 @@ export interface ExportOptions {
   strict?: boolean;
   /**
    * Observer envelopes (`signEnvelope`) to carry beside the ledger. Omitted from the bundle
-   * entirely when absent or empty, so a bundle without them is unchanged.
+   * entirely when absent or empty, so a bundle without them is unchanged. Cannot be combined
+   * with `redactTask` in one call: sign over the redacted ledger the export produces.
    */
   envelopes?: readonly Envelope[] | null;
 }
@@ -246,12 +247,24 @@ export interface ExportOptions {
  * only ever removes. With `strict`, the bundle is checked against
  * `LEDGER_FIELDS` (and `contextAllowlist` if given) and an `EvidenceLeakError`
  * is thrown on any field outside it.
+ *
+ * ORDER MATTERS with `redactTask`: redaction rewrites every entry hash, so envelopes signed
+ * over the unredacted ledger no longer bind to the entries that ship and would all fail
+ * `envelope_subject_mismatch`. Giving both throws `Error` rather than exporting a bundle that
+ * cannot verify. Export the redacted bundle first, then `signEnvelope` over ITS entries, then
+ * export again with those envelopes.
  */
 export function exportBundle(
   auditLog: AuditLog | readonly LedgerEntry[],
   signer: Signer,
   options: ExportOptions = {},
 ): Bundle {
+  if (options.redactTask && (options.envelopes?.length ?? 0) > 0) {
+    throw new Error(
+      "sign envelopes over the redacted ledger: export with redact_task=True first, then " +
+        "sign_envelope over the exported entries",
+    );
+  }
   const source = auditLog instanceof AuditLog ? auditLog.entries : auditLog;
   const entries: LedgerEntry[] = source.map((e) => ({ ...e }));
 
@@ -680,11 +693,12 @@ export const WITNESS_SIGNED = "witness-signed";
 export const PROCESS_ASSERTED = "process-asserted";
 export type EnvelopeState = typeof WITNESS_SIGNED | typeof PROCESS_ASSERTED;
 
-/** The six named envelope failures, in the order this build checks them. */
+/** The seven named envelope failures, in the order this build checks them. */
 export const ENVELOPE_FAILURES = [
   "envelope_unknown_version",
   "envelope_unknown_member",
   "envelope_subject_mismatch",
+  "envelope_duplicate_subject",
   "envelope_non_canonical",
   "envelope_unknown_witness",
   "envelope_bad_signature",
@@ -778,7 +792,11 @@ export interface Observation {
  * An observer envelope over the entry at `seq`, signed with the 32-byte Ed25519 `seed`.
  *
  * `entries` is the ledger the subject is recomputed from — a witness signs the identity of an
- * entry that already exists, never a claim it composes itself.
+ * entry that already exists, never a claim it composes itself. That makes the ledger it is
+ * signed over part of the signature: sign over the entries AS THEY WILL SHIP. With
+ * `exportBundle({redactTask: true})` those are the redacted entries, so export first and sign
+ * over the exported bundle's `entries` — `exportBundle` refuses to redact and carry envelopes in
+ * one call for exactly this reason.
  */
 export function signEnvelope(
   entries: readonly LedgerEntry[],
@@ -867,6 +885,12 @@ export interface VerifyEnvelopesOptions {
  * envelope covers, never on a hop coverage skipped; and no chain-level integrity failure is ever
  * raised because an envelope failed — that one comes from a real anchor mismatch and from
  * nothing else.
+ *
+ * One entry, at most one envelope. A second envelope naming a `subject.seq` an earlier one in
+ * this array already named is `envelope_duplicate_subject`, and the entry falls back to
+ * `process-asserted`: two observations of one event contradict each other by construction —
+ * whoever appends the second decides what the first said, and an entry whose coverage is
+ * disputed must not read as clean.
  */
 function scoreEnvelopes(
   entries: readonly LedgerEntry[],
@@ -891,13 +915,24 @@ function scoreEnvelopes(
     recomputed = recomputedHashes(entries);
   }
 
+  // seq -> how many envelopes in this array named it, valid or not. `scoreEnvelope` counts an
+  // envelope in as soon as its subject names an entry this bundle has.
+  const claims = new Map<string, number>();
+
   envelopes.forEach((envelope, index) => {
     const raw = rawBytes !== null && index < rawBytes.length ? rawBytes[index] ?? null : null;
-    const covered = scoreEnvelope(envelope, index, bySeq, recomputed, trusted, raw, fail);
+    const covered = scoreEnvelope(envelope, index, bySeq, recomputed, trusted, raw, fail, claims);
     if (covered === null) return;
     states[String(covered.seq)] = WITNESS_SIGNED;
     results[String(covered.seq)] = covered.result;
   });
+
+  // The first envelope's result stands in `results` — it is what that witness said, and the
+  // duplicate does not erase it — but the STATE falls back, so a contradicted entry never
+  // reports witness-signed and the bundle rejects.
+  for (const [seq, count] of claims) {
+    if (count > 1) states[seq] = PROCESS_ASSERTED;
+  }
 
   const lines: Record<string, string> = {};
   for (const [seq, state] of Object.entries(states)) {
@@ -924,11 +959,18 @@ function reprList(values: readonly string[]): string {
 }
 
 /**
- * One envelope, checked in the order the six named failures are defined in.
+ * One envelope, checked in the order the seven named failures are defined in.
  *
  * Returns the covered entry for an envelope that verified, and `null` for one that did not.
  * Every failure is positioned on the entry the envelope COVERS, found by `subject.seq` — the
  * locators are checked against that entry, not used to find it.
+ *
+ * `claims` is the caller's seq -> count of the envelopes that have named each entry so far, and
+ * this function updates it. An envelope claims its entry as soon as `subject.seq` finds one,
+ * BEFORE the rest of the subject is checked, so a second envelope over an entry an earlier one
+ * already named is `envelope_duplicate_subject` whether either of them is otherwise sound: the
+ * point of the check is that no one can decide what an earlier witness said by appending after
+ * it.
  */
 function scoreEnvelope(
   envelope: Envelope,
@@ -938,6 +980,7 @@ function scoreEnvelope(
   trusted: Map<string, [string, Buffer]>,
   raw: Buffer | string | null,
   fail: FailureLog,
+  claims: Map<string, number>,
 ): { seq: Json; node: Json; result: Json } | null {
   const isRecord = (v: unknown): v is Record<string, CJson> =>
     v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof RawNumber);
@@ -1032,6 +1075,22 @@ function scoreEnvelope(
     return report("envelope_subject_mismatch", `no entry at seq ${pyRepr(subjectSeq)} in this bundle`);
   }
   const seq = orNull(entry["seq"]);
+
+  // (3a') one entry, at most one envelope. Counted here, before anything else about this
+  // envelope is judged, so the rule cannot be sidestepped by making the second envelope
+  // defective in some other way as well.
+  const claimKey = String(seq);
+  const already = claims.get(claimKey) ?? 0;
+  claims.set(claimKey, already + 1);
+  if (already > 0) {
+    return report(
+      "envelope_duplicate_subject",
+      `seq ${claimKey} is already covered by an earlier envelope in this bundle; two ` +
+        "observations of one event contradict each other by construction, so this entry is not " +
+        "witness-signed",
+    );
+  }
+
   const computed = recomputed.get(seq) ?? null;
   const claimed = toPlain(subject["entry_hash"]) as Json;
   if (claimed !== computed) {

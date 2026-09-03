@@ -6,10 +6,12 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import test from "node:test";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 
-import { META, REPO_ROOT, fixturePath } from "./helpers.js";
+import { META, REPO_ROOT, fixturePath, fixtureText } from "./helpers.js";
 
 const BIN = resolve(REPO_ROOT, "bin", "attenu-guard.js");
 
@@ -81,5 +83,71 @@ test("--help, -h and verify --help print usage and exit 0", () => {
     const { stdout, status } = run(args);
     assert.match(stdout, /attenu-guard verify/);
     assert.equal(status, 0, `${JSON.stringify(args)} exited ${status}`);
+  }
+});
+
+// ---- observer envelopes: --witness-keys -----------------------------------------------------
+
+/**
+ * A one-envelope bundle and the trust set for it, written into a fresh temp directory. Built
+ * from the vendored vector corpus, so the bundle here is the same one every implementation
+ * scores rather than a shape invented for this test.
+ */
+function envelopeBundleFiles(): { dir: string; bundle: string; keys: string; caseFile: string } {
+  const doc = JSON.parse(fixtureText("vectors/envelopes/envelope_vectors_v1.json")) as {
+    cases: { name: string; bundle: unknown; witness_keys: unknown }[];
+  };
+  const c = doc.cases.find((x) => x.name === "valid_spawn_envelope")!;
+  const dir = mkdtempSync(join(tmpdir(), "attenu-cli-"));
+  const bundle = join(dir, "envelopes.bundle.json");
+  const keys = join(dir, "witness_keys.json");
+  const caseFile = join(dir, "case.json");
+  writeFileSync(bundle, JSON.stringify(c.bundle));
+  writeFileSync(keys, JSON.stringify(c.witness_keys));
+  writeFileSync(caseFile, JSON.stringify(c));
+  return { dir, bundle, keys, caseFile };
+}
+
+test("a bundle with envelopes verifies when the trust set is given", () => {
+  const files = envelopeBundleFiles();
+  try {
+    const { stdout, status } = run(["verify", files.bundle, "--witness-keys", files.keys]);
+    assert.equal(status, 0, stdout);
+    assert.equal(stdout.trimEnd().split("\n").at(-1), "OK");
+    assert.doesNotMatch(stdout, /hint:/);
+  } finally {
+    rmSync(files.dir, { recursive: true, force: true });
+  }
+});
+
+test("a bundle with envelopes and no trust set fails and names the flag", () => {
+  // The defect: every bundle carrying an envelope failed here with no way to pass keys. The
+  // failure is still correct — an unknown key is not a trusted one — so it stands, and the
+  // output says which flag makes the run meaningful.
+  const files = envelopeBundleFiles();
+  try {
+    const { stdout, status } = run(["verify", files.bundle]);
+    assert.equal(status, 2);
+    assert.match(stdout, /envelope_unknown_witness/);
+    assert.match(stdout, /^hint: pass --witness-keys FILE to supply the trusted witness keys$/m);
+    assert.equal(stdout.trimEnd().split("\n").at(-1), "FAILED");
+  } finally {
+    rmSync(files.dir, { recursive: true, force: true });
+  }
+});
+
+test("no hint on a bundle that carries no envelopes", () => {
+  const { stdout, status } = run(["verify", fixturePath("clean_hs256.bundle.json")]);
+  assert.equal(status, 0);
+  assert.doesNotMatch(stdout, /hint:/);
+});
+
+test("the trust set may be given as a whole vector case", () => {
+  const files = envelopeBundleFiles();
+  try {
+    const { stdout, status } = run(["verify", files.bundle, "--witness-keys", files.caseFile]);
+    assert.equal(status, 0, stdout);
+  } finally {
+    rmSync(files.dir, { recursive: true, force: true });
   }
 });
