@@ -6,6 +6,8 @@ Versions follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-06
+
 ### Added
 - Vendored observer-envelope corpus moved to revision `envelope_vectors_v1.2`, nineteen cases, still copied byte for byte from the Python repository (sha256 `a8be5ff764a86122ca09e94340416b7169531bf5d0cc76a0b1fc87f8272eb16e`, 197,346 bytes). The new row, `reject_duplicate_subject_defective_second`, is row 17 with one hex nibble of the SECOND envelope's signature flipped. It is the only row that separates a verifier which claims the entry as soon as `subject.seq` finds it from one which judges the envelope first: on row 17 both envelopes are sound, so both verifiers reach the duplicate rule and both reject. Here, claiming first reports `envelope_duplicate_subject` and seq 1 falls back to `process-asserted`; judging first stops at the signature, never reaches the duplicate rule, and leaves seq 1 reporting `witness-signed` on the first envelope alone. `envelope_bad_signature` at that seq is a permitted extra, not a required failure. This implementation already claims first — the duplicate rule is sited before the entry_hash comparison, canonicality, the witness check and the signature — and returns a report identical to Python's on the new bundle, so the row pins existing behaviour. No new reason name. Rows 1 to 18 are byte-identical and `version` stays `envelope_vectors_v1`. Proposed by Xuebin Ma (@XuebinMa, agent-guard) on a2aproject/A2A#1575
 
