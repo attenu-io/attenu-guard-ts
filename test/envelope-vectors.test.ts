@@ -67,7 +67,7 @@ const VECTOR_FILE = "vectors/envelopes/envelope_vectors_v1.json";
  * The sha256 of the vendored file. It pins WHICH bytes this suite scored, the way an independent
  * run pins the corpus it ran. It moves only when a case is appended, which also moves `revision`.
  */
-const VECTOR_SHA256 = "6a57d75ebec881d39d5a1805793a20f9a6d7bff021b70782dcb57c43b276df64";
+const VECTOR_SHA256 = "a8be5ff764a86122ca09e94340416b7169531bf5d0cc76a0b1fc87f8272eb16e";
 
 interface ExpectedFailure {
   reason: string;
@@ -144,7 +144,7 @@ test("the vector file declares its version and every expected case, in order", (
   // `version` is the compatibility contract and does not move when cases are appended;
   // `revision` is the additive counter that does. Cases are appended, never inserted.
   assert.equal(DOCUMENT.version, "envelope_vectors_v1");
-  assert.equal(DOCUMENT.revision, "envelope_vectors_v1.1");
+  assert.equal(DOCUMENT.revision, "envelope_vectors_v1.2");
   assert.deepEqual(
     DOCUMENT.cases.map((c) => c.name),
     [
@@ -169,6 +169,10 @@ test("the vector file declares its version and every expected case, in order", (
       // Appended at revision v1.1: the duplicate-subject rule, and the algorithm check.
       "reject_duplicate_subject",
       "reject_unknown_alg",
+      // Appended at revision v1.2, at @XuebinMa's proposal: the duplicate rule again with the
+      // second envelope ALSO defective, which separates a verifier that claims the entry at
+      // `subject.seq` from one that judges the envelope first. Row 17 cannot: both reject it.
+      "reject_duplicate_subject_defective_second",
     ],
   );
 });
@@ -319,6 +323,57 @@ test("the non-canonical row supplies bytes that differ from JCS of what they par
   // trace of it, which is exactly why the row carries them.
   const blind = verifyBundle(c.bundle, signerFor(c), { witnessKeys: c.witness_keys });
   assert.ok(!blind.failure_details.some((d) => d.reason === "envelope_non_canonical"));
+});
+
+test("the defective-second row differs from row 17 by one nibble of one signature", () => {
+  // Non-vacuity, half one: the row really is reject_duplicate_subject plus a broken signature
+  // and nothing else. Same ledger, same first envelope, same second subject and witness — one
+  // hex nibble of the second `sig`. Anything more would let an earlier check stop the envelope,
+  // and the row would no longer isolate the ordering question it asks.
+  const row17 = byName("reject_duplicate_subject").bundle;
+  const row19 = byName("reject_duplicate_subject_defective_second").bundle;
+  assert.deepEqual(row17.entries, row19.entries);
+  assert.deepEqual(row17.envelopes![0], row19.envelopes![0]);
+  const a = row17.envelopes![1]! as unknown as Record<string, unknown>;
+  const b = row19.envelopes![1]! as unknown as Record<string, unknown>;
+  const withoutSig = (e: Record<string, unknown>) =>
+    Object.fromEntries(Object.entries(e).filter(([k]) => k !== "sig"));
+  assert.deepEqual(withoutSig(a), withoutSig(b));
+  const sigA = a["sig"] as string;
+  const sigB = b["sig"] as string;
+  assert.equal(sigA.length, sigB.length);
+  assert.equal([...sigA].filter((ch, i) => ch !== sigB[i]).length, 1);
+  // Still lowercase hex of the same length, so the member set and the canonical bytes are
+  // untouched: only the signature is wrong.
+  assert.equal(sigB, sigB.toLowerCase());
+  assert.equal(Buffer.from(sigB, "hex").length, 64);
+});
+
+test("the defective-second row's signature really does not verify", () => {
+  // Non-vacuity, half two: on its OWN — with no earlier envelope to be a duplicate of — that
+  // second envelope fails on the signature. Without this the row would prove nothing about
+  // ordering, because there would be nothing for the duplicate rule to pre-empt.
+  const c = byName("reject_duplicate_subject_defective_second");
+  const alone = JSON.parse(JSON.stringify(c.bundle)) as typeof c.bundle;
+  alone.envelopes = [alone.envelopes![1]!];
+  const report = verifyBundle(alone, signerFor(c), { witnessKeys: c.witness_keys });
+  assert.deepEqual(report.failure_details.map((d) => d.reason), ["envelope_bad_signature"]);
+  assert.equal(report.envelopes.states["1"], PROCESS_ASSERTED);
+});
+
+test("the defective-second row pins claiming the entry over judging the envelope", () => {
+  // What the row is FOR. This build claims the entry as soon as `subject.seq` finds it, so the
+  // duplicate rule fires and the signature is never reached: `envelope_bad_signature` is a
+  // permitted extra this verifier does not report. A verifier that judged the envelope first
+  // would report that reason INSTEAD, count no claim, and leave seq 1 reporting `witness-signed`
+  // on the first envelope alone — fewer than the minimal set, and the wrong state.
+  const report = verify(byName("reject_duplicate_subject_defective_second"));
+  assert.deepEqual(report.failure_details.map((d) => d.reason), ["envelope_duplicate_subject"]);
+  assert.equal(report.envelopes.states["1"], PROCESS_ASSERTED);
+  assert.deepEqual(report.envelopes.witness_signed, []);
+  // The first witness's word still stands as what IT said; the ENTRY is what stops being
+  // witness-signed. Same contract as row 17, and the broken second envelope does not change it.
+  assert.equal(report.envelopes.results["1"], "matched");
 });
 
 test("the absent row carries no envelopes member at all", () => {
