@@ -117,7 +117,7 @@ test("the vector file declares its version and every expected case, in order", (
   // implementation that scored bundle_vectors_v1 still scores it. `revision` is the additive
   // counter that does move. Cases are appended, never inserted: a position is stable for life.
   assert.equal(DOCUMENT.version, "bundle_vectors_v1");
-  assert.equal(DOCUMENT.revision, "bundle_vectors_v1.3");
+  assert.equal(DOCUMENT.revision, "bundle_vectors_v1.4");
   assert.deepEqual(
     DOCUMENT.cases.map((c) => c.name),
     [
@@ -147,6 +147,9 @@ test("the vector file declares its version and every expected case, in order", (
       // counter: `policy: "unlisted"` says the chain never authorized the call, so containment
       // must not test it and must not drop it either.
       "valid_bundle_v2_ungated_allow",
+      // v1.4: the two rows that pin the policy rule an implementer could get wrong.
+      "reject_unknown_policy_value",
+      "reject_policy_on_spawn",
     ],
   );
 });
@@ -282,8 +285,8 @@ test("the vendored copy is the file the fixtures directory documents, read as ra
   // copied, or is copied with a rewritten serialisation, fails here.
   const raw = readFileSync(resolve(FIXTURES, "vectors", "bundles", "bundle_vectors_v1.json"), "utf8");
   assert.equal(JSON.parse(raw).version, "bundle_vectors_v1");
-  assert.equal(JSON.parse(raw).revision, "bundle_vectors_v1.3");
-  assert.equal(JSON.parse(raw).cases.length, 18);
+  assert.equal(JSON.parse(raw).revision, "bundle_vectors_v1.4");
+  assert.equal(JSON.parse(raw).cases.length, 20);
   assert.ok(raw.endsWith("\n"), "the Python writer terminates the file with a newline");
 });
 
