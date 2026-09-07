@@ -74,7 +74,7 @@ const NAMES = Object.keys(expected);
  * to a release that writes the key, this list must be emptied — the second assertion fails until
  * it is, which is the point.
  */
-const CHECKS_ADDED_SINCE_THE_PYTHON_PIN: readonly string[] = ["envelopes"];
+const CHECKS_ADDED_SINCE_THE_PYTHON_PIN: readonly string[] = [];   // 0.16.0 writes `envelopes`
 
 function assertChecksMatch(got: object, want: object, label: string): void {
   const shared = Object.fromEntries(Object.entries(got).filter(([k]) => k in want));
