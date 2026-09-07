@@ -6,6 +6,24 @@ Versions follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-08
+
+Parity with attenu-guard (Python) 0.16.0.
+
+- Ledger: a new allow-only field `policy` (`unlisted` is the only v1 value) marks an un-gated
+  passthrough; the verifier skips containment only for a defined value, reports the count as
+  `ungated`, and rejects `policy` on any non-allow entry or with an undefined value, on every
+  chain version (`invalid_policy`, `policy_on_non_allow`).
+- `Guard.recordPassthrough` writes such an entry (capture `pre_hook_only`, never pending).
+- `ReasonCode.DELEGATION_REFUSED`; `Policy.UNLISTED`.
+- `denials()` folds `spawn_denied` entries alongside `deny` (`node` = the parent, `requested`
+  = the refused sub-agent, `event` on every row).
+- Bundle corpus `bundle_vectors_v1.4` (20 cases): `valid_bundle_v2_ungated_allow` with
+  `expect_report`, `reject_unknown_policy_value`, `reject_policy_on_spawn`; the scorer honours
+  `expect_report`. Envelope and token corpora unchanged.
+- An `outcome` carrying a `receipt` (`framework_refusal`) verifies and reports the call `observed`.
+
+
 ### Added
 - `policy` on an `allow` entry (`Policy.UNLISTED`, `"unlisted"`), matching Python's `attenu_guard.reasons.Policy`: an adapter running with `allowUnlisted` let a tool with no declared policy run WITHOUT a `check()`, and the entry records that it did. `LEDGER_FIELDS` accepts it, so `exportBundle({strict: true})` no longer treats it as a leak; it is allow-only, and a `deny` carrying it is `invalid_deny` on a v2 chain. Not a v2-only field
 - `verifyBundle()` reports `ungated`: allow entries carrying `policy` are NOT containment-checked and NOT counted in `actions_checked`. Their `scope` is a label, not a claim of held authority, so running one through containment rejects an honest bundle; dropping it silently understates the run. The count is reported instead, so a reader sees how much of the run was actually measured
