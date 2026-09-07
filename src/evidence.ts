@@ -47,7 +47,7 @@ import { createHash } from "node:crypto";
 import { AuditLog, SCHEMA_VERSION, chainIdOf, hashEntry, GENESIS, type Anchor, type LedgerEntry } from "./audit.js";
 import { Authority } from "./authority.js";
 import { describe as describeCeiling, type Context } from "./ceilings.js";
-import { CAPTURES, BODY_STATES, BodyState, Capture } from "./reasons.js";
+import { CAPTURES, BODY_STATES, POLICIES, BodyState, Capture } from "./reasons.js";
 import { PARAMS_HASH_REASONS } from "./params.js";
 import { Ed25519Signer, Ed25519Verifier, type Signer } from "./wire.js";
 
@@ -86,6 +86,9 @@ export const LEDGER_FIELDS: ReadonlySet<string> = new Set([
   "strikes",
   "mode",
   "disposition",
+  // `policy` marks an allow the chain never authorized (an `allowUnlisted` passthrough) — see
+  // reasons.Policy and the containment check below. Not a v2-only field.
+  "policy",
   // 0.9.0 execution binding (schemaVersion=2 chains): every field named in the spec.
   "call_id",
   "capture",
@@ -554,16 +557,28 @@ export interface DenialRow {
   scope: Json;
   disposition: Json;
   reason: Json;
+  /** Which refusal event this row folds: `"deny"` (an action) or `"spawn_denied"` (a delegation). */
+  event: Json;
+  /** The sub-agent a `spawn_denied` refused; `null` on a `deny` row. */
+  requested: Json;
   count: number;
   first_seq: number;
   last_seq: number;
 }
 
 /**
- * Deny events grouped by (node, tool, scope, disposition) — the rows a decisions
- * queue renders: "should this agent be allowed to <tool>?", with how often it
- * asked and why it was refused. A pure fold over the ledger, ordered by first
+ * Every refusal on the ledger, grouped by (node, tool, scope, disposition, requested) — the rows
+ * a Decisions queue renders: "should this agent be allowed to <tool>?", with how often it asked
+ * and why it was refused. A pure fold over the ledger; no engine, no state. Ordered by first
  * occurrence.
+ *
+ * Two events are refusals, and both are folded here. A `deny` is a refused ACTION: it carries the
+ * tool and scope, and `requested` is null. A `spawn_denied` is a refused DELEGATION — the chain
+ * would not mint the child (revoked/expired parent, depth/fanout overflow) — recorded once, by
+ * `Guard.delegate()`, on the PARENT node that asked; its `requested` names the sub-agent that was
+ * refused, and it has no tool or scope because no action was ever authorized. An operator's queue
+ * that folded only `deny` would show a refused tool call and miss a refused hand-off, which is the
+ * larger event of the two.
  */
 export function denials(bundle: Partial<Bundle>): DenialRow[] {
   const entries = bundle.entries ?? [];
@@ -576,9 +591,19 @@ export function denials(bundle: Partial<Bundle>): DenialRow[] {
   }
   const rows = new Map<string, DenialRow>();
   for (const e of entries) {
-    if (toPlain(e["event"]) !== "deny") continue;
-    const node = orNull(e["node"]);
-    const key = JSON.stringify([node, orNull(e["tool"]), orNull(e["scope"]), orNull(e["disposition"])]);
+    const ev = toPlain(e["event"]);
+    if (ev !== "deny" && ev !== "spawn_denied") continue;
+    // `spawn_denied` names the acting node in `parent` (there is no child node to name — that is
+    // what was refused), so it is folded onto the node that asked.
+    const node = ev === "spawn_denied" ? orNull(e["parent"]) : orNull(e["node"]);
+    const requested = ev === "spawn_denied" ? orNull(e["agent"]) : null;
+    const key = JSON.stringify([
+      node,
+      orNull(e["tool"]),
+      orNull(e["scope"]),
+      orNull(e["disposition"]),
+      requested,
+    ]);
     const seq = toPlain(e["seq"]) as number;
     const existing = rows.get(key);
     if (existing === undefined) {
@@ -589,6 +614,8 @@ export function denials(bundle: Partial<Bundle>): DenialRow[] {
         scope: orNull(e["scope"]),
         disposition: orNull(e["disposition"]),
         reason: orNull(e["reason"]),
+        event: ev,
+        requested,
         count: 1,
         first_seq: seq,
         last_seq: seq,
@@ -1419,13 +1446,25 @@ function validateAllow(e: LedgerEntry): string | null {
       return `adapter[${JSON.stringify(k)}] must be a non-empty string`;
     }
   }
+  if (presentButNull(e, "policy")) {
+    return "policy is explicitly null (omit it, or give a valid Policy value)";
+  }
+  if ("policy" in e && !POLICIES.has(toPlain(e["policy"]) as string)) {
+    return `policy ${pyRepr(toPlain(e["policy"]) as Json)} not a known value`;
+  }
   err = validHashField(e, "authorized_params_hash");
   if (err) return err;
   return validParamsHashReason(e, "authorized_params_hash");
 }
 
 /** Fields that only ever belong on an `allow` entry — illegal on a `deny`, on any schema version. */
-const ALLOW_ONLY_FIELDS = ["capture", "adapter", "authorized_params_hash", "params_hash_reason"] as const;
+const ALLOW_ONLY_FIELDS = [
+  "capture",
+  "adapter",
+  "authorized_params_hash",
+  "params_hash_reason",
+  "policy",
+] as const;
 
 function validateDeny(e: LedgerEntry): string | null {
   const err = validCallId(e);
@@ -1866,6 +1905,12 @@ export interface VerifyReport {
   failure_details: FailureDetail[];
   nodes: number;
   actions_checked: number;
+  /**
+   * Allow entries carrying `policy` (reasons.Policy): the call happened but the chain never
+   * authorized it, so it is NOT containment-checked and NOT counted in `actions_checked`. The
+   * count is reported so a reader can see how much of the run was actually measured.
+   */
+  ungated: number;
   chain_id: Json;
   execution_binding: ExecutionBinding;
   /**
@@ -2093,10 +2138,21 @@ export function verifyBundle(
   checks.monotonicity = mono && afail.length === 0;
 
   // (3) containment: every allowed action's scope within the acting node's authority.
+  // An allow carrying `policy` (reasons.Policy) is one the chain never authorized — an adapter
+  // running with `allowUnlisted` passed the call through un-gated and recorded that it did. Its
+  // `scope` is a label, not a claim of held authority, so testing it for containment would report
+  // a violation the entry never asserted. Such entries are counted as UNGATED and reported as
+  // their own number instead: a reader sees how much of the run was actually measured, which is
+  // the honest answer and never a silent one.
   let contained = true;
   let actions = 0;
+  let ungated = 0;
   for (const e of entries) {
     if (toPlain(e["event"]) !== "allow") continue;
+    if (toPlain(e["policy"]) !== null && toPlain(e["policy"]) !== undefined) {
+      ungated += 1;
+      continue;
+    }
     actions += 1;
     const node = toPlain(e["node"]) as string;
     const scope = toPlain(e["scope"]) as string;
@@ -2163,6 +2219,7 @@ export function verifyBundle(
     failure_details: log.details,
     nodes: auth.size,
     actions_checked: actions,
+    ungated,
     chain_id: orNull(bundle.chain_id),
     execution_binding: eb,
     envelopes: envelopeSummary,

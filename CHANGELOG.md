@@ -6,6 +6,15 @@ Versions follow semantic versioning.
 
 ## [Unreleased]
 
+### Added
+- `policy` on an `allow` entry (`Policy.UNLISTED`, `"unlisted"`), matching Python's `attenu_guard.reasons.Policy`: an adapter running with `allowUnlisted` let a tool with no declared policy run WITHOUT a `check()`, and the entry records that it did. `LEDGER_FIELDS` accepts it, so `exportBundle({strict: true})` no longer treats it as a leak; it is allow-only, and a `deny` carrying it is `invalid_deny` on a v2 chain. Not a v2-only field
+- `verifyBundle()` reports `ungated`: allow entries carrying `policy` are NOT containment-checked and NOT counted in `actions_checked`. Their `scope` is a label, not a claim of held authority, so running one through containment rejects an honest bundle; dropping it silently understates the run. The count is reported instead, so a reader sees how much of the run was actually measured
+- `ReasonCode.DELEGATION_REFUSED` (`"delegation_refused"`): an adapter refused a delegation before it reached the chain, so nothing was minted and there is no `spawn_denied`; the refusal is recorded as a deny
+- Vendored bundle corpus moved to revision `bundle_vectors_v1.3`, eighteen cases, still copied byte for byte from the Python repository. The new row, `valid_bundle_v2_ungated_allow`, is an ACCEPTING case whose whole content is a report counter: `expect_report: {actions_checked: 2, ungated: 1}`. A case may now declare `expect_report`, named report counters a conformant verifier reproduces exactly; it exists for a rule accept/reject cannot distinguish. The seventeen earlier rows are byte-identical and `version` stays `bundle_vectors_v1`
+
+### Changed
+- `denials()` folds `spawn_denied` alongside `deny`, matching Python. A `spawn_denied` is a refused DELEGATION recorded on the PARENT node that asked, so the row's `node` is the entry's `parent` and its new `requested` field names the sub-agent that was refused. Every row gains `event` (`"deny"` or `"spawn_denied"`). A queue that folded only `deny` showed a refused tool call and missed a refused hand-off, which is the larger event of the two
+
 ## [0.9.0] - 2026-09-06
 
 ### Added

@@ -39,6 +39,7 @@ export type {
   IssueOptions,
   ReceiptInfo,
   RecordDenialOptions,
+  RecordPassthroughOptions,
   RecordOutcomeOptions,
 } from "./guard.js";
 
@@ -46,11 +47,13 @@ export {
   BODY_STATES,
   CAPTURES,
   DISPOSITIONS,
+  POLICIES,
   BodyState,
   Capture,
   CompletionResult,
   Decision,
   Disposition,
+  Policy,
   Reason,
   ReasonCode,
 } from "./reasons.js";
@@ -58,6 +61,7 @@ export type {
   BodyStateValue,
   CaptureValue,
   DispositionValue,
+  PolicyValue,
   ReasonCodeValue,
   ReasonInit,
 } from "./reasons.js";

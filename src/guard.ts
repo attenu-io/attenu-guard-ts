@@ -74,6 +74,8 @@ import {
   DISPOSITIONS,
   Decision,
   Disposition,
+  POLICIES,
+  Policy,
   Reason,
   ReasonCode,
 } from "./reasons.js";
@@ -193,6 +195,13 @@ export interface RecordDenialOptions {
   tool?: string | null;
   context?: Context | null;
   disposition?: string | null;
+}
+
+export interface RecordPassthroughOptions {
+  scope?: string | null;
+  context?: Context | null;
+  /** Defaults to `Policy.UNLISTED`, the only value v1 defines. */
+  policy?: string;
 }
 
 /** `{type, ref, digest}` — unverified carriage from an external observer (spec section 7). */
@@ -805,6 +814,76 @@ export class Guard {
         { ...(options.context ?? {}) },
         options.disposition ?? null,
         isV2 ? { call_id: callId } : undefined,
+      );
+    } catch (exc) {
+      if (exc instanceof CommittedAuditError) {
+        exc.decision = Guard.attachCallId(decision, callId);
+      }
+      throw exc;
+    }
+    return Guard.attachCallId(decision, callId);
+  }
+
+  /**
+   * Put an UN-GATED call on the audit trail as an `allow` marked `policy`, and return it as an
+   * (allowed) Decision — for an adapter running with `allowUnlisted`, where a tool with no
+   * declared policy runs without a `check` at all.
+   *
+   * The call happened, so it belongs on the ledger; the chain never authorized it, so the entry
+   * says so rather than pretending. `policy: "unlisted"` is what the bundle verifier reads: such
+   * entries are counted as ungated (`verifyBundle(...).ungated`) instead of being tested for
+   * containment against an authority they were never measured against. Nothing is evaluated here
+   * and no meter moves — exactly as with `recordDenial`, the caller has already decided; this
+   * only records it.
+   *
+   * `scope` defaults to `tool` because the published audit schema requires a string scope on an
+   * allow entry; it is a LABEL on an ungated entry, never a claim of held authority.
+   *
+   * On a `schemaVersion: 2` chain this allocates a `callId` and records the honest
+   * `Capture.PRE_HOOK_ONLY` (there is no wrapper observation to bind), so a passthrough never
+   * sits in `complete()`'s pending set.
+   */
+  recordPassthrough(tool: string, options: RecordPassthroughOptions = {}): Decision {
+    const policy = options.policy ?? Policy.UNLISTED;
+    if (!POLICIES.has(policy)) {
+      throw new Error(
+        `unknown policy ${JSON.stringify(policy)}; expected one of ` +
+          `${Array.from(POLICIES).sort().join(", ")}`,
+      );
+    }
+    const decision = Decision.allow(this.node.nodeId);
+    const isV2 = this.isV2;
+    const extra: LedgerEntry = { policy };
+
+    let callId: string | null = null;
+    if (isV2) {
+      try {
+        callId = randomBytes(16).toString("hex");
+      } catch {
+        // Fail-closed, exactly as check()/recordDenial(): nothing is written. The caller still
+        // passes the call through (that decision was its own), but this library never writes an
+        // entry it could not identify.
+        return Decision.deny(
+          new Reason(ReasonCode.CALL_ID_UNAVAILABLE, { message: "csprng unavailable" }),
+          this.node.nodeId,
+        );
+      }
+      extra["call_id"] = callId;
+      extra["capture"] = Capture.PRE_HOOK_ONLY;
+      extra["adapter"] = {
+        module: "attenu-guard",
+        version: VERSION,
+        hook_path: "Guard.recordPassthrough",
+      } as unknown as Json;
+    }
+    try {
+      this.logDecision(
+        decision,
+        options.scope ?? tool,
+        tool,
+        { ...(options.context ?? {}) },
+        null,
+        extra,
       );
     } catch (exc) {
       if (exc instanceof CommittedAuditError) {

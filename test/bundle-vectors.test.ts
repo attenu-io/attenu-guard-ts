@@ -65,6 +65,13 @@ interface VectorCase {
   bundle: Bundle;
   expect: "accept" | "reject";
   expect_failures: ExpectedFailure[];
+  /**
+   * OPTIONAL, revision v1.3: named counters from the verifier's own report that a conformant
+   * implementation reproduces exactly. It exists for a rule accept/reject cannot distinguish —
+   * an un-gated allow is neither a containment pass nor a failure, so the only way a case can
+   * pin it is by the number reported. A case without it asserts nothing about counters.
+   */
+  expect_report?: Record<string, number>;
 }
 
 interface VectorFile {
@@ -110,7 +117,7 @@ test("the vector file declares its version and every expected case, in order", (
   // implementation that scored bundle_vectors_v1 still scores it. `revision` is the additive
   // counter that does move. Cases are appended, never inserted: a position is stable for life.
   assert.equal(DOCUMENT.version, "bundle_vectors_v1");
-  assert.equal(DOCUMENT.revision, "bundle_vectors_v1.2");
+  assert.equal(DOCUMENT.revision, "bundle_vectors_v1.3");
   assert.deepEqual(
     DOCUMENT.cases.map((c) => c.name),
     [
@@ -136,6 +143,10 @@ test("the vector file declares its version and every expected case, in order", (
       "reject_loosened_ceiling_literal",
       "reject_null_ttl_literal",
       "reject_omitted_ceiling_literal",
+      // revision v1.3 — the un-gated allow. An accepting row whose whole content is a report
+      // counter: `policy: "unlisted"` says the chain never authorized the call, so containment
+      // must not test it and must not drop it either.
+      "valid_bundle_v2_ungated_allow",
     ],
   );
 });
@@ -195,6 +206,51 @@ test("every case scores exactly as it declares, accept or reject", () => {
   }
 });
 
+test("a case declaring expect_report reproduces those counters exactly", () => {
+  // The counters are the only thing an accept/reject verdict cannot express. A case that declares
+  // them must reproduce every one; a case that declares none asserts nothing here.
+  let declared = 0;
+  for (const c of DOCUMENT.cases) {
+    if (c.expect_report === undefined) continue;
+    declared += 1;
+    const report = verifyBundle(c.bundle, signerFor(c)) as unknown as Record<string, unknown>;
+    for (const [counter, expected] of Object.entries(c.expect_report)) {
+      assert.equal(report[counter], expected, `${c.name}: report.${counter}`);
+    }
+  }
+  assert.ok(declared > 0, "revision v1.3 ships at least one case declaring expect_report");
+});
+
+test("an un-gated allow is counted, not contained and not ignored", () => {
+  // The rule the v1.3 row exists for, asserted against the shape of the entry rather than the
+  // counters alone: the policy-marked allow's scope is OUTSIDE the acting node's authority, so a
+  // verifier that ran it through containment would reject an honest bundle.
+  const c = DOCUMENT.cases.find((x) => x.name === "valid_bundle_v2_ungated_allow");
+  assert.ok(c, "valid_bundle_v2_ungated_allow is present");
+  const marked = (c!.bundle.entries ?? []).filter((e) => "policy" in e);
+  assert.equal(marked.length, 1);
+  assert.equal(marked[0]!["event"], "allow");
+  assert.equal(marked[0]!["policy"], "unlisted");
+  const report = verifyBundle(c!.bundle, signerFor(c!));
+  assert.ok(report.ok, JSON.stringify(report.failures));
+  assert.equal(report.ungated, 1);
+  assert.equal(report.actions_checked, 2);
+});
+
+test("policy is allow-only: a deny carrying it is an invalid v2 entry", () => {
+  const c = DOCUMENT.cases.find((x) => x.name === "valid_bundle_v2_ungated_allow")!;
+  const bundle = JSON.parse(JSON.stringify(c.bundle)) as Bundle;
+  const deny = (bundle.entries ?? []).find((e) => e["event"] === "deny");
+  assert.ok(deny, "the case has a deny to mark");
+  (deny as Record<string, unknown>)["policy"] = "unlisted";
+  const report = verifyBundle(bundle, signerFor(c));
+  assert.equal(report.ok, false);
+  assert.ok(
+    report.failure_details.some((d) => d.reason === "invalid_deny"),
+    JSON.stringify(report.failures),
+  );
+});
+
 test("the declared minimal set is minimal — every declared reason is genuinely reported", () => {
   // A declared failure must be one this verifier actually reports for THAT bundle, not a hopeful
   // entry no implementation could satisfy.
@@ -226,8 +282,8 @@ test("the vendored copy is the file the fixtures directory documents, read as ra
   // copied, or is copied with a rewritten serialisation, fails here.
   const raw = readFileSync(resolve(FIXTURES, "vectors", "bundles", "bundle_vectors_v1.json"), "utf8");
   assert.equal(JSON.parse(raw).version, "bundle_vectors_v1");
-  assert.equal(JSON.parse(raw).revision, "bundle_vectors_v1.2");
-  assert.equal(JSON.parse(raw).cases.length, 17);
+  assert.equal(JSON.parse(raw).revision, "bundle_vectors_v1.3");
+  assert.equal(JSON.parse(raw).cases.length, 18);
   assert.ok(raw.endsWith("\n"), "the Python writer terminates the file with a newline");
 });
 

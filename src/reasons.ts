@@ -35,6 +35,12 @@ export const ReasonCode = {
   MAX_DEPTH: "max_depth",
   MAX_FANOUT: "max_fanout",
   CHAIN_CEILING: "chain_ceiling",
+  /**
+   * An adapter refused a delegation before it reached the chain (the named sub-agent has no
+   * declared Authority) — nothing was minted, so there is no `spawn_denied`; the refusal is
+   * recorded as a deny.
+   */
+  DELEGATION_REFUSED: "delegation_refused",
   /** The principal holds no authority at all in this chain. */
   NO_AUTHORITY: "no_authority",
   // 0.9.0 execution-binding transition (schema_version=2 chains only — see guard.ts):
@@ -68,6 +74,25 @@ export const Disposition = {
 export type DispositionValue = (typeof Disposition)[keyof typeof Disposition];
 
 export const DISPOSITIONS: ReadonlySet<string> = new Set(Object.values(Disposition));
+
+/**
+ * HOW an `allow` entry came to be — present only when the answer is not "the chain authorized it".
+ *
+ * An adapter running with `allowUnlisted` (incremental rollout) lets a tool with no declared
+ * policy run WITHOUT a `check()`. That call happened, so it belongs on the ledger; but the chain
+ * never authorized it, so it must not be recorded as though it had been. `policy: "unlisted"` says
+ * exactly that, and the bundle verifier counts such entries as ungated (`report.ungated`) instead
+ * of testing them for containment against an authority they were never measured against. An
+ * `allow` with no `policy` field is the normal case: authorized by `Guard.check()`.
+ */
+export const Policy = {
+  /** Passed through un-gated under `allowUnlisted`. */
+  UNLISTED: "unlisted",
+} as const;
+
+export type PolicyValue = (typeof Policy)[keyof typeof Policy];
+
+export const POLICIES: ReadonlySet<string> = new Set(Object.values(Policy));
 
 /**
  * What the adapter's code path WILL observe for a given `check`ed call (0.9.0 execution binding)

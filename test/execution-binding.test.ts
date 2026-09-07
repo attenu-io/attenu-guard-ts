@@ -1268,3 +1268,30 @@ test("an expected anchor matches a genuine bundle", () => {
   assert.equal(rep.ok, true);
   assert.equal(rep.checks.expected_anchor, "verified");
 });
+
+test("a framework_refusal receipt verifies and the call is reported observed", () => {
+  // The receipt shape the AstrBot adapter writes: the framework refused the body after our own
+  // check() allowed the call, and the outcome carries the refusal as a receipt. A receipt is
+  // carried verbatim and never verified by us, so its presence must neither fail the bundle nor
+  // change the binding verdict — the call was observed, because an outcome bound to it.
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g = v2Root();
+  const d = g.check("crm.read", { capture: Capture.WRAPPER_SYNC, adapter: adapterInfo() });
+  g.recordOutcome(d.callId!, BodyState.RAISED, {
+    durationMs: 1,
+    errorCode: "PermissionError",
+    receipt: { type: "framework_refusal", ref: "astrbot:permission", digest: HEX64 },
+  });
+  const bundle = bundleFor(g, signer);
+  const outcome = bundle.entries.find((e) => e["event"] === "outcome")!;
+  assert.deepEqual(outcome["receipt"], {
+    type: "framework_refusal",
+    ref: "astrbot:permission",
+    digest: HEX64,
+  });
+  const rep = verifyBundle(bundle, signer);
+  assert.ok(rep.ok, JSON.stringify(rep.failures));
+  const eb = rep.execution_binding as any;
+  assert.deepEqual(eb.failures ?? [], []);
+  assert.equal(eb.per_call[d.callId!], "observed");
+});

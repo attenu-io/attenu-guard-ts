@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { Authority } from "../src/authority.js";
-import { GENESIS, hashEntry } from "../src/audit.js";
+import { GENESIS, hashEntry, type LedgerEntry } from "../src/audit.js";
 import { canonicalBytes } from "../src/canonical.js";
 import { RowLimit } from "../src/ceilings.js";
 import {
@@ -307,4 +307,62 @@ test("an empty ledger anchors to a seq of -1, but verifyBundle rejects it as roo
   assert.equal(report.checks.root, false);
   assert.equal(report.ok, false);
   assert.ok(report.failures.some((f) => f.startsWith("missing_root:")), report.failures.join("; "));
+});
+
+test("denials fold a refused delegation alongside a refused action", () => {
+  // A queue that folded only `deny` shows the refused tool call and misses the refused hand-off,
+  // which is the larger event of the two. A `spawn_denied` is recorded on the PARENT that asked,
+  // so its row's `node` is the entry's `parent` and `requested` names the sub-agent refused.
+  const guard = Guard.issue(
+    "orchestrator",
+    new Authority({ scopes: ["crm.*"], ceilings: [], ttl: 3600 }),
+    { chainId: "ts-denials", maxDepth: 1 },
+  );
+  guard.check("crm.write", {});
+  const reader = guard.delegate("reader", new Authority({ scopes: ["crm.read"], ttl: 60 }), "read");
+  reader.check("crm.export", {}); // over-reach: a refused ACTION
+  assert.throws(() => reader.delegate("deeper", new Authority({ scopes: ["crm.read"], ttl: 30 }), "x"));
+
+  const bundle = exportBundle(guard.auditLog(), hs256);
+  const rows = denials(bundle);
+  assert.deepEqual(
+    rows.map((r) => [r.event, r.node, r.tool, r.scope, r.requested]),
+    [
+      ["deny", "ts-denials:n1", null, "crm.export", null],
+      ["spawn_denied", "ts-denials:n1", null, null, "deeper"],
+    ],
+  );
+  assert.equal(rows[1]!.agent, "reader");
+  assert.equal(rows[1]!.reason, "max_depth");
+});
+
+test("an un-gated passthrough is on the ledger, marked, and counted as ungated", () => {
+  const guard = Guard.issue(
+    "orchestrator",
+    new Authority({ scopes: ["crm.read"], ttl: 3600 }),
+    { chainId: "ts-ungated", schemaVersion: 2 },
+  );
+  guard.check("crm.read", { context: {} });
+  const passthrough = guard.recordPassthrough("legacy.sync");
+  assert.equal(passthrough.allowed, true);
+  guard.complete();
+
+  const entries = guard.auditLog().entries;
+  const marked = entries.filter((e: LedgerEntry) => e["event"] === "allow" && "policy" in e);
+  assert.equal(marked.length, 1);
+  assert.equal(marked[0]!["policy"], "unlisted");
+  // `scope` defaults to the tool name and is a LABEL, outside the node's {crm.read}.
+  assert.equal(marked[0]!["scope"], "legacy.sync");
+  assert.equal(marked[0]!["capture"], "pre_hook_only");
+
+  const bundle = exportBundle(guard.auditLog(), hs256, { strict: true });
+  const report = verifyBundle(bundle, hs256);
+  assert.ok(report.ok, JSON.stringify(report.failures));
+  assert.equal(report.ungated, 1);
+  assert.equal(report.actions_checked, 1);
+});
+
+test("recordPassthrough refuses a policy value it does not know", () => {
+  const guard = Guard.issue("a", new Authority({ scopes: ["crm.read"], ttl: 60 }), { chainId: "ts-p" });
+  assert.throws(() => guard.recordPassthrough("t", { policy: "whatever" }), /unknown policy/);
 });
