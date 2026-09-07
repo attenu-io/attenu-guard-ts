@@ -1295,3 +1295,128 @@ test("a framework_refusal receipt verifies and the call is reported observed", (
   assert.deepEqual(eb.failures ?? [], []);
   assert.equal(eb.per_call[d.callId!], "observed");
 });
+
+// =============================================================================================
+// `policy` is what excuses an entry from containment, so the value buying that exemption is
+// checked on EVERY bundle version — not only inside execution binding, which returns early on a
+// schema_version=1 bundle. Mirrors Python's `_policy_failures`.
+// =============================================================================================
+
+/** A one-node bundle whose single allow is stamped with `policyValue` on a scope the node holds
+ *  but which `mutate` may widen. Returns the bundle and the signer that anchored it. */
+function bundleWithPolicy(
+  policyValue: unknown,
+  { schemaVersion, scope }: { schemaVersion: 1 | 2; scope?: string },
+): { bundle: any; signer: HS256TestSigner } {
+  const signer = new HS256TestSigner(Buffer.from("k"), "k");
+  const g =
+    schemaVersion === 2
+      ? v2Root()
+      : Guard.issue(
+          "orchestrator",
+          new Authority({ scopes: ["crm.read", "mail.send"], ceilings: [new RowLimit(100)], ttl: 3600 }),
+        );
+  g.check("crm.read", { context: { rows: 1 } });
+  const bundle = exportBundle(g.auditLog(), signer);
+  const entries = bundle.entries;
+  const idx = entries.findIndex((e: LedgerEntry) => e["event"] === "allow");
+  if (scope !== undefined) entries[idx]!["scope"] = scope;
+  entries[idx]!["policy"] = policyValue as Json;
+  rehashFrom(entries, idx);
+  bundle.anchor = anchorFor(entries, signer);
+  return { bundle, signer };
+}
+
+test("a bogus policy on a v1 bundle cannot excuse containment", () => {
+  // The hole: `policy` was validated only in `validateAllow`, which runs inside execution
+  // binding and never runs at all on a v1 chain. An out-of-authority action stamped with a
+  // made-up marker verified clean and reported containment ok, which is the one thing the
+  // bundle exists to say honestly.
+  const { bundle, signer } = bundleWithPolicy("totally-made-up", {
+    schemaVersion: 1,
+    scope: "pay.transfer",
+  });
+  const rep = verifyBundle(bundle, signer);
+  assert.equal(rep.ok, false);
+  assert.equal(rep.checks.containment, false, "the unheld scope is still measured");
+  assert.equal(rep.ungated, 0, "an undefined value buys no exemption");
+  assert.equal(rep.actions_checked, 1);
+  const reasons = rep.failure_details.map((d) => d.reason);
+  assert.ok(reasons.includes("invalid_policy"), reasons.join(", "));
+  assert.ok(reasons.includes("containment"), reasons.join(", "));
+});
+
+test("a bogus policy on a v2 bundle cannot excuse containment either", () => {
+  const { bundle, signer } = bundleWithPolicy("totally-made-up", {
+    schemaVersion: 2,
+    scope: "pay.transfer",
+  });
+  const rep = verifyBundle(bundle, signer);
+  assert.equal(rep.ok, false);
+  assert.equal(rep.checks.containment, false);
+  assert.equal(rep.ungated, 0);
+  const reasons = rep.failure_details.map((d) => d.reason);
+  // On v2 the published contract is `invalid_allow`; the new check stands down so no message is
+  // ever emitted twice.
+  assert.ok(reasons.includes("invalid_allow"), reasons.join(", "));
+  assert.equal(reasons.filter((r) => r === "invalid_policy").length, 0);
+  assert.ok(reasons.includes("containment"), reasons.join(", "));
+});
+
+test("a known policy value still excuses containment on both versions", () => {
+  for (const schemaVersion of [1, 2] as const) {
+    const { bundle, signer } = bundleWithPolicy("unlisted", { schemaVersion, scope: "pay.transfer" });
+    const rep = verifyBundle(bundle, signer);
+    assert.ok(rep.ok, `v${schemaVersion}: ${JSON.stringify(rep.failures)}`);
+    assert.equal(rep.ungated, 1);
+    assert.equal(rep.actions_checked, 0);
+  }
+});
+
+test("policy on a non-allow entry is invalid on every bundle version", () => {
+  for (const schemaVersion of [1, 2] as const) {
+    for (const event of ["root", "spawn", "outcome"]) {
+      const signer = new HS256TestSigner(Buffer.from("k"), "k");
+      const g =
+        schemaVersion === 2
+          ? v2Root()
+          : Guard.issue(
+              "orchestrator",
+              new Authority({ scopes: ["crm.read", "mail.send"], ceilings: [], ttl: 3600 }),
+            );
+      const child = g.delegate("reader", new Authority({ scopes: ["crm.read"], ttl: 60 }), "read");
+      const d = child.check("crm.read");
+      if (schemaVersion === 2) {
+        child.recordOutcome(d.callId!, BodyState.RETURNED, { durationMs: 1 });
+      }
+      const bundle = exportBundle(g.auditLog(), signer);
+      const entries = bundle.entries;
+      const idx = entries.findIndex((e: LedgerEntry) => e["event"] === event);
+      if (idx < 0) continue; // no outcome on a v1 chain
+      entries[idx]!["policy"] = "unlisted";
+      rehashFrom(entries, idx);
+      bundle.anchor = anchorFor(entries, signer);
+      const rep = verifyBundle(bundle, signer);
+      assert.equal(rep.ok, false, `v${schemaVersion} ${event}`);
+      const reasons = rep.failure_details.map((r) => r.reason);
+      assert.ok(
+        reasons.includes("policy_on_non_allow"),
+        `v${schemaVersion} ${event}: ${reasons.join(", ")}`,
+      );
+    }
+  }
+});
+
+test("a policy value of any JSON type is a reported failure, never an exception", () => {
+  // A bundle is untrusted input. Python's bare `in Policy.ALL` raised TypeError out of the
+  // verifier on an unhashable value; the equivalent hazard here is a non-string truthiness test.
+  for (const value of [0, "", false, [], {}, [1, 2], { a: 1 }]) {
+    for (const schemaVersion of [1, 2] as const) {
+      const { bundle, signer } = bundleWithPolicy(value, { schemaVersion, scope: "pay.transfer" });
+      const rep = verifyBundle(bundle, signer); // must not throw
+      assert.equal(rep.ok, false, `${JSON.stringify(value)} v${schemaVersion}`);
+      assert.equal(rep.ungated, 0, `${JSON.stringify(value)} v${schemaVersion}`);
+      assert.equal(rep.checks.containment, false, `${JSON.stringify(value)} v${schemaVersion}`);
+    }
+  }
+});

@@ -461,6 +461,13 @@ function sites(): Site[] {
   const v1Leak = clone(v1);
   v1Leak.entries[v1Leak.entries.length - 1]!["call_id"] = "ab".repeat(16);
 
+  // `policy` is checked on EVERY version, so its two sites are reached on a v1 bundle, where
+  // execution binding (which owns the v2 message) never runs.
+  const v1BogusPolicy = clone(v1);
+  v1BogusPolicy.entries[indexOf(v1, "allow")]!["policy"] = "totally-made-up";
+  const v1PolicyOnRoot = clone(v1);
+  v1PolicyOnRoot.entries[0]!["policy"] = "unlisted";
+
   return [
     {
       name: "unsupported_version",
@@ -591,6 +598,18 @@ function sites(): Site[] {
       bundle: broken(setEntry(denyI, "capture", Capture.WRAPPER_SYNC), { rehash: true, reanchor: true }),
       options: {},
       reasons: ["invalid_deny"],
+    },
+    {
+      name: "invalid_policy",
+      bundle: v1BogusPolicy,
+      options: {},
+      reasons: ["invalid_policy", "integrity", "integrity(anchor)"],
+    },
+    {
+      name: "policy_on_non_allow",
+      bundle: v1PolicyOnRoot,
+      options: {},
+      reasons: ["policy_on_non_allow", "integrity", "integrity(anchor)"],
     },
     {
       name: "invalid_outcome",

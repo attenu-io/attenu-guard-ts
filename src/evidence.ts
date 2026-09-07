@@ -664,6 +664,15 @@ function pyRepr(value: Json): string {
   return JSON.stringify(value);
 }
 
+/**
+ * Python's `str()` where a failure string interpolates a value bare (`{x}`) rather than through
+ * `repr` (`{x!r}`) — the same rendering for every type except a string, which `str` leaves
+ * unquoted. Both implementations report the same failure bytes, so the distinction is load-bearing.
+ */
+function pyStr(value: Json): string {
+  return typeof value === "string" ? value : pyRepr(value);
+}
+
 // =============================================================================================
 // Observer envelopes (envelope v1) — the TypeScript half of `attenu_guard.evidence`'s.
 //
@@ -1449,7 +1458,7 @@ function validateAllow(e: LedgerEntry): string | null {
   if (presentButNull(e, "policy")) {
     return "policy is explicitly null (omit it, or give a valid Policy value)";
   }
-  if ("policy" in e && !POLICIES.has(toPlain(e["policy"]) as string)) {
+  if ("policy" in e && !isKnownPolicy(toPlain(e["policy"]))) {
     return `policy ${pyRepr(toPlain(e["policy"]) as Json)} not a known value`;
   }
   err = validHashField(e, "authorized_params_hash");
@@ -1611,6 +1620,67 @@ const V2_ONLY_FIELDS = [
  * Every v2-only field found on any entry of a `schemaVersion: 1` bundle — mixed-version data,
  * invalid regardless of which field it is (merge-gate item 4/(c)).
  */
+/**
+ * A `policy` the format defines. Type-checked first: a bundle is untrusted input and can carry
+ * any JSON value there (`0`, `""`, `[]`, `{}`), and a bare truthiness or membership test on a
+ * non-string is how a made-up marker buys an exemption it was never entitled to.
+ */
+function isKnownPolicy(value: unknown): boolean {
+  return typeof value === "string" && POLICIES.has(value);
+}
+
+/**
+ * `policy` is checked on EVERY bundle version, because it is what excuses an entry from
+ * containment.
+ *
+ * An `allow` carrying `policy` is not tested for containment: it says the chain never authorized
+ * the call, so there is nothing to contain. That exemption is only sound if the value naming it
+ * is one the format actually defines. It was validated in `validateAllow`, which runs inside
+ * `executionBinding` — and that returns early on a `schemaVersion: 1` bundle. So on a v1 chain
+ * ANY non-null value bought the exemption: `"anything"`, `0`, `""`. An out-of-authority action
+ * stamped with a made-up policy verified clean and reported `containment: true`, which is the one
+ * thing this bundle exists to say honestly.
+ *
+ * Two rules, both version-independent:
+ *
+ *   - `policy` may appear ONLY on an `allow`. It answers "how did this allow come to be"; on a
+ *     `spawn`, `root` or `outcome` it means nothing and was accepted silently (only `deny` was
+ *     checked, by `validateDeny`'s allow-only-field rule).
+ *   - its value must be one `reasons.Policy` defines (`unlisted` is the only one in v1).
+ *
+ * On a v2 bundle `validateAllow`/`validateDeny` already report these two entry shapes and their
+ * strings are the published contract, so this check stands down for exactly those cases and
+ * covers what they do not reach. No message is ever emitted twice.
+ */
+function policyFailures(entries: readonly LedgerEntry[], bundleV: Json): FailureLog {
+  const failures = new FailureLog();
+  for (const e of entries) {
+    if (!("policy" in e)) continue;
+    const ev = toPlain(e["event"]);
+    const position = { seq: orNull(e["seq"]), node: orNull(e["node"]) };
+    if (ev === "allow") {
+      if (bundleV === 2) continue; // validateAllow owns this entry's message
+      if (!isKnownPolicy(toPlain(e["policy"]))) {
+        failures.add(
+          "invalid_policy",
+          `invalid_policy: seq=${pyStr(orNull(e["seq"]))} allow carries policy ` +
+            `${pyRepr(orNull(e["policy"]))}, not a value this format defines`,
+          position,
+        );
+      }
+    } else {
+      if (ev === "deny" && bundleV === 2) continue; // validateDeny owns this entry's message
+      failures.add(
+        "policy_on_non_allow",
+        `policy_on_non_allow: seq=${pyStr(orNull(e["seq"]))} event=${pyRepr(orNull(e["event"]))} ` +
+          "carries `policy`, which is an allow-only field",
+        position,
+      );
+    }
+  }
+  return failures;
+}
+
 function v2FieldLeaksOnV1(entries: readonly LedgerEntry[]): FailureLog {
   const failures = new FailureLog();
   for (const e of entries) {
@@ -2149,7 +2219,10 @@ export function verifyBundle(
   let ungated = 0;
   for (const e of entries) {
     if (toPlain(e["event"]) !== "allow") continue;
-    if (toPlain(e["policy"]) !== null && toPlain(e["policy"]) !== undefined) {
+    if (isKnownPolicy(toPlain(e["policy"]))) {
+      // Only a policy value the format DEFINES buys the exemption. An entry carrying anything
+      // else is reported by `policyFailures` and still measured here, so a made-up marker cannot
+      // excuse an out-of-authority action.
       ungated += 1;
       continue;
     }
@@ -2183,6 +2256,7 @@ export function verifyBundle(
     ? executionBinding(entries, bundleV)
     : [{ status: "not applicable" }, new FailureLog()];
   if (eb.failures !== undefined && eb.failures.length > 0) log.extend(ebFailures);
+  log.extend(policyFailures(entries, bundleV));
 
   // (4) observer envelopes. Never required — an absent envelope is the status quo and changes
   // nothing — but a PRESENT one has to verify, and a broken one lands in this same list. The
