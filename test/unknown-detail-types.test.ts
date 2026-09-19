@@ -233,6 +233,37 @@ test("an extra member on a normalising ceiling is still refused", () => {
   );
 });
 
+test("a rewritten key is refused", () => {
+  // `key` is the one member whose VALUE is load-bearing: subsumption pairs
+  // ceilings by it, so a rewritten key is a different dimension. CallLimit
+  // rewrites it when applies_to is present, and the member test cannot see that
+  // because the member set is unchanged.
+  assert.throws(() =>
+    Authority.fromWire({
+      scopes: ["crm.read"],
+      constraints: [{ key: "max_calls", type: "max_calls", max: 5, applies_to: "fs.write" }],
+      ttl: 10,
+    } as never),
+  );
+});
+
+test("field is exempt only on evidence it was parsed", () => {
+  // ctxFieldOf falls back to a hardcoded ctxField and then to key, so for the
+  // metered built-ins -- which never read `field` at all -- it returned the
+  // input's value by coincidence and `field` rode through unread. The test is
+  // now the attribute the constructor actually populated.
+  for (const c of [
+    { key: "max_rows", max: 5, field: "rows" },
+    { key: "max_spend", max: 5, field: "spend" },
+    { key: "egress", rank: "none", field: "egress" },
+  ]) {
+    assert.throws(
+      () => Authority.fromWire({ scopes: ["crm.read"], constraints: [c], ttl: 10 } as never),
+      `field rode through unread on ${JSON.stringify(c)}`,
+    );
+  }
+});
+
 test("an unknown constraint TYPE still fails closed rather than becoming a parse error", () => {
   // The distinction worth keeping: the draft requires an unknown constraint
   // type to DENY the action, never to be treated as unconstrained. Turning it

@@ -23,7 +23,6 @@
 import { compareCodePoints, sortedStrings, toPlain, type CJson, type Json } from "./canonical.js";
 import {
   ceilingFromWire,
-  ctxFieldOf,
   describe as describeCeiling,
   type Ceiling,
   type Context,
@@ -89,12 +88,32 @@ function ceilingFromWireWhole(c: CJson): Ceiling {
   const input = toPlain<Record<string, Json>>(c);
   if (input !== undefined && input !== null && typeof input === "object") {
     const emitted = toPlain<Record<string, Json>>(ceiling.toWire()) ?? {};
+    // `key` is the one member whose VALUE is load-bearing: subsumption pairs
+    // ceilings by it, so a rewritten key is a different dimension, not a
+    // cosmetic difference. `CallLimit` rewrites it ("max_calls" ->
+    // "max_calls[fs.write]" when `applies_to` is present), which the member test
+    // cannot see because the member set is unchanged. Checked on its own rather
+    // than by returning to whole-value equality, which broke conformant tokens a
+    // revision ago.
+    if (emitted["key"] !== input["key"]) {
+      throw new AuthorityError(
+        `constraint ${JSON.stringify(input)} names dimension ${JSON.stringify(input["key"])} ` +
+          `but this build reads it as ${JSON.stringify(emitted["key"])}; refusing rather ` +
+          "than silently changing which dimension is bounded",
+        "malformed_constraint",
+      );
+    }
     const dropped = Object.keys(input)
       .filter((k) => !(k in emitted))
-      // `field` is read and then not re-emitted when it equals `key`, because
-      // at that point it is redundant. Absent from the emission does not mean
-      // unread here, so confirm the ceiling actually resolved to it.
-      .filter((k) => !(k === "field" && ctxFieldOf(ceiling) === input["field"]))
+      // `field` is read and then not re-emitted when it equals `key`, because at
+      // that point it is redundant. Absent from the emission does not mean
+      // unread, so exempt it only on EVIDENCE that this ceiling parsed it: the
+      // attribute the constructor actually populated. `ctxFieldOf` is not that
+      // evidence -- it falls back to a hardcoded `ctxField` and then to `key`,
+      // so it returns the input's value by coincidence for the metered built-ins
+      // (which never read `field` at all) and unconditionally for a custom
+      // ceiling deriving `ctxField` from its own input.
+      .filter((k) => !(k === "field" && (ceiling as { field?: unknown }).field === input["field"]))
       .sort();
     if (dropped.length > 0) {
       throw new AuthorityError(
