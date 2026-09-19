@@ -32,6 +32,54 @@ import { Decision, Reason, ReasonCode } from "./reasons.js";
  * invalid; a denial means the caller asked for something the authority model
  * legitimately refuses.
  */
+/**
+ * `ceilingFromWire`, but refusing a constraint we would only partly read.
+ *
+ * Every built-in reads a fixed set of members and re-emits exactly those, so a
+ * round-trip that does not reproduce the input means this build ignored
+ * something the issuer signed. That was live and silent:
+ *
+ *     {"key":"max_rows","max":100,"min":9999}  ->  {"key":"max_rows","max":100}
+ *
+ * byte-identical to a constraint that never carried a floor. `min` is a
+ * first-class type in the draft's constraint vocabulary ("the value MUST NOT be
+ * less than it"), so this dropped a signed, spec-defined, *restricting* term.
+ * The draft allows one typed value per object, which makes two malformed -- it
+ * must be refused, never silently resolved to whichever one this build happens
+ * to read first.
+ *
+ * An unrecognised constraint TYPE is deliberately not caught here:
+ * `UnknownCeiling` preserves its whole object, so it round-trips and still
+ * routes to the fail-closed path the draft requires. Rejecting those here would
+ * turn a deny into a parse error and lose that distinction.
+ *
+ * Kept in step with the Python port (`authority._ceiling_from_wire_whole`).
+ */
+function ceilingFromWireWhole(c: CJson): Ceiling {
+  const ceiling = ceilingFromWire(c);
+  const input = toPlain<Record<string, Json>>(c);
+  if (input !== undefined && input !== null && typeof input === "object") {
+    const emitted = toPlain<Record<string, Json>>(ceiling.toWire()) ?? {};
+    const dropped = Object.keys(input).filter((k) => !(k in emitted));
+    if (dropped.length > 0 || JSON.stringify(sortedEntries(emitted)) !== JSON.stringify(sortedEntries(input))) {
+      throw new AuthorityError(
+        `constraint ${JSON.stringify(input)} carries ` +
+          (dropped.length > 0
+            ? `members this build does not evaluate and will not ignore: ${dropped.join(", ")}`
+            : "a value this build rewrites rather than reads verbatim"),
+        "malformed_constraint",
+      );
+    }
+  }
+  return ceiling;
+}
+
+function sortedEntries(o: Record<string, Json>): [string, Json][] {
+  return Object.keys(o)
+    .sort()
+    .map((k) => [k, o[k]] as [string, Json]);
+}
+
 export class AuthorityError extends Error {
   readonly reason: string;
   readonly detail: Record<string, Json>;
@@ -267,7 +315,7 @@ export class Authority {
     const ttl = d["ttl"];
     return new Authority({
       scopes,
-      ceilings: constraints.map((c) => ceilingFromWire(c)),
+      ceilings: constraints.map((c) => ceilingFromWireWhole(c)),
       ttl: typeof ttl === "number" ? ttl : null,
     });
   }

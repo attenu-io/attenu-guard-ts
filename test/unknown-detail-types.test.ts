@@ -27,6 +27,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
 
+import { Authority } from "../src/authority.js";
 import { canonicalJson } from "../src/canonical.js";
 import { HS256TestSigner, WireError, WireReasonCode, b64urlDecode, b64urlEncode, load } from "../src/wire.js";
 import { fixtureJson } from "./helpers.js";
@@ -103,6 +104,99 @@ test("canonicalization is not what stops it", () => {
     () => load(leafWith(v, [FOREIGN]), signerFor(v), { now: v.now }),
     (e: unknown) => e instanceof WireError && e.reason !== WireReasonCode.NON_CANONICAL,
   );
+});
+
+/**
+ * Rebuild the leaf with `members` merged INTO its single authorization detail.
+ * The cardinality rule never fires here: there is still exactly one entry.
+ */
+function leafWithDetailMembers(v: Vector, members: Record<string, unknown>): string[] {
+  const leaf = v.tokens[v.tokens.length - 1];
+  if (leaf === undefined) throw new Error("vector has no tokens");
+  const parts = leaf.split(".");
+  const hdr = parts[0];
+  const payloadB64 = parts[1];
+  if (hdr === undefined || payloadB64 === undefined) throw new Error("leaf token is not a JWS");
+  const payload = JSON.parse(b64urlDecode(payloadB64).toString("utf8")) as Record<string, unknown>;
+  const details = payload["authorization_details"] as Record<string, unknown>[];
+  Object.assign(details[0] as Record<string, unknown>, members);
+  const secret = Buffer.from(v.signer.secret_hex, "hex");
+  const p = b64urlEncode(Buffer.from(canonicalJson(payload as never), "utf8"));
+  const sig = createHmac("sha256", secret).update(`${hdr}.${p}`).digest();
+  return [...v.tokens.slice(0, -1), `${hdr}.${p}.${b64urlEncode(sig)}`];
+}
+
+test("a member inside the single detail is refused, not dropped", () => {
+  // The regression the first fix missed. One entry, so the cardinality rule
+  // never fires; before the member check this verified clean and still
+  // permitted crm.read while `deny_scopes` said not to.
+  const v = vector();
+  assert.throws(
+    () => load(leafWithDetailMembers(v, { deny_scopes: ["crm.read"] }), signerFor(v), { now: v.now }),
+    (e: unknown) => e instanceof WireError && e.reason === WireReasonCode.MALFORMED,
+  );
+});
+
+test("RFC 9396 common members are refused", () => {
+  // `actions`, `locations`, `datatypes`, `identifier` and `privileges` are
+  // common members of ANY authorization detail object, and the draft's token
+  // format cites RFC 9396 by name, so an issuer restricting this way is doing
+  // the sanctioned thing.
+  const v = vector();
+  for (const [member, value] of [
+    ["actions", ["read"]],
+    ["locations", ["https://api.example.com"]],
+    ["datatypes", ["contacts"]],
+    ["identifier", "acct-1"],
+    ["privileges", ["read"]],
+  ] as [string, unknown][]) {
+    assert.throws(
+      () => load(leafWithDetailMembers(v, { [member]: value }), signerFor(v), { now: v.now }),
+      (e: unknown) => e instanceof WireError && e.reason === WireReasonCode.MALFORMED,
+      `member ${member} was not refused`,
+    );
+  }
+});
+
+test("critical: true is refused", () => {
+  // `critical` means "do not ignore me". Ignoring it was the worst case.
+  const v = vector();
+  assert.throws(
+    () => load(leafWithDetailMembers(v, { critical: true }), signerFor(v), { now: v.now }),
+    (e: unknown) => e instanceof WireError && e.reason === WireReasonCode.MALFORMED,
+  );
+});
+
+test("a second typed value inside a constraint is refused, not resolved", () => {
+  // `min` alongside `max` used to keep the max and drop the floor, producing a
+  // constraint byte-identical to one that never carried a floor.
+  const v = vector();
+  const leaf = v.tokens[v.tokens.length - 1];
+  if (leaf === undefined) throw new Error("vector has no tokens");
+  const parts = leaf.split(".");
+  const hdr = parts[0];
+  const payloadB64 = parts[1];
+  if (hdr === undefined || payloadB64 === undefined) throw new Error("leaf token is not a JWS");
+  const payload = JSON.parse(b64urlDecode(payloadB64).toString("utf8")) as Record<string, unknown>;
+  const details = payload["authorization_details"] as Record<string, unknown>[];
+  const constraints = (details[0] as Record<string, unknown>)["constraints"] as Record<string, unknown>[];
+  (constraints[0] as Record<string, unknown>)["min"] = 9999;
+  const secret = Buffer.from(v.signer.secret_hex, "hex");
+  const p = b64urlEncode(Buffer.from(canonicalJson(payload as never), "utf8"));
+  const sig = createHmac("sha256", secret).update(`${hdr}.${p}`).digest();
+  assert.throws(
+    () => load([...v.tokens.slice(0, -1), `${hdr}.${p}.${b64urlEncode(sig)}`], signerFor(v), { now: v.now }),
+    (e: unknown) => e instanceof WireError && e.reason === WireReasonCode.MALFORMED,
+  );
+});
+
+test("an unknown constraint TYPE still fails closed rather than becoming a parse error", () => {
+  // The distinction worth keeping: the draft requires an unknown constraint
+  // type to DENY the action, never to be treated as unconstrained. Turning it
+  // into a parse error would lose that.
+  const a = Authority.fromWire({ scopes: ["crm.read"], constraints: [{ key: "max_widgets", max: 5 }], ttl: 10 });
+  assert.equal(a.ceilings.length, 1);
+  assert.equal(a.permits("crm.read", {}).allowed, false);
 });
 
 test("two agent_delegation entries are refused as ambiguous", () => {

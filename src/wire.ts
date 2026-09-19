@@ -467,6 +467,24 @@ function authorityFromPayload(payload: Record<string, Json>): Authority {
         `and will not ignore: ${unevaluated.join(", ")}`,
     );
   }
+  // The same rule one level down, and this is the half that bites. RFC 9396
+  // section 2 gives EVERY authorization detail object a set of common members
+  // -- `actions`, `locations`, `datatypes`, `identifier`, `privileges` -- and
+  // the draft's token format says "An array of authorization detail objects
+  // {{RFC9396}}", so an issuer expressing a restriction that way is doing the
+  // sanctioned thing. We read `scopes` and `constraints` and nothing else, so
+  // every one of those members was dropped in silence, inside a single
+  // `agent_delegation` entry that the cardinality check above never sees.
+  const unknownMembers = Object.keys(d0)
+    .filter((k) => k !== "type" && k !== "scopes" && k !== "constraints")
+    .sort();
+  if (unknownMembers.length > 0) {
+    throw new WireError(
+      WireReasonCode.MALFORMED,
+      "the agent_delegation authorization detail carries members this verifier " +
+        `cannot evaluate and will not ignore: ${unknownMembers.join(", ")}`,
+    );
+  }
   const iat = payload["iat"];
   const exp = payload["exp"];
   if (typeof iat !== "number" || typeof exp !== "number") {
