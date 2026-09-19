@@ -437,6 +437,36 @@ function authorityFromPayload(payload: Record<string, Json>): Authority {
       "authorization_details[0].type must be 'agent_delegation'",
     );
   }
+  // Everything past the first entry used to go unread: a token carrying a
+  // second detail verified clean while that detail was silently discarded.
+  // Fail-open in exactly one direction, and it is the dangerous one -- an
+  // ignored entry that RESTRICTS authority is lost, while one that GRANTS
+  // extra authority is harmless because ignoring it leaves us more restrictive.
+  //
+  // So refuse what this verifier cannot evaluate, which is the same rule the
+  // draft already states for an invalid scope ("A verifier that encounters one
+  // MUST reject the Delegation Token as malformed before evaluating
+  // subsumption"). Two `agent_delegation` entries are refused for a second
+  // reason: the draft says Authority is expressed by "an" authorization detail
+  // of that type and never says which element to take, so picking the first
+  // silently nominated a winner the document does not.
+  //
+  // Refusing is also the loosenable direction. If a later revision defines
+  // ignorable/critical marking (RFC 9396's posture), accepting more is a
+  // compatible change; starting permissive and tightening later would not be.
+  //
+  // Kept byte-for-byte in step with the Python port (wire.py, same check): the
+  // two implementations must accept and refuse exactly the same tokens.
+  if (details.length > 1) {
+    const unevaluated = details
+      .slice(1)
+      .map((d) => (isJsonObject(d) ? JSON.stringify(d["type"] ?? null) : "null"));
+    throw new WireError(
+      WireReasonCode.MALFORMED,
+      "authorization_details carries entries this verifier cannot evaluate " +
+        `and will not ignore: ${unevaluated.join(", ")}`,
+    );
+  }
   const iat = payload["iat"];
   const exp = payload["exp"];
   if (typeof iat !== "number" || typeof exp !== "number") {

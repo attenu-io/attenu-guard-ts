@@ -6,6 +6,9 @@ Versions follow semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **A Delegation Token carrying an authorization detail the verifier does not understand verified clean, with that detail silently discarded.** `load()` read `authorization_details[0]` and never looked at the rest, so a token carrying `agent_delegation` first and anything after it was accepted and the remaining entries were dropped without a signal. Fail-open in exactly one direction, and it is the dangerous one: an ignored entry that RESTRICTS authority is lost, while one that GRANTS extra authority is harmless because ignoring it leaves the chain more restrictive. `load()` now refuses a token carrying more than one authorization detail, as `malformed`, naming the entries it could not evaluate. Two `agent_delegation` entries are refused for a second reason: the draft says Authority is expressed by "an" authorization detail of that type and never says which element to take, so taking the first silently nominated a winner the document does not. RFC 8785 canonicalization is not what stops this — re-serializing through the canonicaliser produces a token the old verifier accepted — so the guarantee comes from the detail-type rule. **This is a wire-behaviour change: a token that verified before is now refused.** No fixture under `test/fixtures/vectors/` carries more than one entry, and the library has never emitted more than one. Lands together with the identical rule in the Python port, and both were checked to accept and refuse the same six orderings byte-for-byte through `load()`
+
 ## [0.10.0] - 2026-09-08
 
 Parity with attenu-guard (Python) 0.16.0.
