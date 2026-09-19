@@ -21,7 +21,13 @@
  */
 
 import { compareCodePoints, sortedStrings, toPlain, type CJson, type Json } from "./canonical.js";
-import { ceilingFromWire, describe as describeCeiling, type Ceiling, type Context } from "./ceilings.js";
+import {
+  ceilingFromWire,
+  ctxFieldOf,
+  describe as describeCeiling,
+  type Ceiling,
+  type Context,
+} from "./ceilings.js";
 import { Decision, Reason, ReasonCode } from "./reasons.js";
 
 /**
@@ -32,54 +38,6 @@ import { Decision, Reason, ReasonCode } from "./reasons.js";
  * invalid; a denial means the caller asked for something the authority model
  * legitimately refuses.
  */
-/**
- * `ceilingFromWire`, but refusing a constraint we would only partly read.
- *
- * Every built-in reads a fixed set of members and re-emits exactly those, so a
- * round-trip that does not reproduce the input means this build ignored
- * something the issuer signed. That was live and silent:
- *
- *     {"key":"max_rows","max":100,"min":9999}  ->  {"key":"max_rows","max":100}
- *
- * byte-identical to a constraint that never carried a floor. `min` is a
- * first-class type in the draft's constraint vocabulary ("the value MUST NOT be
- * less than it"), so this dropped a signed, spec-defined, *restricting* term.
- * The draft allows one typed value per object, which makes two malformed -- it
- * must be refused, never silently resolved to whichever one this build happens
- * to read first.
- *
- * An unrecognised constraint TYPE is deliberately not caught here:
- * `UnknownCeiling` preserves its whole object, so it round-trips and still
- * routes to the fail-closed path the draft requires. Rejecting those here would
- * turn a deny into a parse error and lose that distinction.
- *
- * Kept in step with the Python port (`authority._ceiling_from_wire_whole`).
- */
-function ceilingFromWireWhole(c: CJson): Ceiling {
-  const ceiling = ceilingFromWire(c);
-  const input = toPlain<Record<string, Json>>(c);
-  if (input !== undefined && input !== null && typeof input === "object") {
-    const emitted = toPlain<Record<string, Json>>(ceiling.toWire()) ?? {};
-    const dropped = Object.keys(input).filter((k) => !(k in emitted));
-    if (dropped.length > 0 || JSON.stringify(sortedEntries(emitted)) !== JSON.stringify(sortedEntries(input))) {
-      throw new AuthorityError(
-        `constraint ${JSON.stringify(input)} carries ` +
-          (dropped.length > 0
-            ? `members this build does not evaluate and will not ignore: ${dropped.join(", ")}`
-            : "a value this build rewrites rather than reads verbatim"),
-        "malformed_constraint",
-      );
-    }
-  }
-  return ceiling;
-}
-
-function sortedEntries(o: Record<string, Json>): [string, Json][] {
-  return Object.keys(o)
-    .sort()
-    .map((k) => [k, o[k]] as [string, Json]);
-}
-
 export class AuthorityError extends Error {
   readonly reason: string;
   readonly detail: Record<string, Json>;
@@ -90,6 +48,63 @@ export class AuthorityError extends Error {
     this.reason = reason;
     this.detail = detail;
   }
+}
+
+/**
+ * `ceilingFromWire`, but refusing a constraint we would only partly read.
+ *
+ * The test is a MEMBER difference, not value equality. Parse the constraint,
+ * re-emit it, and refuse if the input carried a member the re-emission does not
+ * -- that member is one this build did not read. That was live and silent:
+ *
+ *     {"key":"max_rows","max":100,"min":9999}  ->  {"key":"max_rows","max":100}
+ *
+ * byte-identical to a constraint that never carried a floor. `min` is a
+ * first-class type in the draft's constraint vocabulary ("the value MUST NOT be
+ * less than it"), so this dropped a signed, spec-defined, *restricting* term.
+ * The draft allows one typed value per object, which makes two malformed -- it
+ * must be refused, never silently resolved to whichever one this build happens
+ * to read first.
+ *
+ * Comparing whole VALUES instead was tried and reverted before release: it
+ * could not tell "we ignored a member" from "we normalised a value", and
+ * several built-ins legitimately normalise (`Allow` emits its `one_of` sorted
+ * and holds it as a set; `toWire` omits `field` when it equals `key`). RFC 8785
+ * canonicalises object member ORDER and never reorders array elements, and the
+ * draft puts no ordering or uniqueness requirement on `one_of` -- so
+ * `["us-west", "us-east"]` is a conformant constraint from a third-party
+ * issuer, and value equality called it malformed. On a release whose whole
+ * subject is reading tokens correctly, refusing correct tokens is the worse
+ * failure.
+ *
+ * An unrecognised constraint TYPE is deliberately not caught here:
+ * `UnknownCeiling` preserves its whole object, so nothing looks dropped, and it
+ * still routes to the fail-closed path the draft requires. Rejecting those here
+ * would turn a deny into a parse error and lose that distinction.
+ *
+ * Kept in step with the Python port (`authority._ceiling_from_wire_whole`).
+ */
+function ceilingFromWireWhole(c: CJson): Ceiling {
+  const ceiling = ceilingFromWire(c);
+  const input = toPlain<Record<string, Json>>(c);
+  if (input !== undefined && input !== null && typeof input === "object") {
+    const emitted = toPlain<Record<string, Json>>(ceiling.toWire()) ?? {};
+    const dropped = Object.keys(input)
+      .filter((k) => !(k in emitted))
+      // `field` is read and then not re-emitted when it equals `key`, because
+      // at that point it is redundant. Absent from the emission does not mean
+      // unread here, so confirm the ceiling actually resolved to it.
+      .filter((k) => !(k === "field" && ctxFieldOf(ceiling) === input["field"]))
+      .sort();
+    if (dropped.length > 0) {
+      throw new AuthorityError(
+        `constraint ${JSON.stringify(input)} carries members this build does not ` +
+          `evaluate and will not ignore: ${dropped.join(", ")}`,
+        "malformed_constraint",
+      );
+    }
+  }
+  return ceiling;
 }
 
 export interface AuthorityInit {

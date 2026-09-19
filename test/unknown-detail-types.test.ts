@@ -190,6 +190,49 @@ test("a second typed value inside a constraint is refused, not resolved", () => 
   );
 });
 
+test("normalising ceilings are not rejected", () => {
+  // The false positive that nearly shipped, and the gap that hid it.
+  //
+  // A first version of this rule compared whole VALUES. That cannot tell "we
+  // ignored a member" from "we normalised a value", and three built-ins
+  // legitimately normalise: Allow/Deny emit one_of / not_one_of sorted and hold
+  // them as sets, and toWire omits `field` when it equals `key`.
+  //
+  // RFC 8785 canonicalises object member ORDER and never reorders array
+  // elements, and the draft puts no ordering or uniqueness requirement on
+  // one_of. Every case below is therefore a conformant constraint a third-party
+  // issuer may legitimately send, and value equality called all of them
+  // malformed.
+  //
+  // These exist because NO fixture in either repo carries an allow, deny or
+  // prefix constraint, so the "every constraint round-trips" regression check
+  // only ever exercised the ceilings that emit what they read, and passed
+  // vacuously.
+  const conformant: Record<string, unknown>[] = [
+    { key: "region", type: "allow", one_of: ["us-west", "us-east"] },
+    { key: "region", type: "deny", not_one_of: ["b", "a"] },
+    { key: "region", type: "allow", one_of: ["a", "a"] },
+    { key: "region", type: "allow", one_of: ["us"], field: "region" },
+    { key: "region", type: "allow", one_of: ["us"], field: "zone" },
+    { key: "path", type: "prefix", prefix: "/srv/" },
+  ];
+  for (const c of conformant) {
+    const a = Authority.fromWire({ scopes: ["crm.read"], constraints: [c], ttl: 10 } as never);
+    assert.equal(a.ceilings.length, 1, `rejected a conformant constraint: ${JSON.stringify(c)}`);
+  }
+});
+
+test("an extra member on a normalising ceiling is still refused", () => {
+  // The narrowed rule must not have become a no-op for the types it exempted.
+  assert.throws(() =>
+    Authority.fromWire({
+      scopes: ["crm.read"],
+      constraints: [{ key: "region", type: "allow", one_of: ["us"], deny_scopes: ["x"] }],
+      ttl: 10,
+    }),
+  );
+});
+
 test("an unknown constraint TYPE still fails closed rather than becoming a parse error", () => {
   // The distinction worth keeping: the draft requires an unknown constraint
   // type to DENY the action, never to be treated as unconstrained. Turning it
