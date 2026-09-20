@@ -344,6 +344,25 @@ export class Authority {
 
   static fromWire(wire: CJson): Authority {
     const d = toPlain<Record<string, Json>>(wire) ?? {};
+    // Read the authority object WHOLE, for the same reason the constraint inside
+    // it is read whole. The token path is safe only by accident --
+    // `authorityFromPayload` builds this object itself after checking the
+    // detail's members -- but the BUNDLE path hands us the raw untrusted object
+    // straight out of a ledger entry (`evidence`, the `authority` and `granted`
+    // members). Without this, `verifyBundle` reported success on an authority it
+    // had read by projection: a `granted` carrying `deny_scopes` verified clean
+    // with `checks.ledger_fields` true, because that check only covers an
+    // entry's TOP-LEVEL keys. Kept in step with the Python port.
+    const unknownAuthorityMembers = Object.keys(d)
+      .filter((k) => k !== "scopes" && k !== "constraints" && k !== "ttl")
+      .sort();
+    if (unknownAuthorityMembers.length > 0) {
+      throw new AuthorityError(
+        `authority ${JSON.stringify(d)} carries members this build does not evaluate ` +
+          `and will not ignore: ${unknownAuthorityMembers.join(", ")}`,
+        "malformed_authority",
+      );
+    }
     const scopes = (d["scopes"] as string[] | undefined) ?? [];
     const constraints = (d["constraints"] as Record<string, Json>[] | undefined) ?? [];
     const ttl = d["ttl"];
