@@ -86,6 +86,15 @@ export const LEDGER_FIELDS: ReadonlySet<string> = new Set([
   "strikes",
   "mode",
   "disposition",
+  // `detail` is library-written on a refusal (max_depth, max_fanout, chain_revoked, agent_banned,
+  // integrity, ttl_expired, aggregate ceiling) and carries only structural values -- an agent or
+  // parent id, a numeric limit, a ceiling key. Same class as `node`/`parent`/`agent`; never free
+  // text like `task`, never caller-supplied like `context`.
+  //
+  // Its absence was not cosmetic: LEDGER_FIELDS gates `exportBundle({strict: true})`, so custody
+  // mode threw on ANY run that refused a delegation, reporting a field this library wrote as
+  // though it were customer data. Kept in step with the Python port.
+  "detail",
   // `policy` marks an allow the chain never authorized (an `allowUnlisted` passthrough) — see
   // reasons.Policy and the containment check below. Not a v2-only field.
   "policy",
