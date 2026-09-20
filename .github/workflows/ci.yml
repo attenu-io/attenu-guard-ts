@@ -67,7 +67,10 @@ jobs:
         # >=0.16 ships the bundle corpus v1.4 (20 cases) as package data
         # (attenu_guard.vectors); tools/gen_fixtures.py copies them verbatim
         # rather than regenerating them, so an older release cannot satisfy it.
-        run: python -m pip install --quiet "attenu-guard>=0.16,<0.17" cryptography
+        # Moved to >=0.17 when 0.17.0 hit PyPI: it adds checks.ledger_fields, so
+        # the fixtures were regenerated from it and
+        # CHECKS_ADDED_SINCE_THE_PYTHON_PIN is empty again.
+        run: python -m pip install --quiet "attenu-guard>=0.17,<0.18" cryptography
       - name: Cross-language suite (TypeScript reads Python, Python reads TypeScript)
         run: npm test
         env:
@@ -121,12 +124,12 @@ jobs:
             exit 1
           fi
           echo "probe passed: a failing query correctly failed the script"
-      - name: Check whether attenu-guard 0.17.x is on PyPI yet
+      - name: Check whether attenu-guard 0.18.x is on PyPI yet
         id: check_next
-        run: echo "published=$(bash tools/check-next-python-published.sh attenu-guard "0.17.")" >> "$GITHUB_OUTPUT"
-      - name: Install the Python implementation (0.17.x)
+        run: echo "published=$(bash tools/check-next-python-published.sh attenu-guard "0.18.")" >> "$GITHUB_OUTPUT"
+      - name: Install the Python implementation (0.18.x)
         if: steps.check_next.outputs.published == 'true'
-        run: python3 -m pip install --quiet "attenu-guard>=0.17,<0.18" cryptography
+        run: python3 -m pip install --quiet "attenu-guard>=0.18,<0.19" cryptography
       - name: Cross-language suite against the next Python minor (early warning, not a fixture check)
         if: steps.check_next.outputs.published == 'true'
         run: npm test

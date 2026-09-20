@@ -74,11 +74,7 @@ const NAMES = Object.keys(expected);
  * to a release that writes the key, this list must be emptied — the second assertion fails until
  * it is, which is the point.
  */
-// `ledger_fields` is added in 0.17.0 (the verifier now refuses an entry carrying a top-level field
-// outside LEDGER_FIELDS, instead of reporting success on an entry it only partly read). The CI pin
-// is `attenu-guard>=0.16,<0.17`, which predates it. MOVE THE PIN TO >=0.17 AND EMPTY THIS LIST as
-// part of releasing 0.17.0 -- the second assertion fails until it is, which is the point.
-const CHECKS_ADDED_SINCE_THE_PYTHON_PIN: readonly string[] = ["ledger_fields"];
+const CHECKS_ADDED_SINCE_THE_PYTHON_PIN: readonly string[] = [];   // emptied when the pin moved to >=0.17
 
 function assertChecksMatch(got: object, want: object, label: string): void {
   const shared = Object.fromEntries(Object.entries(got).filter(([k]) => k in want));
