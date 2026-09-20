@@ -9,7 +9,7 @@ import test from "node:test";
 
 import { Authority } from "../src/authority.js";
 import { GENESIS, hashEntry, type LedgerEntry } from "../src/audit.js";
-import { canonicalBytes } from "../src/canonical.js";
+import { canonicalBytes, type CJson } from "../src/canonical.js";
 import { RowLimit } from "../src/ceilings.js";
 import {
   EvidenceLeakError,
@@ -74,7 +74,11 @@ const NAMES = Object.keys(expected);
  * to a release that writes the key, this list must be emptied — the second assertion fails until
  * it is, which is the point.
  */
-const CHECKS_ADDED_SINCE_THE_PYTHON_PIN: readonly string[] = [];   // 0.16.0 writes `envelopes`
+// `ledger_fields` is added in 0.17.0 (the verifier now refuses an entry carrying a top-level field
+// outside LEDGER_FIELDS, instead of reporting success on an entry it only partly read). The CI pin
+// is `attenu-guard>=0.16,<0.17`, which predates it. MOVE THE PIN TO >=0.17 AND EMPTY THIS LIST as
+// part of releasing 0.17.0 -- the second assertion fails until it is, which is the point.
+const CHECKS_ADDED_SINCE_THE_PYTHON_PIN: readonly string[] = ["ledger_fields"];
 
 function assertChecksMatch(got: object, want: object, label: string): void {
   const shared = Object.fromEntries(Object.entries(got).filter(([k]) => k in want));
@@ -202,6 +206,7 @@ test("a bundle this library exports verifies here and reports no leak", () => {
     containment: true,
     anchor: "verified",
     version: true,
+    ledger_fields: true,   // 0.17.0: every entry read whole, no field outside LEDGER_FIELDS
     chain_id: true,
     root: true,
     expected_anchor: "not checked",
@@ -365,4 +370,50 @@ test("an un-gated passthrough is on the ledger, marked, and counted as ungated",
 test("recordPassthrough refuses a policy value it does not know", () => {
   const guard = Guard.issue("a", new Authority({ scopes: ["crm.read"], ttl: 60 }), { chainId: "ts-p" });
   assert.throws(() => guard.recordPassthrough("t", { policy: "whatever" }), /unknown policy/);
+});
+
+/**
+ * `verifyBundle` must not report success on a ledger entry it only partly read.
+ *
+ * Ops #109, the bundle half. `LEDGER_FIELDS` existed but was enforced only on the
+ * EXPORT path, as a custody check, and never consulted on verify -- so the
+ * verifier read entries by projection, picking the fields it knows and never
+ * looking at the rest. A producer could add fields, rehash the chain from
+ * genesis exactly as an honest producer does, and verification returned ok with
+ * zero failures while the fields stayed invisible in `delegationGraph`.
+ */
+test("verifyBundle refuses a ledger entry carrying fields it does not read", () => {
+  const guard = Guard.issue("orchestrator", new Authority({ scopes: ["crm.*"], ttl: 3600 }), {
+    maxDepth: 4,
+  });
+  const child = guard.delegate("worker", new Authority({ scopes: ["crm.*"], ttl: 3600 }), "t");
+  child.check("crm.read");
+  const bundle = exportBundle(guard.auditLog(), hs256);
+
+  // control: the untouched bundle verifies, and reports the new check as passing
+  const clean = verifyBundle(bundle, hs256);
+  assert.equal(clean.ok, true);
+  assert.equal(clean.checks.ledger_fields, true);
+
+  // inject, then re-chain from genesis so the bundle is internally perfect --
+  // otherwise this only proves the hash covered the field, not that we read it
+  const tampered = JSON.parse(JSON.stringify(bundle)) as typeof bundle;
+  const spawn = tampered.entries.find((e) => e["event"] === "spawn")!;
+  spawn["deny_scopes"] = ["crm.read"];
+  spawn["critical"] = true;
+  let prev = GENESIS;
+  for (const e of tampered.entries) {
+    e["prev_hash"] = prev;
+    const payload = Object.fromEntries(Object.entries(e).filter(([k]) => k !== "hash"));
+    e["hash"] = hashEntry(prev, payload as Record<string, CJson>);
+    prev = e["hash"] as string;
+  }
+
+  const report = verifyBundle(tampered, hs256);
+  assert.equal(report.ok, false);
+  assert.equal(report.checks.ledger_fields, false);
+  const joined = report.failures.join(" ");
+  assert.ok(joined.includes("unknown_ledger_fields"), joined);
+  assert.ok(joined.includes("critical"), joined);
+  assert.ok(joined.includes("deny_scopes"), joined);
 });

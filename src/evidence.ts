@@ -634,6 +634,12 @@ export interface VerifyChecks {
   containment: boolean;
   anchor: "not checked" | "verified" | "FAILED";
   version: boolean;
+  /**
+   * Every entry's top-level fields are within `LEDGER_FIELDS`. False means the bundle carries a
+   * field this verifier does not evaluate, so reporting success would be reporting it on an entry
+   * that was only partly read.
+   */
+  ledger_fields: boolean;
   chain_id: boolean;
   root: boolean;
   expected_anchor: "not checked" | "verified" | "FAILED";
@@ -2047,6 +2053,7 @@ export function verifyBundle(
     containment: false,
     anchor: "not checked",
     version: false,
+    ledger_fields: false,
     chain_id: false,
     root: false,
     expected_anchor: "not checked",
@@ -2105,6 +2112,38 @@ export function verifyBundle(
     );
   }
   checks.version = versionOk;
+
+  // (0b2) every entry must be read WHOLE. `LEDGER_FIELDS` was enforced only on the EXPORT path
+  // (`redactionReport`, via `exportBundle({strict: true})`), never on verify, so the verifier read
+  // entries by projection: it picked the fields it knows and never looked at the rest. A producer
+  // could add `deny_scopes` and `critical` to a `spawn` entry, rehash the chain from genesis as any
+  // honest producer does, and `verifyBundle` returned ok=true with zero failures while those fields
+  // stayed invisible in `delegationGraph`.
+  //
+  // That is the same defect as the token-side one this release fixes -- reporting success on input
+  // we did not fully read -- but on the offline-verifiable audit trail, which is the thing the
+  // bundle exists to be. Envelopes and anchors already read whole; this was the one structure left.
+  //
+  // Reported as a failure rather than thrown: `verifyBundle` returns a report, and an unknown field
+  // is a property of the bundle, not an error in the call.
+  //
+  // Kept in step with the Python port (`evidence._verify_bundle`, same check, same reason string).
+  let unknownOk = true;
+  for (const e of entries) {
+    const extra = Object.keys(e)
+      .filter((f) => !LEDGER_FIELDS.has(f))
+      .sort();
+    if (extra.length > 0) {
+      unknownOk = false;
+      log.add(
+        "unknown_ledger_fields",
+        `unknown_ledger_fields: entry carries fields this verifier does not evaluate and will ` +
+          `not ignore: ${extra.join(", ")}`,
+        { seq: orNull(e["seq"]), node: orNull(e["node"]) },
+      );
+    }
+  }
+  checks.ledger_fields = unknownOk;
 
   // (0c) independently retained expected anchor/head: verified against the BUNDLE's actual
   // computed head, never against its own (possibly forged) enclosed anchor.
@@ -2283,6 +2322,7 @@ export function verifyBundle(
     checks.monotonicity &&
     checks.containment &&
     checks.version &&
+    checks.ledger_fields &&
     checks.chain_id &&
     checks.root &&
     log.length === 0;
