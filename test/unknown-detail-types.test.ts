@@ -38,7 +38,7 @@ interface Vector {
   tokens: string[];
 }
 
-const FOREIGN = { type: "wes_enterprise_policy", deny_scopes: ["crm.read"] };
+const FOREIGN = { type: "acme_site_policy", deny_scopes: ["crm.read"] };
 
 function vector(): Vector {
   return fixtureJson("vectors/valid_chain.json") as unknown as Vector;
@@ -290,6 +290,6 @@ test("the denial names the entry it could not evaluate", () => {
   const v = vector();
   assert.throws(
     () => load(leafWith(v, [FOREIGN]), signerFor(v), { now: v.now }),
-    (e: unknown) => e instanceof WireError && e.message.includes("wes_enterprise_policy"),
+    (e: unknown) => e instanceof WireError && e.message.includes("acme_site_policy"),
   );
 });
