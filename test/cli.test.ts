@@ -151,3 +151,39 @@ test("the trust set may be given as a whole vector case", () => {
     rmSync(files.dir, { recursive: true, force: true });
   }
 });
+
+// A ledger with no entries has nothing to verify; reporting it OK would be a fail-open. The
+// line and the exit code match the Python CLI's for the same file.
+for (const [label, content] of [
+  ["a 0-byte ledger", ""],
+  ["a blank-lines-only ledger", "\n\n  \n"],
+] as const) {
+  test(`verify on ${label} prints EMPTY and exits 2, like the Python CLI`, () => {
+    const dir = mkdtempSync(join(tmpdir(), "attenu-empty-"));
+    try {
+      const file = join(dir, "log.jsonl");
+      writeFileSync(file, content);
+      const { stdout, status } = run(["verify", file]);
+      assert.equal(stdout, "EMPTY — no events to verify\n");
+      assert.equal(status, 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("verify on a bundle with zero entries fails (missing_root)", () => {
+  const bundle = JSON.parse(fixtureText("clean_hs256.bundle.json")) as Record<string, unknown>;
+  bundle["entries"] = [];
+  const dir = mkdtempSync(join(tmpdir(), "attenu-empty-bundle-"));
+  try {
+    const file = join(dir, "empty.bundle.json");
+    writeFileSync(file, JSON.stringify(bundle));
+    const { stdout, status } = run(["verify", file]);
+    assert.match(stdout, /missing_root/);
+    assert.equal(stdout.trimEnd().split("\n").at(-1), "FAILED");
+    assert.equal(status, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

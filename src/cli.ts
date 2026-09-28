@@ -12,8 +12,11 @@
  * keys for a bundle carrying observer envelopes; without it every envelope fails
  * `envelope_unknown_witness`, and the output says which flag to pass.
  *
- * Exit codes: 0 = ok, 2 = a check failed, 1 = usage. The output lines match the
- * Python CLI's, so either implementation can stand in for the other in a script.
+ * A ledger with zero events is reported EMPTY, not OK.
+ *
+ * Exit codes: 0 = ok, 2 = a check failed or there was nothing to check, 1 = usage.
+ * The output lines match the Python CLI's, so either implementation can stand in
+ * for the other in a script.
  */
 
 import { readFileSync } from "node:fs";
@@ -21,6 +24,9 @@ import { readFileSync } from "node:fs";
 import { AuditLog } from "./audit.js";
 import { parseBundle, verifyBundle, type Bundle, type WitnessKey } from "./evidence.js";
 import { Ed25519Verifier, HS256TestSigner, type Signer } from "./wire.js";
+
+/** The Python CLI prints the same line for the same file. */
+const EMPTY = "EMPTY — no events to verify";
 
 const USAGE = `attenu-guard — command-line tool.
 
@@ -117,6 +123,12 @@ function verify(args: string[]): number {
   }
 
   const entries = AuditLog.parseLines(text);
+  if (entries.length === 0) {
+    // A ledger with no entries has nothing to verify. Reporting it OK would be a fail-open: a
+    // truncated or never-written file would pass the same check as a clean chain.
+    process.stdout.write(`${EMPTY}\n`);
+    return 2;
+  }
   const [ok, reason] = AuditLog.verify(entries);
   process.stdout.write(ok ? "OK\n" : `TAMPERED — ${reason}\n`);
   return ok ? 0 : 2;
