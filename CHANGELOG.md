@@ -6,6 +6,8 @@ Versions follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-28
+
 ### Fixed
 - **An empty ledger verified as OK.** `attenu-guard verify` on a 0-byte (or blank-lines-only) `.jsonl` printed `OK` and exited 0. It now prints `EMPTY — no events to verify` and exits 2, the same line and exit code as the Python CLI. A bundle with zero entries was already refused by `verifyBundle` as `missing_root`, and is now pinned by a test
 
