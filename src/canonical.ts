@@ -79,6 +79,23 @@ export function intOr(value: CJson | undefined): CJson | undefined {
 }
 
 /**
+ * True when `value` holds, anywhere, an integer past ±(2^53 - 1): a number written as an integer
+ * literal that far out, or such an integer with no literal. Those are the numbers the Python
+ * implementation's canonicalizer refuses; a float written past that range is not one of them.
+ */
+export function holdsUnsafeInteger(value: CJson | undefined): boolean {
+  if (value instanceof RawNumber) {
+    if (!isIntegerLiteralText(value.raw)) return false;
+    const n = BigInt(value.raw);
+    return (n < 0n ? -n : n) > MAX_SAFE_INTEGER_BIGINT;
+  }
+  if (typeof value === "number") return Number.isInteger(value) && !Number.isSafeInteger(value);
+  if (Array.isArray(value)) return value.some((item) => holdsUnsafeInteger(item));
+  if (value !== null && typeof value === "object") return Object.values(value).some((item) => holdsUnsafeInteger(item));
+  return false;
+}
+
+/**
  * Check a parsed number's ORIGINAL source text, before the double it parsed
  * into (which may already have silently rounded two different literals to the
  * same value) is used for anything.

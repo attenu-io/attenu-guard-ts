@@ -643,6 +643,15 @@ def parity_fixtures() -> None:
     anchor_seq_huge["anchor"]["seq"] = 1e300
     anchor_v_huge = copy.deepcopy(forged)
     anchor_v_huge["anchor"]["v"] = 9007199254740993.0
+    # The integer form, which no canonicalizer writes: an anchor carrying one is a signature that
+    # does not verify, whatever its sig holds, and an entry carrying one is a hash mismatch there.
+    # The entry is not re-hashed, since no hash exists for it.
+    anchor_seq_int_huge = copy.deepcopy(forged)
+    anchor_seq_int_huge["anchor"]["seq"] = 2 ** 53 + 1
+    anchor_int_huge_badsig = copy.deepcopy(anchor_seq_int_huge)
+    anchor_int_huge_badsig["anchor"]["sig"] = "zz"
+    entry_int_huge = copy.deepcopy(forged)
+    entry_int_huge["entries"][3]["ts"] = 2 ** 53 + 1
 
     def mixed_versions(entries):
         # None, False, then 0 (one value with False in a Python set, and the first stays), 1.5 and
@@ -678,6 +687,10 @@ def parity_fixtures() -> None:
         "bundle_v_three.bundle.json": bundle_v_three,
         "anchor_seq_huge.bundle.json": anchor_seq_huge,
         "anchor_v_huge.bundle.json": anchor_v_huge,
+        "anchor_seq_int_huge.bundle.json": anchor_seq_int_huge,
+        "anchor_int_huge_badsig.bundle.json": anchor_int_huge_badsig,
+        "entry_int_huge.bundle.json": entry_int_huge,
+        "entry_int_huge.jsonl": "".join(json.dumps(e) + "\n" for e in entry_int_huge["entries"]),
         "versions_mixed.bundle.json": _edited(forged, mixed_versions, envelopes=False),
         "keys.json": [row],
         "keys_expired.json": [dict(row, not_after="2000-01-01T00:00:00Z")],
@@ -714,6 +727,14 @@ def parity_fixtures() -> None:
         "versions_mixed": ["verify", "versions_mixed.bundle.json", "--entries"],
         "anchor_seq_huge": ["verify", "anchor_seq_huge.bundle.json", *keys, "--hs256-key", HS256_SECRET.hex()],
         "anchor_v_huge": ["verify", "anchor_v_huge.bundle.json", *keys, "--hs256-key", HS256_SECRET.hex()],
+        "anchor_seq_int_huge": ["verify", "anchor_seq_int_huge.bundle.json", *keys, "--hs256-key",
+                                HS256_SECRET.hex()],
+        "anchor_int_huge_badsig": ["verify", "anchor_int_huge_badsig.bundle.json", *keys, "--hs256-key",
+                                   HS256_SECRET.hex()],
+        "entry_int_huge": ["verify", "entry_int_huge.bundle.json", *keys, "--entries"],
+        "entry_int_huge_keyed": ["verify", "entry_int_huge.bundle.json", *keys, "--hs256-key",
+                                 HS256_SECRET.hex()],
+        "entry_int_huge_ledger": ["verify", "entry_int_huge.jsonl", "--entries"],
         "expired_row": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_expired.json", "--entries"],
         "unknown_member_row": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_unknown_member.json"],
         "duplicate_kid": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_duplicate_kid.json"],

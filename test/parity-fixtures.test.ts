@@ -8,7 +8,8 @@
  * null, a boolean or a string; a seq or `v` written `1.0`, `2.0`, `3.0`, `9.0` or `-0.0`, which
  * both read as the integer it equals and print as one, and one written `1.5` or `true`, which
  * neither reads as an integer; an anchor `seq` or `v` past 2^53, whose signature no longer
- * verifies; versions of every type, listed in one order; two entries
+ * verifies, and an entry carrying an integer past 2^53, a hash mismatch there; versions of every
+ * type, listed in one order; two entries
  * sharing a seq with the witness's signature on the later copy, which alone reads witness-signed;
  * an envelope naming seq 1 that binds an entry whose seq is `true`, which no envelope covers; a
  * trust row past its `not_after`; a row carrying a member it does not define (`notAfter`); a kid
@@ -52,6 +53,11 @@ test("the parity set covers every case the release gate names", () => {
     "versions_mixed",
     "anchor_seq_huge",
     "anchor_v_huge",
+    "anchor_seq_int_huge",
+    "anchor_int_huge_badsig",
+    "entry_int_huge",
+    "entry_int_huge_keyed",
+    "entry_int_huge_ledger",
     "subject_seq_float",
     "envelope_v_float",
     "string_seq",

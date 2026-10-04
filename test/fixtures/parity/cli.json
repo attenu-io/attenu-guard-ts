@@ -1,8 +1,32 @@
 {
+ "anchor_int_huge_badsig": {
+  "args": [
+   "verify",
+   "anchor_int_huge_badsig.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--hs256-key",
+   "73616d706c652d6b6579"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=FAILED nodes=2 actions_checked=2\n  - integrity(anchor): anchor signature invalid\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\n"
+ },
  "anchor_seq_huge": {
   "args": [
    "verify",
    "anchor_seq_huge.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--hs256-key",
+   "73616d706c652d6b6579"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=FAILED nodes=2 actions_checked=2\n  - integrity(anchor): anchor signature invalid\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\n"
+ },
+ "anchor_seq_int_huge": {
+  "args": [
+   "verify",
+   "anchor_seq_int_huge.bundle.json",
    "--witness-keys",
    "keys.json",
    "--hs256-key",
@@ -94,6 +118,38 @@
   ],
   "exit": 2,
   "stdout": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - integrity: seq gap at 4 (got 3)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=3 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=integrity,containment\n"
+ },
+ "entry_int_huge": {
+  "args": [
+   "verify",
+   "entry_int_huge.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - integrity: hash mismatch at seq 3\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_subject_mismatch: subject entry_hash '1fbcf7697fbf829be0efa8eebee2a610065e8cbc0e2578289075aa709ccfaa50' != the hash recomputed for seq 4 from this bundle ('134405350620b19126ef4abde285797db1636cf720686354363e1a744b20d6c6')\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted failed=integrity\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=containment,envelope_subject_mismatch\n"
+ },
+ "entry_int_huge_keyed": {
+  "args": [
+   "verify",
+   "entry_int_huge.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--hs256-key",
+   "73616d706c652d6b6579"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=FAILED nodes=2 actions_checked=2\n  - integrity: hash mismatch at seq 3\n  - integrity(anchor): hash mismatch at seq 3\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_subject_mismatch: subject entry_hash '1fbcf7697fbf829be0efa8eebee2a610065e8cbc0e2578289075aa709ccfaa50' != the hash recomputed for seq 4 from this bundle ('134405350620b19126ef4abde285797db1636cf720686354363e1a744b20d6c6')\nFAILED\n"
+ },
+ "entry_int_huge_ledger": {
+  "args": [
+   "verify",
+   "entry_int_huge.jsonl",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "TAMPERED \u2014 hash mismatch at seq 3\nentries:\n  seq=0 event=root node=parity:n0\n  seq=1 event=spawn node=parity:n1\n  seq=2 event=allow node=parity:n1 scope=docs.write\n  seq=3 event=deny node=parity:n1 scope=web.search failed=integrity\n  seq=4 event=allow node=parity:n1 scope=web.search\n"
  },
  "envelope_v_float": {
   "args": [

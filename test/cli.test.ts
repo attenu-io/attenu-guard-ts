@@ -936,6 +936,18 @@ test("an anchor whose seq or v is past 2^53 fails its signature check in one lin
       literal,
     );
   }
+  // With a `sig` that is not hex as well, the order is the Python implementation's: an integer past
+  // 2^53 is refused before the signature is read, and a float is not, so the hex check reports.
+  for (const [literal, reason] of [
+    ["9007199254740993", "anchor signature invalid"],
+    ["1e300", "anchor signature not hex"],
+  ] as const) {
+    assert.deepEqual(
+      AuditLog.verifyAnchor(entries, { ...anchor, seq: new RawNumber(literal, Number(literal)), sig: "zz" }, ANCHOR),
+      [false, reason],
+      literal,
+    );
+  }
   const text = JSON.stringify(bundle);
   const anchorText = JSON.stringify(anchor);
   assert.equal(text.split(anchorText).length, 2, "the anchor is written once");

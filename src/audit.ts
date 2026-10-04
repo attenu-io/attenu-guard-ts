@@ -18,6 +18,7 @@ import { dirname } from "node:path";
 import {
   canonicalBytes,
   canonicalJson,
+  holdsUnsafeInteger,
   intOr,
   integral,
   parseJson,
@@ -240,6 +241,11 @@ export class AuditLog {
     for (const [key, value] of Object.entries(a)) {
       if (key !== "kid" && key !== "sig" && key !== "verified") body[key] = value;
     }
+    // An integer past ±(2^53 - 1) has no RFC 8785 form, so no signer produced this anchor and its
+    // signature does not verify, whatever `sig` holds. The Python implementation's canonicalizer
+    // refuses one before the signature is read; this is the same order, so the same anchor gets
+    // the same line.
+    if (holdsUnsafeInteger(body)) return [false, "anchor signature invalid"];
     const sigHex = (toPlain(a["sig"]) as string) ?? "";
     if (typeof sigHex !== "string" || !/^(?:[0-9a-fA-F]{2})*$/.test(sigHex)) {
       return [false, "anchor signature not hex"];
@@ -250,10 +256,10 @@ export class AuditLog {
     try {
       signingInput = canonicalBytes(body);
     } catch {
-      // A member JCS cannot represent here, such as a number past ±(2^53 - 1) in `seq` or `v`, leaves
+      // A member JCS cannot represent here, such as a float past ±(2^53 - 1) in `seq` or `v`, leaves
       // no signing input to check the signature over, so the signature does not verify. Reported,
-      // never thrown: a bundle is attacker-supplied. The Python implementation reports an anchor
-      // whose `seq` or `v` is such a number written as a float the same way.
+      // never thrown: a bundle is attacker-supplied. The Python implementation, which can write
+      // such a float, reports the same anchor the same way, its signature failing to verify.
       return [false, "anchor signature invalid"];
     }
     if (!signer.verify(signingInput, sig, kid)) {
