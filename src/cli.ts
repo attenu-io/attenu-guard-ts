@@ -11,7 +11,9 @@
  * as "not checked" otherwise. `--witness-keys FILE` supplies the trusted witness
  * keys for a bundle carrying observer envelopes; without it every envelope fails
  * `envelope_unknown_witness`, and the output says which flag to pass. A trust-set row may carry
- * `not_after`; a row expired at the time of the run is not trusted.
+ * `not_after`; a row expired at the time of the run is not trusted. A trust file that is not one
+ * (not JSON, not an array of rows, or a row the verifier refuses) is one line naming the file and,
+ * for a bad row, the kid.
  *
  * `--entries` prints, after everything else, `entries:` and one line per ledger entry: its seq,
  * event, node and scope; on a bundle, its envelope state, with the observed result and the
@@ -20,7 +22,8 @@
  *
  * A ledger with zero events is reported EMPTY, not OK.
  *
- * Exit codes: 0 = ok, 2 = a check failed or there was nothing to check, 1 = usage.
+ * Exit codes: 0 = ok, 2 = a check failed, there was nothing to check, or the trust file is
+ * malformed, 1 = usage (a missing argument, or a file that cannot be read).
  * The output lines match the Python CLI's, so either implementation can stand in
  * for the other in a script.
  */
@@ -29,11 +32,13 @@ import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 
 import { AuditLog, type LedgerEntry } from "./audit.js";
-import { RawNumber, toPlain, type CJson, type Json } from "./canonical.js";
+import { toPlain, type CJson, type Json } from "./canonical.js";
+import { BARE, escaped, integerText } from "./display.js";
 import {
   WITNESS_SIGNED,
   integrityPosition,
   parseBundle,
+  validateWitnessKeys,
   verifyBundle,
   type Bundle,
   type FailureDetail,
@@ -55,25 +60,73 @@ const USAGE = `attenu-guard — command-line tool.
                                       --witness-keys FILE supplies the trusted observer-envelope keys)
 `;
 
+/** A `--witness-keys` file that was read and is not a trust set. The message says why. */
+class NotATrustSet extends Error {}
+
 /**
  * The trust set for a bundle's observer envelopes, read from `--witness-keys FILE`.
  *
  * The file is the `witness_keys` array the interop vectors carry — `[{kid, alg,
- * public_key_hex}]` — or one whole vector case, in which case its `witness_keys` member is used.
- * Without a trust set every envelope in a bundle fails `envelope_unknown_witness`, which is
- * correct (an unknown key is not a trusted one) and useless as a default, so this is how a bundle
- * carrying envelopes is verified from the command line.
+ * public_key_hex}]`, each row optionally with `not_after` — or one whole vector case, in which case
+ * its `witness_keys` member is used. Without a trust set every envelope in a bundle fails
+ * `envelope_unknown_witness`, which is correct (an unknown key is not a trusted one) and useless as
+ * a default, so this is how a bundle carrying envelopes is verified from the command line.
+ *
+ * Every row is validated here, by the same checks the verifier runs, so a bad row is reported
+ * against this file before any bundle is read. Throws the file system's error when the file cannot
+ * be read, and `NotATrustSet` when it is not a trust set: not JSON (JSON is UTF-8 text, so bytes
+ * that are not UTF-8 are not JSON either), not an array of rows, or a row the verifier refuses,
+ * whose message names the kid. The messages are the Python CLI's, word for word.
  */
 function readWitnessKeys(path: string): readonly WitnessKey[] {
-  let parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const bytes = readFileSync(path);
+  let parsed: unknown;
+  try {
+    // `ignoreBOM` keeps a byte-order mark in the text, where JSON.parse refuses it as Python does.
+    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes));
+  } catch {
+    throw new NotATrustSet("the file is not valid JSON");
+  }
   if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && "witness_keys" in parsed) {
     parsed = (parsed as Record<string, unknown>)["witness_keys"];
   }
   if (!Array.isArray(parsed)) {
-    throw new Error(`${path}: expected a list of {kid, alg, public_key_hex}, got ${typeof parsed}`);
+    throw new NotATrustSet(
+      "expected a JSON array of {kid, alg, public_key_hex} rows, or a vector case carrying one as witness_keys",
+    );
+  }
+  try {
+    validateWitnessKeys(parsed as readonly WitnessKey[]);
+  } catch (err) {
+    throw new NotATrustSet((err as Error).message);
   }
   return parsed as readonly WitnessKey[];
 }
+
+/**
+ * The C library's text for the file-system errors a path argument meets — what Python prints as
+ * `strerror` — so `cannot read FILE: REASON` reads the same from both CLIs. `null` for an error
+ * that is not a file-system one. A code outside this table prints Node's own message, which is
+ * worded differently.
+ */
+function readFailure(err: unknown): string | null {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code !== "string") return null;
+  return STRERROR[code] ?? (err as Error).message;
+}
+
+const STRERROR: Readonly<Record<string, string>> = {
+  ENOENT: "No such file or directory",
+  EACCES: "Permission denied",
+  EISDIR: "Is a directory",
+  ENOTDIR: "Not a directory",
+  ELOOP: "Too many levels of symbolic links",
+  ENAMETOOLONG: "File name too long",
+  EPERM: "Operation not permitted",
+  EMFILE: "Too many open files",
+  EINVAL: "Invalid argument",
+  EIO: "Input/output error",
+};
 
 /** Render a boolean the way Python does, so the two CLIs print the same line. */
 function py(value: boolean): string {
@@ -131,9 +184,6 @@ function failedByEntry(entries: readonly LedgerEntry[], findings: readonly Failu
   return failed;
 }
 
-/** A value printed as it is on an `--entries` line: printable ASCII other than space, `"` and `\`. */
-const BARE_VALUE = /^[!#-\[\]-~]+$/;
-
 /**
  * One value on an `--entries` line, byte for byte what the Python CLI prints.
  *
@@ -141,87 +191,12 @@ const BARE_VALUE = /^[!#-\[\]-~]+$/;
  * no value can end it early or start a forged one: a `scope` carrying a newline and a clean-looking
  * second line would otherwise print a fake entry with the real entry's `failed=` attached to it. So
  * a value is printed as it is only when it is printable ASCII with no space, `"` or `\`, and an
- * integer in decimal. Anything else is printed as JSON, with every character outside printable
- * ASCII escaped as \uXXXX and every space as \u0020, so it never contains whitespace and a JSON
- * parser gives the value back.
+ * integer in decimal. Anything else is printed in the `escaped` JSON form (display.ts), which holds
+ * no whitespace and which a JSON parser reads back.
  */
 function entryValue(value: CJson): string {
-  if (typeof value === "string" && BARE_VALUE.test(value)) return value;
-  return integerText(value) ?? pyJson(value).replace(/ /g, "\\u0020");
-}
-
-/**
- * A number Python's `json` reads as an `int`, in decimal, or `null` for anything else. A parsed
- * bundle keeps every number's literal, so `1` and `1.0` stay as distinct as they are in Python. A
- * number that has lost its literal (a report value) is read as an integer when it is integral.
- */
-function integerText(value: CJson): string | null {
-  if (value instanceof RawNumber) {
-    return /^-?(?:0|[1-9][0-9]*)$/.test(value.raw) ? BigInt(value.raw).toString() : null;
-  }
-  if (typeof value === "number" && Number.isInteger(value)) return BigInt(value).toString();
-  return null;
-}
-
-/** Python's `json.dumps(value, ensure_ascii=True, separators=(",", ":"))`. */
-function pyJson(value: CJson): string {
-  if (value === null) return "null";
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "string") return pyJsonString(value);
-  const integer = integerText(value);
-  if (integer !== null) return integer;
-  if (value instanceof RawNumber) return pyFloat(value.value);
-  if (typeof value === "number") return pyFloat(value);
-  if (Array.isArray(value)) return `[${value.map(pyJson).join(",")}]`;
-  return `{${Object.entries(value)
-    .map(([key, member]) => `${pyJsonString(key)}:${pyJson(member)}`)
-    .join(",")}}`;
-}
-
-/**
- * A JSON string as Python's `json` writes it with `ensure_ascii`: printable ASCII as it is, the
- * five short escapes, and every other UTF-16 unit as a lowercase \uXXXX. A character beyond the
- * BMP is already a surrogate pair in a JavaScript string, and Python writes it as the same pair.
- */
-function pyJsonString(s: string): string {
-  let out = '"';
-  for (let i = 0; i < s.length; i++) {
-    const unit = s.charCodeAt(i);
-    if (unit === 0x22) out += '\\"';
-    else if (unit === 0x5c) out += "\\\\";
-    else if (unit === 0x0a) out += "\\n";
-    else if (unit === 0x0d) out += "\\r";
-    else if (unit === 0x09) out += "\\t";
-    else if (unit === 0x08) out += "\\b";
-    else if (unit === 0x0c) out += "\\f";
-    else if (unit >= 0x20 && unit <= 0x7e) out += s[i];
-    else out += `\\u${unit.toString(16).padStart(4, "0")}`;
-  }
-  return `${out}"`;
-}
-
-/**
- * Python's `repr` of a float, which `json` writes: the shortest digits that read back as the same
- * number, in positional form from 1e-4 up to below 1e16 with `.0` on an integral value, and in
- * exponent form, with a two-digit exponent at least, outside that range.
- */
-function pyFloat(n: number): string {
-  if (Number.isNaN(n)) return "NaN";
-  if (n === Infinity) return "Infinity";
-  if (n === -Infinity) return "-Infinity";
-  if (n === 0) return Object.is(n, -0) ? "-0.0" : "0.0";
-  const m = /^(-?)([0-9])(?:\.([0-9]+))?e([+-][0-9]+)$/.exec(n.toExponential())!;
-  const sign = m[1]!;
-  const digits = m[2]! + (m[3] ?? "");
-  const exponent = Number(m[4]);
-  if (exponent < -4 || exponent >= 16) {
-    const mantissa = digits.length > 1 ? `${digits[0]}.${digits.slice(1)}` : digits;
-    return `${sign}${mantissa}e${exponent < 0 ? "-" : "+"}${String(Math.abs(exponent)).padStart(2, "0")}`;
-  }
-  if (exponent < 0) return `${sign}0.${"0".repeat(-exponent - 1)}${digits}`;
-  const whole = digits.slice(0, exponent + 1).padEnd(exponent + 1, "0");
-  const fraction = digits.slice(exponent + 1);
-  return `${sign}${whole}.${fraction === "" ? "0" : fraction}`;
+  if (typeof value === "string" && BARE.test(value)) return value;
+  return integerText(value) ?? escaped(value);
 }
 
 /** One `--entries` line: `key=value` pairs in a fixed order, a key with no value left out. */
@@ -298,7 +273,16 @@ function verify(args: string[]): number {
     return 1;
   }
 
-  const text = readFileSync(path, "utf8");
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    // A wrong path is a usage error, not a stack trace.
+    const reason = readFailure(err);
+    if (reason === null) throw err;
+    process.stdout.write(`cannot read ${path}: ${reason}\n`);
+    return 1;
+  }
   let bundle: Bundle | null = null;
   try {
     // A bundle is ONE JSON object; a ledger is JSON Lines.
@@ -318,7 +302,23 @@ function verify(args: string[]): number {
     else if (pubHex) {
       signer = new Ed25519Verifier(Buffer.from(pubHex, "hex"), kid ?? anchorKid ?? "k1");
     }
-    const witnessKeys = witnessPath === null ? null : readWitnessKeys(witnessPath);
+    let witnessKeys: readonly WitnessKey[] | null = null;
+    if (witnessPath) {
+      try {
+        witnessKeys = readWitnessKeys(witnessPath);
+      } catch (err) {
+        // Read, and not a trust set: one line, naming the file and, for a bad row, the kid.
+        if (err instanceof NotATrustSet) {
+          process.stdout.write(`cannot use --witness-keys ${witnessPath}: ${err.message}\n`);
+          return 2;
+        }
+        // Unreadable, as for the bundle path above.
+        const reason = readFailure(err);
+        if (reason === null) throw err;
+        process.stdout.write(`cannot read ${witnessPath}: ${reason}\n`);
+        return 1;
+      }
+    }
     const rep = verifyBundle(bundle, signer, { witnessKeys });
     const c = rep.checks;
     process.stdout.write(

@@ -6,13 +6,14 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { join, resolve } from "node:path";
 
 import { hashEntry, type LedgerEntry } from "../src/audit.js";
 import { Authority } from "../src/authority.js";
+import { Allow } from "../src/ceilings.js";
 import { exportBundle, signEnvelope } from "../src/evidence.js";
 import { Guard } from "../src/guard.js";
 import { Ed25519Signer, HS256TestSigner } from "../src/wire.js";
@@ -208,11 +209,11 @@ const ANCHOR = new HS256TestSigner(Buffer.from(META.hs256_secret_hex, "hex"), ME
  * brief-writer, which is then allowed `docs.write` and denied `web.search`. The ledger is v1 with
  * a logical clock, so its bytes, and every line printed from it, are the same on every run.
  */
-function custodyRun(): LedgerEntry[] {
+function custodyRun(chainId = "custody"): LedgerEntry[] {
   const root = Guard.issue(
     "supervisor",
     new Authority({ scopes: ["docs.write", "web.search"], ttl: 3600 }),
-    { chainId: "custody" },
+    { chainId },
   );
   const writer = root.delegate("brief-writer", new Authority({ scopes: ["docs.write"], ttl: 600 }), "write the brief");
   assert.ok(writer.check("docs.write", { tool: "docs" }).allowed);
@@ -477,18 +478,137 @@ test("verify honours not_after on a --witness-keys row", () => {
   });
 });
 
-test("a malformed not_after on a --witness-keys row stops the run, naming the kid", () => {
+// ---- a bundle value cannot add a line to the default output ----------------------------------
+
+test("a forged node name cannot add a line to the default output", () => {
+  // Printed raw, this node name turns the containment finding into three lines, the middle one
+  // reading `OK`, above the real FAILED. The Python CLI prints the same three lines.
+  inTempDir((dir) => {
+    const chainId = "run\nOK\nx";
+    const bundle = writeBundle(dir, "forged.bundle.json", withForgedAllow(custodyRun(chainId)), [1, 2, 4]);
+    const args = ["verify", bundle, "--hs256-key", META.hs256_secret_hex, "--witness-keys", writeWitnessKeys(dir)];
+    const { stdout, status } = run(args);
+    assert.equal(status, 2);
+    assert.deepEqual(stdout.split("\n"), [
+      "integrity=True monotonicity=True containment=False anchor=verified nodes=2 actions_checked=2",
+      String.raw`  - containment: allow of 'web.search' on "run\nOK\nx:n1" outside its authority ['docs.write']`,
+      "FAILED",
+      "",
+    ]);
+    const token = stdout.split("\n")[1]!.split(" on ")[1]!.split(" outside")[0]!;
+    assert.equal(JSON.parse(token), `${chainId}:n1`, "the escaped form reads back as the node");
+    // --entries adds exactly the header and one line per entry, nothing more.
+    assert.equal(run([...args, "--entries"]).stdout.trimEnd().split("\n").length, 3 + 1 + 5);
+  });
+});
+
+test("a ceiling value cannot add a line to a monotonicity finding", () => {
+  // A spawn the process wrote itself, granting a looser region allow-list than the parent holds,
+  // with one region carrying a line break. The ceiling description prints it.
+  inTempDir((dir) => {
+    const root = Guard.issue(
+      "root",
+      new Authority({ scopes: ["docs.write"], ceilings: [new Allow("region", ["us"])] }),
+      { chainId: "mono" },
+    );
+    const ledger = root.auditLog();
+    const wider = new Authority({ scopes: ["docs.write"], ceilings: [new Allow("region", ["us", "eu\nOK"])] });
+    ledger.append("spawn", 1, {
+      chain_id: "mono",
+      node: "mono:n1",
+      parent: ledger.entries[0]!["node"]!,
+      agent: "child",
+      task: "t",
+      granted: wider.toWire() as never,
+    });
+    const signer = new HS256TestSigner(Buffer.from("mono"), "mono");
+    const file = join(dir, "mono.bundle.json");
+    writeFileSync(file, JSON.stringify(exportBundle(ledger, signer)));
+    const { stdout, status } = run(["verify", file, "--hs256-key", Buffer.from("mono").toString("hex")]);
+    assert.equal(status, 2);
+    assert.deepEqual(stdout.split("\n"), [
+      "integrity=True monotonicity=False containment=True anchor=verified nodes=2 actions_checked=0",
+      String.raw`  - monotonicity: mono:n1 not ⊆ parent mono:n0 (ceiling region in ["eu\nOK", us] looser than parent region in [us])`,
+      "FAILED",
+      "",
+    ]);
+  });
+});
+
+test("a forged seq cannot add a line to a plain ledger's verdict", () => {
+  inTempDir((dir) => {
+    const file = join(dir, "l.jsonl");
+    Guard.issue("a", new Authority({ scopes: ["x.read"] }), { auditPath: file });
+    const rows = readFileSync(file, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    rows[0]!["seq"] = "0\nOK";
+    writeFileSync(file, rows.map((r) => `${JSON.stringify(r)}\n`).join(""));
+    const { stdout, status } = run(["verify", file]);
+    assert.equal(stdout, String.raw`TAMPERED — seq gap at 0 (got "0\nOK")` + "\n");
+    assert.equal(status, 2);
+  });
+});
+
+// ---- a malformed trust file is one line naming the file and the kid, exit 2 ---------------------
+
+function badRow(fields: Record<string, unknown>): unknown[] {
+  return [{ kid: WITNESS_KID, alg: "EdDSA", public_key_hex: WITNESS_PUBLIC_HEX, ...fields }];
+}
+
+test("a bad --witness-keys row is one line naming the file and the kid, exit 2", () => {
   inTempDir((dir) => {
     const bundle = writeBundle(dir, "clean.bundle.json", custodyRun(), [1, 2]);
-    const { stdout, stderr, status } = run(["verify", bundle, "--witness-keys", writeWitnessKeys(dir, "yesterday")]);
-    assert.equal(stdout, "");
-    assert.ok(
-      stderr.includes(
-        "witness key 'witness-custody': not_after must be an RFC 3339 UTC date-time such as " +
-          "'2026-10-05T00:00:00Z', got 'yesterday'",
-      ),
-      stderr,
+    const keys = join(dir, "keys.json");
+    const cases: [unknown, string][] = [
+      [badRow({ not_after: "2026-10-05" }),
+        `witness key '${WITNESS_KID}': not_after must be an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z', got '2026-10-05'`],
+      [badRow({ not_after: null }),
+        `witness key '${WITNESS_KID}': not_after must be an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z', got None`],
+      [badRow({ public_key_hex: "zz".repeat(32) }), `witness key '${WITNESS_KID}': public_key_hex is not hexadecimal`],
+      [badRow({ alg: "none" }), `witness key '${WITNESS_KID}': alg must be 'EdDSA', got 'none'`],
+      [[{ alg: "EdDSA" }], "witness key kid must be a string"],
+    ];
+    for (const [rows, reason] of cases) {
+      writeFileSync(keys, JSON.stringify(rows));
+      const { stdout, stderr, status } = run(["verify", bundle, "--witness-keys", keys]);
+      assert.deepEqual([status, stdout, stderr], [2, `cannot use --witness-keys ${keys}: ${reason}\n`, ""], reason);
+    }
+  });
+});
+
+test("a --witness-keys file that is not a trust set says so in one line, exit 2", () => {
+  inTempDir((dir) => {
+    const bundle = writeBundle(dir, "clean.bundle.json", custodyRun(), [1, 2]);
+    const keys = join(dir, "keys.json");
+    const valid = JSON.stringify(badRow({}));
+    const cases: [string | Buffer, string][] = [
+      ["{not json", "the file is not valid JSON"],
+      ["", "the file is not valid JSON"],
+      // JSON is UTF-8 text: bytes that are not UTF-8 are not JSON, and a byte-order mark is not JSON.
+      [Buffer.from([0x5b, 0xff, 0x5d]), "the file is not valid JSON"],
+      [Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(valid)]), "the file is not valid JSON"],
+      [JSON.stringify({ kid: WITNESS_KID }),
+        "expected a JSON array of {kid, alg, public_key_hex} rows, or a vector case carrying one as witness_keys"],
+    ];
+    for (const [content, reason] of cases) {
+      writeFileSync(keys, content);
+      const { stdout, status } = run(["verify", bundle, "--witness-keys", keys]);
+      assert.deepEqual([status, stdout], [2, `cannot use --witness-keys ${keys}: ${reason}\n`], reason);
+    }
+  });
+});
+
+test("a file that cannot be read is a usage error naming it, exit 1", () => {
+  inTempDir((dir) => {
+    const bundle = writeBundle(dir, "clean.bundle.json", custodyRun(), [1, 2]);
+    const missing = join(dir, "no-such-keys.json");
+    assert.deepEqual(
+      [run(["verify", bundle, "--witness-keys", missing]).status, run(["verify", bundle, "--witness-keys", missing]).stdout],
+      [1, `cannot read ${missing}: No such file or directory\n`],
     );
-    assert.notEqual(status, 0);
+    const absent = join(dir, "no-such-bundle.json");
+    const missingBundle = run(["verify", absent]);
+    assert.deepEqual([missingBundle.status, missingBundle.stdout, missingBundle.stderr], [1, `cannot read ${absent}: No such file or directory\n`, ""]);
+    const directory = run(["verify", dir]);
+    assert.deepEqual([directory.status, directory.stdout], [1, `cannot read ${dir}: Is a directory\n`]);
   });
 });

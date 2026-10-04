@@ -16,6 +16,7 @@
  */
 
 import { MAX_SAFE_INTEGER, compareCodePoints, pyNumber, toPlain, type CJson, type Json } from "./canonical.js";
+import { pyRepr, shown, shownText } from "./display.js";
 import { Decision, Reason, ReasonCode } from "./reasons.js";
 
 /**
@@ -100,10 +101,18 @@ export function ctxFieldOf(ceiling: Ceiling): string {
   return ceiling.key;
 }
 
-/** Uniform human-readable rendering of any ceiling. Never parsed back. */
+/**
+ * Uniform human-readable rendering of any ceiling. Never parsed back.
+ *
+ * The values in a description can come from a bundle (the evidence verifier puts them in the
+ * monotonicity message), so every built-in prints each one through `shown` (display.ts): as it is
+ * when it is printable ASCII without space, `"` or `\`, as escaped JSON otherwise. A description is
+ * therefore always one line, and clean values print as they always have. The wire form of a
+ * ceiling without a description of its own prints as Python prints the dict.
+ */
 export function describe(ceiling: Ceiling): string {
   if (typeof ceiling.describe === "function") return ceiling.describe();
-  return `${ceiling.key}=${JSON.stringify(ceiling.toWire())}`;
+  return `${shown(ceiling.key)}=${pyRepr(ceiling.toWire())}`;
 }
 
 /**
@@ -154,7 +163,7 @@ export class RowLimit implements Ceiling {
   }
 
   describe(): string {
-    return `${this.key}<=${pyNumber(this.maxRows)}`;
+    return `${shown(this.key)}<=${pyNumber(this.maxRows)}`;
   }
 
   narrow(other: Ceiling): RowLimit {
@@ -195,7 +204,7 @@ export class SpendCap implements Ceiling {
   }
 
   describe(): string {
-    return `${this.key}<=${pyNumber(this.maxSpend)}`;
+    return `${shown(this.key)}<=${pyNumber(this.maxSpend)}`;
   }
 
   narrow(other: Ceiling): SpendCap {
@@ -265,7 +274,7 @@ export class CallLimit implements Ceiling {
   }
 
   describe(): string {
-    return `${this.key}<=${pyNumber(this.maxCalls)}`;
+    return `${shown(this.key)}<=${pyNumber(this.maxCalls)}`;
   }
 
   narrow(other: Ceiling): CallLimit {
@@ -307,7 +316,7 @@ export class EgressRank implements Ceiling {
   }
 
   describe(): string {
-    return `${this.key}<=${this.level}`;
+    return `${shown(this.key)}<=${shown(this.level)}`;
   }
 
   narrow(other: Ceiling): EgressRank {
@@ -362,7 +371,7 @@ export class Allow implements Ceiling {
   }
 
   describe(): string {
-    return `${this.key} in [${sortByStr(this.oneOf).map(strOf).join(", ")}]`;
+    return `${shown(this.key)} in [${sortByStr(this.oneOf).map((v) => shownText(strOf(v), v)).join(", ")}]`;
   }
 
   narrow(other: Ceiling): Allow {
@@ -417,7 +426,7 @@ export class Deny implements Ceiling {
   }
 
   describe(): string {
-    return `${this.key} not in [${sortByStr(this.notOneOf).map(strOf).join(", ")}]`;
+    return `${shown(this.key)} not in [${sortByStr(this.notOneOf).map((v) => shownText(strOf(v), v)).join(", ")}]`;
   }
 
   narrow(other: Ceiling): Deny {
@@ -477,7 +486,7 @@ export class Prefix implements Ceiling {
   }
 
   describe(): string {
-    return `${this.key} startswith ${this.prefix}`;
+    return `${shown(this.key)} startswith ${shown(this.prefix)}`;
   }
 
   narrow(other: Ceiling): Prefix {

@@ -22,6 +22,7 @@ import {
   toPlain,
   type CJson,
 } from "./canonical.js";
+import { shown } from "./display.js";
 import type { Decision } from "./reasons.js";
 import type { Signer } from "./wire.js";
 
@@ -266,7 +267,9 @@ export class AuditLog {
     for (const e of entries) {
       const seq = asNumber(e["seq"]);
       if (seq !== expectedSeq) {
-        return [false, `seq gap at ${expectedSeq} (got ${formatSeq(e["seq"])})`];
+        // `seq` is the entry's own value, which a forged ledger chooses: printed by the one rule
+        // (display.ts `shown`) so it cannot end the reader's line and start another.
+        return [false, `seq gap at ${expectedSeq} (got ${shown(e["seq"])})`];
       }
       const stored = e["hash"];
       const payload = withoutHash(e);
@@ -294,11 +297,6 @@ export class AuditLog {
       .filter((line) => line.trim() !== "")
       .map((line) => parseJson(line) as LedgerEntry);
   }
-}
-
-function formatSeq(value: CJson | undefined): string {
-  const plain = toPlain(value);
-  return plain === undefined || plain === null ? "None" : String(plain);
 }
 
 /** The first `chain_id` any entry carries, or `"chain"`. */

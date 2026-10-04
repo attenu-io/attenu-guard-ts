@@ -47,6 +47,7 @@ import { createHash } from "node:crypto";
 import { AuditLog, SCHEMA_VERSION, chainIdOf, hashEntry, GENESIS, type Anchor, type LedgerEntry } from "./audit.js";
 import { Authority } from "./authority.js";
 import { describe as describeCeiling, type Context } from "./ceilings.js";
+import { pyRepr, pyStr, pyStrRepr, shown } from "./display.js";
 import { CAPTURES, BODY_STATES, POLICIES, BodyState, Capture } from "./reasons.js";
 import { PARAMS_HASH_REASONS } from "./params.js";
 import { Ed25519Signer, Ed25519Verifier, type Signer } from "./wire.js";
@@ -425,7 +426,7 @@ function monotonicityDetail(child: Authority, parent: Authority): string {
   if (!Array.from(child.scopes).every((s) => parent.coversScope(s))) {
     const extra = Array.from(child.scopes).filter((s) => !parent.scopes.has(s));
     return (
-      `child scopes [${extra.sort(compareCodePoints).map((s) => `'${s}'`).join(", ")}] ` +
+      `child scopes ${reprList(extra.sort(compareCodePoints))} ` +
       `not held by parent`
     );
   }
@@ -436,7 +437,7 @@ function monotonicityDetail(child: Authority, parent: Authority): string {
     const parentCeiling = parent.ceilings.find((c) => String(c.key) === key)!;
     const childCeiling = childByKey.get(key);
     if (childCeiling === undefined) {
-      return `ceiling ${key} unbounded, parent holds ${describeCeiling(parentCeiling)}`;
+      return `ceiling ${shown(key)} unbounded, parent holds ${describeCeiling(parentCeiling)}`;
     }
     if (!parentCeiling.subsumes(childCeiling)) {
       return (
@@ -473,7 +474,7 @@ function nodeAuthorities(entries: readonly LedgerEntry[]): NodeAuthorities {
       } catch (exc) {
         // One of the two historical messages that name a node before their colon rather than a
         // reason token, so the reason is stated here instead of parsed out of the string.
-        failures.add("unreadable_authority", `root ${node}: unreadable authority (${(exc as Error).message})`, {
+        failures.add("unreadable_authority", `root ${shown(e["node"])}: unreadable authority (${(exc as Error).message})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
         });
@@ -484,7 +485,7 @@ function nodeAuthorities(entries: readonly LedgerEntry[]): NodeAuthorities {
       try {
         auth.set(node, Authority.fromWire(e["granted"] ?? null));
       } catch (exc) {
-        failures.add("unreadable_granted", `spawn ${node}: unreadable granted (${(exc as Error).message})`, {
+        failures.add("unreadable_granted", `spawn ${shown(e["node"])}: unreadable granted (${(exc as Error).message})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
         });
@@ -660,33 +661,9 @@ export interface VerifyChecks {
   envelopes: "not present" | "verified" | "FAILED";
 }
 
-/** Python-style repr for the small set of value types these failure messages carry. */
-function pyRepr(value: Json): string {
-  if (value === null) return "None";
-  if (typeof value === "boolean") return value ? "True" : "False";
-  if (typeof value === "number") return String(value);
-  if (typeof value === "string") return `'${value}'`;
-  // Containers reach here only on hostile input — a subject member that is a list or an object
-  // where the contract wants a scalar. Rendered the way Python's repr renders them, because the
-  // two implementations report the same failure strings and a JSON spelling would not match.
-  if (Array.isArray(value)) return `[${value.map((v) => pyRepr(v as Json)).join(", ")}]`;
-  if (typeof value === "object") {
-    const body = Object.entries(value as Record<string, unknown>)
-      .map(([k, v]) => `${pyRepr(k)}: ${pyRepr(v as Json)}`)
-      .join(", ");
-    return `{${body}}`;
-  }
-  return JSON.stringify(value);
-}
-
-/**
- * Python's `str()` where a failure string interpolates a value bare (`{x}`) rather than through
- * `repr` (`{x!r}`) — the same rendering for every type except a string, which `str` leaves
- * unquoted. Both implementations report the same failure bytes, so the distinction is load-bearing.
- */
-function pyStr(value: Json): string {
-  return typeof value === "string" ? value : pyRepr(value);
-}
+// `pyRepr` and `pyStr` (display.ts) are Python's `repr` and `str` for the values these failure
+// messages carry. Both implementations report the same failure bytes, so the distinction between
+// `{x}` and `{x!r}` is load-bearing, and `pyRepr` escapes a string exactly as `repr` does.
 
 // =============================================================================================
 // Observer envelopes (envelope v1) — the TypeScript half of `attenu_guard.evidence`'s.
@@ -904,22 +881,22 @@ function witnessPublicKey(kid: string, value: unknown): Buffer {
   if (typeof value === "string") {
     if (value.length !== 64) {
       throw new Error(
-        `witness key '${kid}': public_key_hex must be 64 hex characters (a 32-byte Ed25519 key), ` +
+        `witness key ${pyStrRepr(kid)}: public_key_hex must be 64 hex characters (a 32-byte Ed25519 key), ` +
           `got ${value.length}`,
       );
     }
     if (!/^[0-9a-fA-F]{64}$/.test(value)) {
-      throw new Error(`witness key '${kid}': public_key_hex is not hexadecimal`);
+      throw new Error(`witness key ${pyStrRepr(kid)}: public_key_hex is not hexadecimal`);
     }
     return Buffer.from(value, "hex");
   }
   if (value instanceof Uint8Array) {
     if (value.length !== 32) {
-      throw new Error(`witness key '${kid}': an Ed25519 public key is 32 bytes, got ${value.length}`);
+      throw new Error(`witness key ${pyStrRepr(kid)}: an Ed25519 public key is 32 bytes, got ${value.length}`);
     }
     return Buffer.from(value);
   }
-  throw new Error(`witness key '${kid}': expected 64 hex characters or 32 bytes`);
+  throw new Error(`witness key ${pyStrRepr(kid)}: expected 64 hex characters or 32 bytes`);
 }
 
 /**
@@ -953,14 +930,14 @@ function trustedWitnesses(
     if (isRecordLike(value)) {
       const alg = value["alg"];
       if (alg !== ENVELOPE_ALG) {
-        throw new Error(`witness key '${kid}': alg must be '${ENVELOPE_ALG}', got ${pyRepr(alg as Json)}`);
+        throw new Error(`witness key ${pyStrRepr(kid)}: alg must be '${ENVELOPE_ALG}', got ${pyRepr(alg as Json)}`);
       }
       // Present means checked: `null` is not "no expiry", it is a row that says nothing usable.
       if (value["not_after"] !== undefined) {
         until = rfc3339Utc(value["not_after"]);
         if (until === null) {
           throw new Error(
-            `witness key '${kid}': not_after must be an RFC 3339 UTC date-time such as ` +
+            `witness key ${pyStrRepr(kid)}: not_after must be an RFC 3339 UTC date-time such as ` +
               `'2026-10-05T00:00:00Z', got ${pyRepr(value["not_after"] as Json)}`,
           );
         }
@@ -979,6 +956,16 @@ function trustedWitnesses(
     trusted.set(kid, [ENVELOPE_ALG, publicKey]);
   }
   return { trusted, expired };
+}
+
+/**
+ * Every row of a trust set checked as the verifier checks it — kid, alg, public key, `not_after` —
+ * and an `Error` naming the kid for the first bad one. The CLI runs this when it loads a
+ * `--witness-keys` file, so a bad row is reported against that file before any bundle is read.
+ * Expiry is not an error: an expired row is a row the verifier leaves out, not a malformed one.
+ */
+export function validateWitnessKeys(witnessKeys: readonly WitnessKey[]): void {
+  trustedWitnesses(witnessKeys, verificationTime(null));
 }
 
 /**
@@ -1044,27 +1031,63 @@ function rfc3339Utc(value: unknown): Instant | null {
 }
 
 /**
- * The verification time: `now` when given — a `Date`, or a string in the `not_after` grammar —
- * and the current time otherwise. A number is refused rather than guessed at: a JavaScript epoch
- * counts milliseconds and a Python one seconds.
+ * The verification time: `now` when given — a `Date`, a string in the `not_after` grammar, or
+ * seconds since the Unix epoch, as the Python implementation takes it — and the current time
+ * otherwise.
  */
-function verificationTime(now: Date | string | null | undefined): Instant {
-  if (typeof now === "string") {
-    const parsed = rfc3339Utc(now);
-    if (parsed === null) {
-      throw new Error(
-        `now must be a Date or an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z', got ${pyRepr(now)}`,
-      );
-    }
-    return parsed;
+function verificationTime(now: Date | string | number | null | undefined): Instant {
+  if (now === null || now === undefined) return dateInstant(new Date());
+  if (now instanceof Date && !Number.isNaN(now.getTime())) return dateInstant(now);
+  if (typeof now === "number") return epochInstant(now);
+  const parsed = typeof now === "string" ? rfc3339Utc(now) : null;
+  if (parsed === null) {
+    throw new Error(
+      "now must be a valid Date, an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z', or " +
+        `seconds since the epoch; got ${now instanceof Date ? "an invalid Date" : pyRepr(now as never)}`,
+    );
   }
-  const at = now ?? new Date();
-  if (!(at instanceof Date) || Number.isNaN(at.getTime())) {
-    throw new Error("now must be a valid Date or an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z'");
-  }
+  return parsed;
+}
+
+function dateInstant(at: Date): Instant {
   const ms = at.getTime();
   const seconds = Math.floor(ms / 1000);
   return { seconds, fraction: String(ms - seconds * 1000).padStart(3, "0") };
+}
+
+/** 0001-01-01T00:00:00Z and 9999-12-31T23:59:59Z: the range a Python `datetime` can hold. */
+const EPOCH_MIN = -62135596800;
+const EPOCH_MAX = 253402300799;
+
+/**
+ * Seconds since the epoch as Python's `datetime.fromtimestamp(seconds, timezone.utc)` reads them:
+ * the fraction rounded half-even to the microsecond, and a time outside years 1-9999 refused. A
+ * JavaScript millisecond epoch passed by mistake lands tens of millennia ahead and is refused
+ * here, as Python refuses it, rather than read as some time.
+ */
+function epochInstant(seconds: number): Instant {
+  if (Number.isFinite(seconds)) {
+    let whole = Math.trunc(seconds);
+    let micros = roundHalfEven((seconds - whole) * 1e6);
+    if (micros >= 1e6) {
+      micros -= 1e6;
+      whole += 1;
+    } else if (micros < 0) {
+      micros += 1e6;
+      whole -= 1;
+    }
+    if (whole >= EPOCH_MIN && whole <= EPOCH_MAX) {
+      return { seconds: whole, fraction: String(micros).padStart(6, "0") };
+    }
+  }
+  throw new Error(`now=${String(seconds)} is not a representable time in seconds since the epoch`);
+}
+
+/** CPython's `_PyTime_RoundHalfEven`: C `round` (half away from zero), then ties to even. */
+function roundHalfEven(x: number): number {
+  const away = (v: number): number => (v < 0 ? -Math.round(-v) : Math.round(v));
+  const rounded = away(x);
+  return Math.abs(x - rounded) === 0.5 ? 2 * away(x / 2) : rounded;
 }
 
 /** `a` is at or before `b`: whole seconds first, then the fraction digits, padded to one length. */
@@ -1140,11 +1163,11 @@ export interface VerifyEnvelopesOptions {
    */
   envelopeBytes?: readonly (Buffer | string | null)[] | null;
   /**
-   * The verification time a trust-set row's `not_after` is compared with: a `Date`, or a string in
-   * the `not_after` grammar. The current time when absent. A row whose `not_after` is at or before
-   * it is left out of the trust set.
+   * The verification time a trust-set row's `not_after` is compared with: a `Date`, a string in
+   * the `not_after` grammar, or seconds since the Unix epoch (not milliseconds). The current time
+   * when absent. A row whose `not_after` is at or before it is left out of the trust set.
    */
-  now?: Date | string | null;
+  now?: Date | string | number | null;
 }
 
 /**
@@ -1227,7 +1250,7 @@ function scoreEnvelopes(
 
 /** Python `repr` for a member set, so both implementations print the same failure strings. */
 function reprList(values: readonly string[]): string {
-  return `[${values.map((v) => `'${v}'`).join(", ")}]`;
+  return `[${values.map(pyStrRepr).join(", ")}]`;
 }
 
 /**
@@ -1373,7 +1396,7 @@ function scoreEnvelope(
   if (already > 0) {
     return report(
       "envelope_duplicate_subject",
-      `seq ${claimKey} is already covered by an earlier envelope in this bundle; two ` +
+      `seq ${pyStr(seq)} is already covered by an earlier envelope in this bundle; two ` +
         "observations of one event contradict each other by construction, so this entry is not " +
         "witness-signed",
     );
@@ -1384,7 +1407,7 @@ function scoreEnvelope(
   if (claimed !== computed) {
     return report(
       "envelope_subject_mismatch",
-      `subject entry_hash ${pyRepr(claimed)} != the hash recomputed for seq ${String(seq)} from ` +
+      `subject entry_hash ${pyRepr(claimed)} != the hash recomputed for seq ${pyStr(seq)} from ` +
         `this bundle (${pyRepr(computed)})`,
     );
   }
@@ -1402,7 +1425,7 @@ function scoreEnvelope(
     if (stated !== actual) {
       return report(
         "envelope_subject_mismatch",
-        `subject ${member}=${pyRepr(stated)} != ${pyRepr(actual)} on the entry at seq ${String(seq)}`,
+        `subject ${member}=${pyRepr(stated)} != ${pyRepr(actual)} on the entry at seq ${pyStr(seq)}`,
       );
     }
   }
@@ -1609,7 +1632,7 @@ function validateAllow(e: LedgerEntry): string | null {
   for (const k of ["module", "version", "hook_path"] as const) {
     const v = (adapter as Record<string, Json>)[k];
     if (typeof v !== "string" || !v) {
-      return `adapter[${JSON.stringify(k)}] must be a non-empty string`;
+      return `adapter[${pyStrRepr(k)}] must be a non-empty string`;
     }
   }
   if (presentButNull(e, "policy")) {
@@ -1637,7 +1660,7 @@ function validateDeny(e: LedgerEntry): string | null {
   if (err) return err;
   const leaked = ALLOW_ONLY_FIELDS.filter((f) => f in e).sort();
   if (leaked.length > 0) {
-    return `deny carries allow-only field(s) ${JSON.stringify(leaked)}`;
+    return `deny carries allow-only field(s) ${reprList(leaked)}`;
   }
   return null;
 }
@@ -1679,7 +1702,7 @@ function validateOutcome(e: LedgerEntry): string | null {
     for (const k of ["type", "ref"] as const) {
       const v = (receipt as Record<string, Json>)[k];
       if (typeof v !== "string" || !v) {
-        return `receipt[${JSON.stringify(k)}] must be a non-empty string`;
+        return `receipt[${pyStrRepr(k)}] must be a non-empty string`;
       }
     }
     const digest = (receipt as Record<string, Json>)["digest"];
@@ -1820,8 +1843,8 @@ function policyFailures(entries: readonly LedgerEntry[], bundleV: Json): Failure
       if (!isKnownPolicy(toPlain(e["policy"]))) {
         failures.add(
           "invalid_policy",
-          `invalid_policy: seq=${pyStr(orNull(e["seq"]))} allow carries policy ` +
-            `${pyRepr(orNull(e["policy"]))}, not a value this format defines`,
+          `invalid_policy: seq=${shown(e["seq"])} allow carries policy ` +
+            `${pyRepr(e["policy"] ?? null)}, not a value this format defines`,
           position,
         );
       }
@@ -1829,7 +1852,7 @@ function policyFailures(entries: readonly LedgerEntry[], bundleV: Json): Failure
       if (ev === "deny" && bundleV === 2) continue; // validateDeny owns this entry's message
       failures.add(
         "policy_on_non_allow",
-        `policy_on_non_allow: seq=${pyStr(orNull(e["seq"]))} event=${pyRepr(orNull(e["event"]))} ` +
+        `policy_on_non_allow: seq=${shown(e["seq"])} event=${pyRepr(e["event"] ?? null)} ` +
           "carries `policy`, which is an allow-only field",
         position,
       );
@@ -1845,8 +1868,8 @@ function v2FieldLeaksOnV1(entries: readonly LedgerEntry[]): FailureLog {
     if (leaked.length > 0) {
       failures.add(
         "v2_field_on_v1",
-        `v2_field_on_v1: seq=${pyRepr(toPlain(e["seq"]) as Json)} event=${pyRepr(toPlain(e["event"]) as Json)} ` +
-          `carries v2-only field(s) ${JSON.stringify(leaked)} on a schemaVersion: 1 entry`,
+        `v2_field_on_v1: seq=${shown(e["seq"])} event=${pyRepr(e["event"] ?? null)} ` +
+          `carries v2-only field(s) ${reprList(leaked)} on a schema_version=1 entry`,
         { seq: orNull(e["seq"]), node: orNull(e["node"]) },
       );
     }
@@ -1869,7 +1892,8 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
   if (bundleV !== 2) return [{ status: "not applicable" }, new FailureLog()];
 
   const failures = new FailureLog();
-  const seenCallIds = new Map<string, [string, string | null, number | null]>(); // callId -> [event, node, seq]
+  // callId -> [event, node, the entry's own seq value as the bundle wrote it]
+  const seenCallIds = new Map<string, [string, string | null, CJson]>();
   const allows = new Map<string, LedgerEntry>();
   const outcomes = new Map<string, LedgerEntry>();
   const invalidAllowIds = new Set<string>();
@@ -1880,12 +1904,11 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
   for (const e of entries) {
     const ev = toPlain(e["event"]);
     const node = toPlain(e["node"]) as string | null;
-    const seqForEvent = toPlain(e["seq"]) as number | null;
     if (ev === "root") {
       if (node !== null) nodes.add(node);
       const err = validateRoot(e);
       if (err) {
-        failures.add("invalid_root", `invalid_root: ${err} (seq ${pyRepr(seqForEvent)})`, {
+        failures.add("invalid_root", `invalid_root: ${err} (seq ${shown(e["seq"])})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
         });
@@ -1898,7 +1921,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
       for (const r of (toPlain(e["revoked"]) as string[] | null) ?? []) revokedNodes.add(r);
       const err = validateKill(e);
       if (err) {
-        failures.add("invalid_kill", `invalid_kill: ${err} (seq ${pyRepr(seqForEvent)})`, {
+        failures.add("invalid_kill", `invalid_kill: ${err} (seq ${shown(e["seq"])})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
         });
@@ -1907,7 +1930,6 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
 
     if (ev === "allow" || ev === "deny") {
       const cid = toPlain(e["call_id"]) as string | null;
-      const seq = toPlain(e["seq"]) as number | null;
       if (cid !== null && cid !== undefined) {
         const prior = seenCallIds.get(cid);
         if (prior !== undefined) {
@@ -1915,17 +1937,17 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
           // record, the first one having been legitimate when it was written.
           failures.add(
             "duplicate_call_id",
-            `duplicate_call_id: call_id ${cid} on seq ${pyRepr(seq)} (${ev}) already used at seq ` +
-              `${pyRepr(prior[2])} (${prior[0]})`,
+            `duplicate_call_id: call_id ${shown(e["call_id"])} on seq ${shown(e["seq"])} (${ev}) already used at seq ` +
+              `${shown(prior[2])} (${prior[0]})`,
             { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: cid },
           );
         } else {
-          seenCallIds.set(cid, [ev, node, seq]);
+          seenCallIds.set(cid, [ev, node, e["seq"] ?? null]);
         }
       }
       const err = ev === "allow" ? validateAllow(e) : validateDeny(e);
       if (err) {
-        failures.add(`invalid_${ev}`, `invalid_${ev}: ${err} (seq ${pyRepr(seq)})`, {
+        failures.add(`invalid_${ev}`, `invalid_${ev}: ${err} (seq ${shown(e["seq"])})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
           callId: cid ?? null,
@@ -1936,10 +1958,9 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
       if (ev === "allow" && cid !== null && cid !== undefined) allows.set(cid, e);
     } else if (ev === "outcome") {
       const cid = toPlain(e["call_id"]) as string | null;
-      const seq = toPlain(e["seq"]) as number | null;
       const err = validateOutcome(e);
       if (err) {
-        failures.add("invalid_outcome", `invalid_outcome: ${err} (seq ${pyRepr(seq)})`, {
+        failures.add("invalid_outcome", `invalid_outcome: ${err} (seq ${shown(e["seq"])})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
           callId: cid ?? null,
@@ -1949,8 +1970,8 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
       if (cid !== null && outcomes.has(cid)) {
         failures.add(
           "duplicate_outcome",
-          `duplicate_outcome: call_id ${cid} at seq ${pyRepr(seq)} (first at seq ` +
-            `${pyRepr(toPlain(outcomes.get(cid)!["seq"]) as Json)})`,
+          `duplicate_outcome: call_id ${shown(e["call_id"])} at seq ${shown(e["seq"])} (first at seq ` +
+            `${shown(outcomes.get(cid)!["seq"])})`,
           { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: cid },
         );
         continue;
@@ -1975,7 +1996,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
     if (allowE === undefined) {
       failures.add(
         "outcome_without_allow",
-        `outcome_without_allow: call_id ${cid} at seq ${pyRepr(toPlain(oc["seq"]) as Json)} has no allow in this chain`,
+        `outcome_without_allow: call_id ${shown(oc["call_id"])} at seq ${shown(oc["seq"])} has no allow in this chain`,
         { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid },
       );
       continue;
@@ -1984,8 +2005,8 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
     if (!nodeOk) {
       failures.add(
         "cross_ref",
-        `cross_ref: call_id ${cid} allow on node ${pyRepr(toPlain(allowE["node"]) as Json)} but ` +
-          `outcome on node ${pyRepr(toPlain(oc["node"]) as Json)}`,
+        `cross_ref: call_id ${shown(oc["call_id"])} allow on node ${pyRepr(allowE["node"] ?? null)} but ` +
+          `outcome on node ${pyRepr(oc["node"] ?? null)}`,
         { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid },
       );
     }
@@ -1995,8 +2016,8 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
     if (!orderOk) {
       failures.add(
         "outcome_before_allow",
-        `outcome_before_allow: call_id ${cid} outcome seq ${pyRepr((ocSeq as Json) ?? null)} not ` +
-          `after allow seq ${pyRepr((allowSeq as Json) ?? null)}`,
+        `outcome_before_allow: call_id ${shown(oc["call_id"])} outcome seq ${shown(oc["seq"])} not ` +
+          `after allow seq ${shown(allowE["seq"])}`,
         { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid },
       );
     }
@@ -2005,7 +2026,8 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
     if (ah !== null && ah !== undefined && ih !== null && ih !== undefined && ah !== ih) {
       failures.add(
         "params_mismatch",
-        `params_mismatch: call_id ${cid} authorized_params_hash ${ah} != invoked_params_hash ${ih}`,
+        `params_mismatch: call_id ${shown(oc["call_id"])} authorized_params_hash ` +
+          `${shown(allowE["authorized_params_hash"])} != invoked_params_hash ${shown(oc["invoked_params_hash"])}`,
         { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid },
       );
     }
@@ -2189,12 +2211,12 @@ export interface VerifyBundleOptions {
    */
   envelopeBytes?: readonly (Buffer | string | null)[] | null;
   /**
-   * The verification time a trust-set row's `not_after` is compared with: a `Date`, or a string in
-   * the `not_after` grammar. The current time when absent. A row whose `not_after` is at or before
-   * it is left out of the trust set, so an envelope naming that kid fails
-   * `envelope_unknown_witness`.
+   * The verification time a trust-set row's `not_after` is compared with: a `Date`, a string in
+   * the `not_after` grammar, or seconds since the Unix epoch (not milliseconds). The current time
+   * when absent. A row whose `not_after` is at or before it is left out of the trust set, so an
+   * envelope naming that kid fails `envelope_unknown_witness`.
    */
-  now?: Date | string | null;
+  now?: Date | string | number | null;
 }
 
 export function verifyBundle(
@@ -2251,13 +2273,15 @@ export function verifyBundle(
     versionOk = false;
     log.add(
       "root_version_mismatch",
-      `root_version_mismatch: root v=${pyRepr(toPlain(rootEntry["v"]) as Json)} != bundle v=${pyRepr(bundleV)}`,
+      `root_version_mismatch: root v=${pyRepr(rootEntry["v"] ?? null)} != bundle v=${pyRepr(bundleV)}`,
       { seq: orNull(rootEntry["seq"]), node: orNull(rootEntry["node"]) },
     );
   }
   const mixedEntries = entries.filter((e) => toPlain(e["v"]) !== bundleV);
-  const mixed = Array.from(new Set(mixedEntries.map((e) => toPlain(e["v"])))).sort(
-    (a, b) => (typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b))),
+  // An entry without `v` is Python's None in the list, and strings sort by code point, as Python's
+  // `sorted` sorts them, never by locale.
+  const mixed = Array.from(new Set(mixedEntries.map((e) => orNull(e["v"])))).sort((a, b) =>
+    typeof a === "number" && typeof b === "number" ? a - b : compareCodePoints(String(a), String(b)),
   );
   if (mixed.length > 0) {
     versionOk = false;
@@ -2265,7 +2289,7 @@ export function verifyBundle(
     // the first of them, which is where a reader looks.
     log.add(
       "mixed_entry_versions",
-      `mixed_entry_versions: entries declare v in [${mixed.map((v) => pyRepr(v as Json)).join(", ")}], bundle v=${pyRepr(bundleV)}`,
+      `mixed_entry_versions: entries declare v in [${mixed.map((v) => pyRepr(v)).join(", ")}], bundle v=${pyRepr(bundleV)}`,
       { seq: orNull(mixedEntries[0]!["seq"]), node: orNull(mixedEntries[0]!["node"]) },
     );
   }
@@ -2296,7 +2320,7 @@ export function verifyBundle(
       log.add(
         "unknown_ledger_fields",
         `unknown_ledger_fields: entry carries fields this verifier does not evaluate and will ` +
-          `not ignore: ${extra.join(", ")}`,
+          `not ignore: ${extra.map((f) => shown(f)).join(", ")}`,
         { seq: orNull(e["seq"]), node: orNull(e["node"]) },
       );
     }
@@ -2316,7 +2340,7 @@ export function verifyBundle(
         expectedOk = false;
         log.add(
           "expected_head_mismatch",
-          `expected_head_mismatch: bundle head is (seq=${actualSeq}, hash=${actualHead}) but the ` +
+          `expected_head_mismatch: bundle head is (seq=${actualSeq}, hash=${shown(actualHead)}) but the ` +
             `independently retained expected head is (seq=${expSeq}, hash=${expHash})`,
         );
       }
@@ -2397,7 +2421,7 @@ export function verifyBundle(
       const spawnE = definedBy.get(node);
       log.add(
         "monotonicity",
-        `monotonicity: ${node} not ⊆ parent ${pid} (${monotonicityDetail(child, p)})`,
+        `monotonicity: ${shown(node)} not ⊆ parent ${shown(pid)} (${monotonicityDetail(child, p)})`,
         { seq: spawnE === undefined ? null : orNull(spawnE["seq"]), node },
       );
     }
@@ -2430,7 +2454,7 @@ export function verifyBundle(
     const a = auth.get(node);
     if (a === undefined) {
       contained = false;
-      log.add("containment", `containment: allow on unknown node ${node}`, {
+      log.add("containment", `containment: allow on unknown node ${shown(e["node"])}`, {
         seq: orNull(e["seq"]),
         node: orNull(e["node"]),
         callId: orNull(e["call_id"]),
@@ -2441,8 +2465,8 @@ export function verifyBundle(
       contained = false;
       log.add(
         "containment",
-        `containment: allow of '${scope}' on ${node} outside its authority ` +
-          `[${Array.from(a.scopes).sort(compareCodePoints).map((s) => `'${s}'`).join(", ")}]`,
+        `containment: allow of ${pyRepr(e["scope"] ?? null)} on ${shown(e["node"])} outside its authority ` +
+          reprList(Array.from(a.scopes).sort(compareCodePoints)),
         { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: orNull(e["call_id"]) },
       );
     }

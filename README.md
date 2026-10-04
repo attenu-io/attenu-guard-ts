@@ -219,7 +219,13 @@ A trust-set row may carry `not_after`, an RFC 3339 date-time in UTC written with
 verification time is not trusted, so an envelope naming its kid fails
 `envelope_unknown_witness`, and the message says when the key expired. The
 verification time is `now` in `verifyBundle`'s options, and the current time
-when it is not given.
+when it is not given. A trust file the CLI cannot use is one line naming the
+file and, for a bad row, the kid, with exit code 2.
+
+No value from a bundle can add a line to `attenu-guard verify` output. A value
+printed without quotes prints as it is only when it is printable ASCII with no
+space, `"` or `\`, and as escaped JSON otherwise; a quoted value is escaped the
+way Python's `repr` escapes it. Clean bundles print as they always have.
 
 One entry, at most one envelope. A second envelope naming a `subject.seq` an
 earlier one in the same array already named is `envelope_duplicate_subject` at
