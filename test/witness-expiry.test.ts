@@ -51,7 +51,7 @@ function keys(notAfter: unknown, kid: string = KID): WitnessKey[] {
   return BASE.witness_keys.map((row) => (row.kid === kid ? ({ ...row, not_after: notAfter } as WitnessKey) : row));
 }
 
-function verifyAt(witnessKeys: WitnessKey[], now: Date | string | number | undefined = NOW) {
+function verifyAt(witnessKeys: WitnessKey[], now: Date | string | undefined = NOW) {
   return verifyBundle(BASE.bundle, SIGNER, { witnessKeys, now });
 }
 
@@ -125,7 +125,7 @@ test("now may be a string in the not_after grammar, compared to the microsecond"
   assertTrusted(verifyAt(keys("2026-10-04T12:00:00.000002Z"), "2026-10-04T12:00:00.000001Z"), "one microsecond later");
   assert.throws(
     () => verifyAt(keys("2027-01-01T00:00:00Z"), "tomorrow"),
-    /now must be a valid Date, an RFC 3339 UTC date-time .* or seconds since the epoch; got 'tomorrow'/,
+    /now must be a valid Date or an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z'; got 'tomorrow'/,
   );
 });
 
@@ -212,35 +212,28 @@ test("verifyEnvelopes takes the verification time too", () => {
   assert.equal(current.states[String(SPAWN_SEQ)], WITNESS_SIGNED);
 });
 
-/** 2026-10-04T12:00:00Z in seconds since the epoch, as Python's `datetime(...).timestamp()` gives it. */
-const NOW_SECONDS = 1791115200;
-
-test("now may be seconds since the epoch, read as Python's datetime.fromtimestamp reads them", () => {
-  assert.equal(NOW_SECONDS, NOW.getTime() / 1000);
-  assertExpired(verifyAt(keys("2026-10-04T12:00:00Z"), NOW_SECONDS), "2026-10-04T12:00:00Z", "equal");
-  assertTrusted(verifyAt(keys("2026-10-04T12:00:00.000001Z"), NOW_SECONDS), "one microsecond after");
-  // The fraction is rounded half-even to the microsecond. Python gives .007812 for .0078125 (a
-  // tie, kept even) and .023438 for .0234375 (a tie, rounded up to even); half-up would not.
-  assertExpired(verifyAt(keys("2026-10-04T12:00:00.007812Z"), NOW_SECONDS + 0.0078125), "2026-10-04T12:00:00.007812Z", "tie down");
-  assertTrusted(verifyAt(keys("2026-10-04T12:00:00.007813Z"), NOW_SECONDS + 0.0078125), "tie down, one after");
-  assertExpired(verifyAt(keys("2026-10-04T12:00:00.023438Z"), NOW_SECONDS + 0.0234375), "2026-10-04T12:00:00.023438Z", "tie up");
-  assertTrusted(verifyAt(keys("2026-10-04T12:00:00.023439Z"), NOW_SECONDS + 0.0234375), "tie up, one after");
-  // The earliest time Python's datetime holds is accepted; anything before it is not.
-  assertExpired(verifyAt(keys("0001-01-01T00:00:00Z"), -62135596800), "0001-01-01T00:00:00Z", "year 1");
+test("now is never a number: the unit would be a guess", () => {
+  // The Python implementation takes epoch seconds here. A JavaScript epoch counts milliseconds, and
+  // a number read in the wrong unit moves the verification time a thousandfold, so a number is
+  // refused in either unit rather than read as some time.
+  for (const n of [NOW.getTime(), NOW.getTime() / 1000, 0, Number.NaN]) {
+    assert.throws(
+      () => verifyAt(keys("2027-01-01T00:00:00Z"), n as never),
+      /now must be a Date or an RFC 3339 UTC date-time .*, not a number: a JavaScript epoch counts milliseconds and a Python one seconds/,
+      String(n),
+    );
+    assert.throws(
+      () => verifyEnvelopes(BASE.bundle, { witnessKeys: keys("2027-01-01T00:00:00Z"), now: n as never }),
+      /not a number/,
+      String(n),
+    );
+  }
 });
 
 test("an invalid now is refused rather than read as some time", () => {
   assert.throws(() => verifyAt(keys("2027-01-01T00:00:00Z"), new Date(Number.NaN)), /got an invalid Date/);
-  assert.throws(() => verifyAt(keys("2027-01-01T00:00:00Z"), true as never), /seconds since the epoch; got True/);
-  // A JavaScript millisecond epoch is tens of millennia ahead in seconds, past what Python's
-  // datetime holds, and both implementations refuse it rather than read it as some time.
-  for (const bad of [Date.now(), 1.76e12, -62135596800.5, 253402300799.9999999, Number.NaN, Infinity]) {
-    assert.throws(
-      () => verifyAt(keys("2027-01-01T00:00:00Z"), bad),
-      /is not a representable time in seconds since the epoch/,
-      String(bad),
-    );
-  }
+  assert.throws(() => verifyAt(keys("2027-01-01T00:00:00Z"), true as never), /; got True/);
+  assert.throws(() => verifyAt(keys("2027-01-01T00:00:00Z"), "2026-10-04T12:00:00+00:00"), /; got '2026-10-04T12:00:00\+00:00'/);
 });
 
 test("witnesses names a kid exactly where results names a result, on every corpus case", () => {

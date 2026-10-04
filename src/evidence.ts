@@ -1031,19 +1031,27 @@ function rfc3339Utc(value: unknown): Instant | null {
 }
 
 /**
- * The verification time: `now` when given — a `Date`, a string in the `not_after` grammar, or
- * seconds since the Unix epoch, as the Python implementation takes it — and the current time
- * otherwise.
+ * The verification time: `now` when given — a `Date`, or a string in the `not_after` grammar — and
+ * the current time otherwise.
+ *
+ * A number is refused, never read. The Python implementation takes epoch seconds there; a
+ * JavaScript epoch counts milliseconds, and a number read in the wrong unit moves the verification
+ * time a thousandfold, so this side takes no number at all rather than guess which one it got.
  */
-function verificationTime(now: Date | string | number | null | undefined): Instant {
+function verificationTime(now: Date | string | null | undefined): Instant {
   if (now === null || now === undefined) return dateInstant(new Date());
   if (now instanceof Date && !Number.isNaN(now.getTime())) return dateInstant(now);
-  if (typeof now === "number") return epochInstant(now);
+  if (typeof now === "number") {
+    throw new Error(
+      "now must be a Date or an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z', not a " +
+        "number: a JavaScript epoch counts milliseconds and a Python one seconds",
+    );
+  }
   const parsed = typeof now === "string" ? rfc3339Utc(now) : null;
   if (parsed === null) {
     throw new Error(
-      "now must be a valid Date, an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z', or " +
-        `seconds since the epoch; got ${now instanceof Date ? "an invalid Date" : pyRepr(now as never)}`,
+      "now must be a valid Date or an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z'; got " +
+        (now instanceof Date ? "an invalid Date" : pyRepr(now as never)),
     );
   }
   return parsed;
@@ -1055,40 +1063,7 @@ function dateInstant(at: Date): Instant {
   return { seconds, fraction: String(ms - seconds * 1000).padStart(3, "0") };
 }
 
-/** 0001-01-01T00:00:00Z and 9999-12-31T23:59:59Z: the range a Python `datetime` can hold. */
-const EPOCH_MIN = -62135596800;
-const EPOCH_MAX = 253402300799;
 
-/**
- * Seconds since the epoch as Python's `datetime.fromtimestamp(seconds, timezone.utc)` reads them:
- * the fraction rounded half-even to the microsecond, and a time outside years 1-9999 refused. A
- * JavaScript millisecond epoch passed by mistake lands tens of millennia ahead and is refused
- * here, as Python refuses it, rather than read as some time.
- */
-function epochInstant(seconds: number): Instant {
-  if (Number.isFinite(seconds)) {
-    let whole = Math.trunc(seconds);
-    let micros = roundHalfEven((seconds - whole) * 1e6);
-    if (micros >= 1e6) {
-      micros -= 1e6;
-      whole += 1;
-    } else if (micros < 0) {
-      micros += 1e6;
-      whole -= 1;
-    }
-    if (whole >= EPOCH_MIN && whole <= EPOCH_MAX) {
-      return { seconds: whole, fraction: String(micros).padStart(6, "0") };
-    }
-  }
-  throw new Error(`now=${String(seconds)} is not a representable time in seconds since the epoch`);
-}
-
-/** CPython's `_PyTime_RoundHalfEven`: C `round` (half away from zero), then ties to even. */
-function roundHalfEven(x: number): number {
-  const away = (v: number): number => (v < 0 ? -Math.round(-v) : Math.round(v));
-  const rounded = away(x);
-  return Math.abs(x - rounded) === 0.5 ? 2 * away(x / 2) : rounded;
-}
 
 /** `a` is at or before `b`: whole seconds first, then the fraction digits, padded to one length. */
 function atOrBefore(a: Instant, b: Instant): boolean {
@@ -1163,11 +1138,11 @@ export interface VerifyEnvelopesOptions {
    */
   envelopeBytes?: readonly (Buffer | string | null)[] | null;
   /**
-   * The verification time a trust-set row's `not_after` is compared with: a `Date`, a string in
-   * the `not_after` grammar, or seconds since the Unix epoch (not milliseconds). The current time
-   * when absent. A row whose `not_after` is at or before it is left out of the trust set.
+   * The verification time a trust-set row's `not_after` is compared with: a `Date`, or a string in
+   * the `not_after` grammar; never a number, whose unit would be a guess. The current time when
+   * absent. A row whose `not_after` is at or before it is left out of the trust set.
    */
-  now?: Date | string | number | null;
+  now?: Date | string | null;
 }
 
 /**
@@ -2211,12 +2186,12 @@ export interface VerifyBundleOptions {
    */
   envelopeBytes?: readonly (Buffer | string | null)[] | null;
   /**
-   * The verification time a trust-set row's `not_after` is compared with: a `Date`, a string in
-   * the `not_after` grammar, or seconds since the Unix epoch (not milliseconds). The current time
-   * when absent. A row whose `not_after` is at or before it is left out of the trust set, so an
-   * envelope naming that kid fails `envelope_unknown_witness`.
+   * The verification time a trust-set row's `not_after` is compared with: a `Date`, or a string in
+   * the `not_after` grammar; never a number, whose unit would be a guess. The current time when
+   * absent. A row whose `not_after` is at or before it is left out of the trust set, so an envelope
+   * naming that kid fails `envelope_unknown_witness`.
    */
-  now?: Date | string | number | null;
+  now?: Date | string | null;
 }
 
 export function verifyBundle(

@@ -53,11 +53,12 @@ const EMPTY = "EMPTY — no events to verify";
 const USAGE = `attenu-guard — command-line tool.
 
   attenu-guard verify <log.jsonl | bundle.json> [--hs256-key HEX | --pubkey HEX] [--kid KID]
-                                                [--witness-keys FILE]
+                                                [--witness-keys FILE] [--entries]
                                      verify a hash-chained audit log, or an evidence bundle
                                      (integrity · child ⊆ parent · containment;
                                       --hs256-key/--pubkey checks the anchor;
-                                      --witness-keys FILE supplies the trusted observer-envelope keys)
+                                      --witness-keys FILE supplies the trusted observer-envelope keys;
+                                      --entries adds one line per entry: its envelope state and the checks that failed on it)
 `;
 
 /** A `--witness-keys` file that was read and is not a trust set. The message says why. */

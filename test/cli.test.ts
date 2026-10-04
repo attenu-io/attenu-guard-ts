@@ -92,6 +92,15 @@ test("--help, -h and verify --help print usage and exit 0", () => {
   }
 });
 
+test("--help lists --entries in the Python CLI's words", () => {
+  const { stdout } = run(["--help"]);
+  assert.match(stdout, /\[--witness-keys FILE\] \[--entries\]/);
+  assert.ok(
+    stdout.includes("--entries adds one line per entry: its envelope state and the checks that failed on it)"),
+    stdout,
+  );
+});
+
 // ---- observer envelopes: --witness-keys -----------------------------------------------------
 
 /**
