@@ -9,8 +9,10 @@
  * both read as the integer it equals and print as one, and one written `1.5` or `true`, which
  * neither reads as an integer; an anchor `seq` or `v` past 2^53, whose signature no longer
  * verifies, and an entry carrying an integer past 2^53, a hash mismatch there; an allow scope or
- * an anchor sig that is not a string, each the existing finding; versions of every type, listed in
- * one order; two entries
+ * an anchor sig that is not a string, each the existing finding; a widened child whatever its
+ * parent field says, a cycle, a node defined twice, a spawn from and an allow on a revoked node, an
+ * allow before its node, and nodes that are not strings, none of which may verify OK; the ungated
+ * count on the summary line; versions of every type, listed in one order; two entries
  * sharing a seq with the witness's signature on the later copy, which alone reads witness-signed;
  * an envelope naming seq 1 that binds an entry whose seq is `true`, which no envelope covers; a
  * trust row past its `not_after`; a row carrying a member it does not define (`notAfter`); a kid
@@ -68,6 +70,19 @@ test("the parity set covers every case the release gate names", () => {
     "anchor_sig_null",
     "anchor_sig_int",
     "anchor_sig_list",
+    "widened_orphan",
+    "widened_parent_list",
+    "widened_parent_self",
+    "widened_cycle",
+    "node_defined_twice",
+    "spawn_after_kill",
+    "allow_after_kill",
+    "allow_before_node",
+    "root_node_list",
+    "root_node_absent",
+    "deny_node_int",
+    "ungated",
+    "ungated_entries",
     "subject_seq_float",
     "envelope_v_float",
     "string_seq",

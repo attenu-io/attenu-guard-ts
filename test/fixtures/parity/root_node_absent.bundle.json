@@ -1,0 +1,113 @@
+{
+ "c14n": "JCS",
+ "chain_id": "parity",
+ "entries": [
+  {
+   "agent": "supervisor",
+   "authority": {
+    "constraints": [],
+    "scopes": [
+     "docs.write",
+     "web.search"
+    ],
+    "ttl": null
+   },
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "event": "root",
+   "hash": "d7171aa139f4d298d554282db8a38beef1f6d3179f238dad33e24b527a272a9d",
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 1,
+   "v": 1
+  },
+  {
+   "agent": "brief-writer",
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "event": "spawn",
+   "granted": {
+    "constraints": [],
+    "scopes": [
+     "docs.write"
+    ],
+    "ttl": null
+   },
+   "hash": "2404aa404fd8465a768211b2fd8a465df533e279a412a15885755da2ff8f3d2e",
+   "node": "parity:n1",
+   "parent": "parity:n0",
+   "prev_hash": "d7171aa139f4d298d554282db8a38beef1f6d3179f238dad33e24b527a272a9d",
+   "requested": {
+    "constraints": [],
+    "scopes": [
+     "docs.write"
+    ],
+    "ttl": null
+   },
+   "seq": 1,
+   "task": "write the brief",
+   "ts": 2,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "context": {},
+   "event": "allow",
+   "hash": "516615adc8c965c0fcc2f197c82add1e4f877ccdfc567ae598b1f31af173ff96",
+   "node": "parity:n1",
+   "prev_hash": "2404aa404fd8465a768211b2fd8a465df533e279a412a15885755da2ff8f3d2e",
+   "scope": "docs.write",
+   "seq": 2,
+   "tool": null,
+   "ts": 3,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "context": {},
+   "disposition": "out_of_authority",
+   "event": "deny",
+   "hash": "ea37637196197ae3e25c195264dfbb76db51b894e6c130414a46e0ba78f208b1",
+   "node": "parity:n1",
+   "prev_hash": "516615adc8c965c0fcc2f197c82add1e4f877ccdfc567ae598b1f31af173ff96",
+   "reason": "scope_not_granted",
+   "reasons": [
+    {
+     "code": "scope_not_granted",
+     "constraint": null,
+     "limit": null,
+     "message": "scope 'web.search' not covered by held scopes ['docs.write']",
+     "requested": "web.search"
+    }
+   ],
+   "scope": "web.search",
+   "seq": 3,
+   "tool": null,
+   "ts": 4,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "context": {},
+   "event": "allow",
+   "hash": "e09113f311acf2de31915abd69fb0b97740faae738939e034e1e3a62787f207e",
+   "node": "parity:n1",
+   "prev_hash": "ea37637196197ae3e25c195264dfbb76db51b894e6c130414a46e0ba78f208b1",
+   "scope": "web.search",
+   "seq": 4,
+   "tool": null,
+   "ts": 5,
+   "v": 1
+  }
+ ],
+ "envelopes": [],
+ "note": "offline-verifiable: attenu_guard.evidence.verify_bundle(bundle, signer)",
+ "redaction": {
+  "ok": true,
+  "violations": []
+ },
+ "v": 1
+}

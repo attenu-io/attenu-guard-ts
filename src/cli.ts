@@ -345,10 +345,14 @@ function verify(args: string[]): number {
     }
     const rep = verifyBundle(bundle, signer, { witnessKeys });
     const c = rep.checks;
+    // An allow marked `policy: "unlisted"` passed through un-gated and is excused from containment,
+    // so `actions_checked` does not count it. Say how many there were, only when there were any:
+    // every other bundle prints this line exactly as it always has.
+    const ungated = rep.ungated > 0 ? ` ungated=${rep.ungated}` : "";
     process.stdout.write(
       `integrity=${py(c.integrity)} monotonicity=${py(c.monotonicity)} ` +
         `containment=${py(c.containment)} anchor=${c.anchor} ` +
-        `nodes=${rep.nodes} actions_checked=${rep.actions_checked}\n`,
+        `nodes=${rep.nodes} actions_checked=${rep.actions_checked}${ungated}\n`,
     );
     for (const f of rep.failures) process.stdout.write(`  - ${f}\n`);
     // A bundle carrying envelopes and no trust set fails every one of them, correctly and

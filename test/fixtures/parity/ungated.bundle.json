@@ -1,0 +1,86 @@
+{
+ "anchor": {
+  "c14n": "JCS",
+  "chain_id": "t",
+  "head": "fbb36b6d7da307877688fef833244a7ab0920c1173ef811788f023263cdace87",
+  "kid": "sample",
+  "seq": 3,
+  "sig": "e22b082044ae274c1b60916bfd40fd669a27ecf6cccbfd8e18e692bdd25fb76c",
+  "ts": 0,
+  "v": 1,
+  "verified": true
+ },
+ "c14n": "JCS",
+ "chain_id": "t",
+ "entries": [
+  {
+   "agent": "a",
+   "authority": {
+    "constraints": [],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "c14n": "JCS",
+   "chain_id": "t",
+   "event": "root",
+   "hash": "371e8902a0c9c183055cdad49688cd761d38703ae2f82ece08b6673fc8f84cf2",
+   "node": "t:n0",
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 1,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "t",
+   "context": {},
+   "event": "allow",
+   "hash": "fb511138e81b27c96e08c7c74ce35e6c72a6e8ab9327f0953df06c97263d8e8c",
+   "node": "t:n0",
+   "prev_hash": "371e8902a0c9c183055cdad49688cd761d38703ae2f82ece08b6673fc8f84cf2",
+   "scope": "crm.read",
+   "seq": 1,
+   "tool": null,
+   "ts": 2,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "t",
+   "context": {},
+   "event": "allow",
+   "hash": "8ba67c07012c71df044a7711fe44fd1450c2aee43423a371a71583a0fb41b111",
+   "node": "t:n0",
+   "policy": "unlisted",
+   "prev_hash": "fb511138e81b27c96e08c7c74ce35e6c72a6e8ab9327f0953df06c97263d8e8c",
+   "scope": "shell.exec",
+   "seq": 2,
+   "tool": "shell.exec",
+   "ts": 3,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "t",
+   "context": {},
+   "event": "allow",
+   "hash": "fbb36b6d7da307877688fef833244a7ab0920c1173ef811788f023263cdace87",
+   "node": "t:n0",
+   "policy": "unlisted",
+   "prev_hash": "8ba67c07012c71df044a7711fe44fd1450c2aee43423a371a71583a0fb41b111",
+   "scope": "admin.delete",
+   "seq": 3,
+   "tool": "admin.delete",
+   "ts": 4,
+   "v": 1
+  }
+ ],
+ "note": "offline-verifiable: attenu_guard.evidence.verify_bundle(bundle, signer)",
+ "redaction": {
+  "ok": true,
+  "violations": []
+ },
+ "v": 1
+}

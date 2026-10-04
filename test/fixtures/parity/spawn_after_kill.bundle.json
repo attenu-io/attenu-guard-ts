@@ -1,0 +1,115 @@
+{
+ "c14n": "JCS",
+ "chain_id": "t",
+ "entries": [
+  {
+   "agent": "root",
+   "authority": {
+    "constraints": [],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "c14n": "JCS",
+   "chain_id": "t",
+   "event": "root",
+   "hash": "8689c867101400f40892a94aedc1459b7a08340c728b8eec250b73b9e2f8f791",
+   "node": "t:n0",
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 1,
+   "v": 1
+  },
+  {
+   "agent": "agent0",
+   "c14n": "JCS",
+   "chain_id": "t",
+   "event": "spawn",
+   "granted": {
+    "constraints": [],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "hash": "171e46608561d13f512b8ed513b166b8660e596cddc5b0c6e9821c2d35b692c3",
+   "node": "t:n1",
+   "parent": "t:n0",
+   "prev_hash": "8689c867101400f40892a94aedc1459b7a08340c728b8eec250b73b9e2f8f791",
+   "requested": {
+    "constraints": [],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "seq": 1,
+   "task": "t",
+   "ts": 2,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "t",
+   "context": {},
+   "event": "allow",
+   "hash": "7633cbee3bd737e84ca24283708617e20da667566911d9788904167f94615b43",
+   "node": "t:n1",
+   "prev_hash": "171e46608561d13f512b8ed513b166b8660e596cddc5b0c6e9821c2d35b692c3",
+   "scope": "crm.read",
+   "seq": 2,
+   "tool": null,
+   "ts": 3,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "t",
+   "event": "kill",
+   "hash": "d39e04c059b40643f337c145e6034dc2e8bbf876420620275a93bbff7da064c0",
+   "prev_hash": "7633cbee3bd737e84ca24283708617e20da667566911d9788904167f94615b43",
+   "revoked": [
+    "t:n1"
+   ],
+   "seq": 3,
+   "target": "t:n1",
+   "ts": 4,
+   "v": 1
+  },
+  {
+   "agent": "agent0",
+   "c14n": "JCS",
+   "chain_id": "t",
+   "event": "spawn",
+   "granted": {
+    "constraints": [],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "hash": "c49a4d25d772490092aedf93841d1a2a19eea26ccf2b10dfcc576495d076b722",
+   "node": "t:n2",
+   "parent": "t:n1",
+   "prev_hash": "d39e04c059b40643f337c145e6034dc2e8bbf876420620275a93bbff7da064c0",
+   "requested": {
+    "constraints": [],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "seq": 4,
+   "task": "t",
+   "ts": 2,
+   "v": 1
+  }
+ ],
+ "note": "offline-verifiable: attenu_guard.evidence.verify_bundle(bundle, signer)",
+ "redaction": {
+  "ok": true,
+  "violations": []
+ },
+ "v": 1
+}

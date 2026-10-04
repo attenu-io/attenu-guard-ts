@@ -568,6 +568,19 @@ def _signed_by_hand(entry: dict, seq) -> dict:
     return envelope
 
 
+def _chain_bundle(depth: int, revoke: bool = False) -> dict:
+    """root t:n0 -> t:n1 (-> t:n2), each holding crm.read, and an allow by the deepest; with
+    `revoke`, the root then revokes the deepest node, which writes a kill."""
+    root = Guard.issue("root", Authority({"crm.read"}, [], ttl=600), chain_id="t")
+    guard = root
+    for i in range(depth - 1):
+        guard = guard.delegate(f"agent{i}", Authority({"crm.read"}, [], ttl=600), task="t")
+    guard.check("crm.read")
+    if revoke:
+        root.revoke(guard.node_id)
+    return evidence.export_bundle(root.audit_log(), HS256TestSigner(HS256_SECRET, kid=HS256_KID))
+
+
 def _wildcard_allow():
     """A root holding the wildcard crm.* and allowed crm.read: node c:n0, the allow at seq 1."""
     g = Guard.issue("a", Authority(scopes={"crm.*"}), chain_id="c")
@@ -719,6 +732,69 @@ def parity_fixtures() -> None:
         anchored = copy.deepcopy(forged)
         anchored["anchor"]["sig"] = value
         files[f"anchor_sig_{label}.bundle.json"] = anchored
+    # The delegation structure read in ledger order: a widened child whatever its parent says, a
+    # cycle, a node defined twice, a spawn from and an allow on a revoked node, an allow before its
+    # node is defined, and nodes that are not strings. None of these may verify OK.
+    def widen(index, parent):
+        def edit(entries):
+            entries[index]["granted"]["scopes"] = sorted(set(entries[index]["granted"]["scopes"]) | {"admin.delete"})
+            if parent == "DELETE":
+                entries[index].pop("parent")
+            else:
+                entries[index]["parent"] = parent
+        return edit
+
+    def cycle(entries):
+        widened = dict(entries[1]["granted"], scopes=["admin.delete", "crm.read"])
+        entries[1]["parent"], entries[1]["granted"], entries[2]["granted"] = "t:n2", widened, dict(widened)
+        entries[3]["scope"] = "admin.delete"
+
+    def defined_twice(entries):
+        again = dict(entries[1], seq=len(entries), granted=dict(entries[1]["granted"], scopes=["admin.delete", "crm.read"]))
+        reroot = dict(entries[1], node="t:n0", seq=len(entries) + 1)
+        entries += [again, reroot]
+
+    def spawn_after_kill(entries):
+        entries.append(dict(entries[1], node="t:n2", parent="t:n1", seq=len(entries)))
+
+    def allow_after_kill(entries):
+        entries.append(dict(next(e for e in entries if e["event"] == "allow"), seq=len(entries)))
+
+    def allow_before_node(entries):
+        entries[1], entries[2] = entries[2], entries[1]
+        for i, e in enumerate(entries):
+            e["seq"] = i
+
+    def set_node(index, value):
+        def edit(entries):
+            if value == "DELETE":
+                entries[index].pop("node")
+            else:
+                entries[index]["node"] = value
+        return edit
+
+    deny_at = next(i for i, e in enumerate(forged["entries"]) if e["event"] == "deny")
+    structure = {
+        "widened_orphan": _edited(forged, widen(1, "DELETE"), envelopes=False),
+        "widened_parent_list": _edited(forged, widen(1, ["parity:n0"]), envelopes=False),
+        "widened_parent_self": _edited(forged, widen(1, "parity:n1"), envelopes=False),
+        "widened_cycle": _edited(_chain_bundle(3), cycle),
+        "node_defined_twice": _edited(_chain_bundle(2), defined_twice),
+        "spawn_after_kill": _edited(_chain_bundle(2, revoke=True), spawn_after_kill),
+        "allow_after_kill": _edited(_chain_bundle(2, revoke=True), allow_after_kill),
+        "allow_before_node": _edited(_chain_bundle(2), allow_before_node),
+        "root_node_list": _edited(forged, set_node(0, [1]), envelopes=False),
+        "root_node_absent": _edited(forged, set_node(0, "DELETE"), envelopes=False),
+        "deny_node_int": _edited(forged, set_node(deny_at, 5), envelopes=False),
+    }
+    for label, bundle in structure.items():
+        files[f"{label}.bundle.json"] = bundle
+    ungated_guard = Guard.issue("a", Authority({"crm.read"}, [], ttl=600), chain_id="t")
+    ungated_guard.check("crm.read")
+    ungated_guard.record_passthrough("shell.exec")
+    ungated_guard.record_passthrough("admin.delete")
+    files["ungated.bundle.json"] = evidence.export_bundle(ungated_guard.audit_log(),
+                                                          HS256TestSigner(HS256_SECRET, kid=HS256_KID))
     for name, payload in files.items():
         write(f"parity/{name}", payload)
 
@@ -766,6 +842,10 @@ def parity_fixtures() -> None:
     for label in sig_values:
         runs[f"anchor_sig_{label}"] = ["verify", f"anchor_sig_{label}.bundle.json", *keys, "--hs256-key",
                                        HS256_SECRET.hex()]
+    for label in structure:
+        runs[label] = ["verify", f"{label}.bundle.json", "--entries"]
+    runs["ungated"] = ["verify", "ungated.bundle.json", "--hs256-key", HS256_SECRET.hex()]
+    runs["ungated_entries"] = ["verify", "ungated.bundle.json", "--hs256-key", HS256_SECRET.hex(), "--entries"]
     write("parity/cli.json", {name: _python_cli(args, OUT / "parity") for name, args in runs.items()})
 
 

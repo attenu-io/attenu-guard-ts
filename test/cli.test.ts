@@ -600,7 +600,11 @@ test("--entries never shows a forged string seq as witness-signed", () => {
     const lines = stdout.split("\n");
     assert.ok(lines.includes("  seq=1 event=spawn node=vectors:n1 state=witness-signed observed=matched witness=witness-interop-v1"), stdout);
     assert.ok(lines.includes("  seq=1 event=spawn node=vectors:evil state=process-asserted failed=integrity"), stdout);
-    assert.ok(lines.includes("  seq=__proto__ event=spawn node=vectors:evil state=process-asserted"), stdout);
+    // The second forged spawn defines vectors:evil a second time, which is its own monotonicity finding.
+    assert.ok(
+      lines.includes("  seq=__proto__ event=spawn node=vectors:evil state=process-asserted failed=monotonicity"),
+      stdout,
+    );
     assert.doesNotMatch(stdout, /state=\{\}/);
     assert.equal(lines.filter((l) => l.includes("witness=")).length, 1, "only the real seq 1 is witness-signed");
   });

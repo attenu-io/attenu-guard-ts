@@ -414,7 +414,8 @@ class FailureLog {
 
 interface NodeAuthorities {
   auth: Map<string, Authority>;
-  parent: Map<string, string | null>;
+  /** A spawned node -> its `parent` member as written, whatever its type. */
+  parent: Map<string, Json>;
   failures: FailureLog;
   /**
    * The `root`/`spawn` entry each node was DEFINED by, so a node-level failure
@@ -424,10 +425,6 @@ interface NodeAuthorities {
   definedBy: Map<string, LedgerEntry>;
 }
 
-/**
- * `node -> Authority` and `node -> parent`, reconstructed from `root` and
- * `spawn` events alone. No engine state.
- */
 /**
  * Why `child` is not ⊆ `parent`, rendered for the monotonicity failure message.
  *
@@ -485,42 +482,68 @@ function monotonicityDetail(child: Authority, parent: Authority): string {
   return "child not narrower than parent";
 }
 
+/**
+ * `node -> Authority` and `node -> parent`, reconstructed from `root` and `spawn` events in ledger
+ * order. No engine state.
+ *
+ * A node id is a string, and a node is defined once, by the root or by one spawn. A root or a
+ * spawn whose `node` is not a string defines nothing and is reported unreadable here. A second
+ * definition of a node is left out of these maps, so every later check reads the first one, and
+ * `verifyBundle`'s monotonicity check reports it. `parent` maps a spawned node to its `parent`
+ * member as written, whatever its type; whether that names a node defined earlier is judged there
+ * too. The Python implementation's `_node_authorities`.
+ */
 function nodeAuthorities(entries: readonly LedgerEntry[]): NodeAuthorities {
   const auth = new Map<string, Authority>();
-  const parent = new Map<string, string | null>();
+  const parent = new Map<string, Json>();
   const failures = new FailureLog();
   const definedBy = new Map<string, LedgerEntry>();
   for (const e of entries) {
     const ev = toPlain(e["event"]);
-    const node = toPlain(e["node"]) as string;
+    if (ev !== "root" && ev !== "spawn") continue;
+    const node = toPlain(e["node"]) as Json | undefined;
+    const position = { seq: orNull(e["seq"]), node: orNull(e["node"]), entry: e };
+    if (typeof node !== "string") {
+      // One of the two historical messages that name a node before their colon rather than a
+      // reason token, so the reason is stated here instead of parsed out of the string.
+      if (ev === "root") {
+        failures.add("unreadable_authority", `root ${shown(e["node"])}: unreadable authority (node is not a string)`, position);
+      } else {
+        failures.add("unreadable_granted", `spawn ${shown(e["node"])}: unreadable granted (node is not a string)`, position);
+      }
+      continue;
+    }
+    if (definedBy.has(node)) continue; // defined twice: verifyBundle reports it
+    definedBy.set(node, e);
     if (ev === "root") {
-      definedBy.set(node, e);
       try {
         auth.set(node, Authority.fromWire(e["authority"] ?? null));
       } catch (exc) {
-        // One of the two historical messages that name a node before their colon rather than a
-        // reason token, so the reason is stated here instead of parsed out of the string.
-        failures.add("unreadable_authority", `root ${shown(e["node"])}: unreadable authority (${(exc as Error).message})`, {
-          seq: orNull(e["seq"]),
-          node: orNull(e["node"]),
-          entry: e,
-        });
+        failures.add("unreadable_authority", `root ${shown(e["node"])}: unreadable authority (${(exc as Error).message})`, position);
       }
-    } else if (ev === "spawn") {
-      definedBy.set(node, e);
-      parent.set(node, (toPlain(e["parent"]) as string | null) ?? null);
+    } else {
+      parent.set(node, orNull(e["parent"]));
       try {
         auth.set(node, Authority.fromWire(e["granted"] ?? null));
       } catch (exc) {
-        failures.add("unreadable_granted", `spawn ${shown(e["node"])}: unreadable granted (${(exc as Error).message})`, {
-          seq: orNull(e["seq"]),
-          node: orNull(e["node"]),
-          entry: e,
-        });
+        failures.add("unreadable_granted", `spawn ${shown(e["node"])}: unreadable granted (${(exc as Error).message})`, position);
       }
     }
   }
   return { auth, parent, failures, definedBy };
+}
+
+/**
+ * Record the nodes a `kill` entry revokes, node -> that kill's own `seq`; the first kill stands.
+ * Only string ids in a list count: anything else names no node. The Python implementation's
+ * `_note_revoked`.
+ */
+function noteRevoked(entry: LedgerEntry, revokedAt: Map<string, CJson | undefined>): void {
+  const revoked = entry["revoked"];
+  if (!Array.isArray(revoked)) return;
+  for (const node of revoked) {
+    if (typeof node === "string" && !revokedAt.has(node)) revokedAt.set(node, entry["seq"]);
+  }
 }
 
 export interface GraphNode {
@@ -552,10 +575,13 @@ export function delegationGraph(bundle: Partial<Bundle>): DelegationGraph {
   const meta: Record<string, GraphNode> = {};
   for (const e of entries) {
     const ev = toPlain(e["event"]);
-    const n = toPlain(e["node"]) as string;
+    const raw = toPlain(e["node"]) as Json | undefined;
+    if (typeof raw !== "string" && ev !== "kill") continue; // a node id is a string; anything else names no node
+    const n = raw as string;
     if (ev === "root" || ev === "spawn") {
+      if (Object.hasOwn(meta, n)) continue; // defined once: the first definition stands
       const a = auth.get(n);
-      meta[n] = {
+      setOwn(meta, n, {
         agent: orNull(e["agent"]),
         task: orNull(e["task"]),
         parent: orNull(e["parent"]),
@@ -565,25 +591,27 @@ export function delegationGraph(bundle: Partial<Bundle>): DelegationGraph {
         revoked: false,
         complete: false,
         denials_by_disposition: {},
-      };
-    } else if (ev === "allow" && meta[n]) {
+      });
+    } else if (ev === "allow" && Object.hasOwn(meta, n)) {
       meta[n]!.allows += 1;
-    } else if (ev === "deny" && meta[n]) {
+    } else if (ev === "deny" && Object.hasOwn(meta, n)) {
       meta[n]!.denies += 1;
       // A deny without a disposition is named by its reason.
       const d = (toPlain(e["disposition"]) ?? toPlain(e["reason"]) ?? "unstated") as string;
       meta[n]!.denials_by_disposition[d] = (meta[n]!.denials_by_disposition[d] ?? 0) + 1;
-    } else if (ev === "done" && meta[n]) {
+    } else if (ev === "done" && Object.hasOwn(meta, n)) {
       meta[n]!.complete = true;
     } else if (ev === "kill") {
-      for (const r of (toPlain(e["revoked"]) as string[] | null) ?? []) {
-        if (meta[r]) meta[r]!.revoked = true;
+      const revoked = new Map<string, CJson | undefined>();
+      noteRevoked(e, revoked);
+      for (const r of revoked.keys()) {
+        if (Object.hasOwn(meta, r)) meta[r]!.revoked = true;
       }
     }
   }
   const edges: { parent: string; child: string }[] = [];
   for (const [child, p] of parent) {
-    if (p) edges.push({ parent: p, child });
+    if (typeof p === "string" && p !== "") edges.push({ parent: p, child });
   }
   return { chain_id: orNull(bundle.chain_id), nodes: meta, edges };
 }
@@ -2089,7 +2117,9 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
 
   for (const e of entries) {
     const ev = toPlain(e["event"]);
-    const node = toPlain(e["node"]) as string | null;
+    const raw = toPlain(e["node"]) as Json | undefined;
+    // A node id is a string; anything else names no node, here as in the Python implementation.
+    const node = typeof raw === "string" ? raw : null;
     if (ev === "root") {
       if (node !== null) nodes.add(node);
       const err = validateRoot(e);
@@ -2105,7 +2135,9 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
     } else if (ev === "done") {
       if (node !== null) finalizedNodes.add(node);
     } else if (ev === "kill") {
-      for (const r of (toPlain(e["revoked"]) as string[] | null) ?? []) revokedNodes.add(r);
+      const killed = new Map<string, CJson | undefined>();
+      noteRevoked(e, killed);
+      for (const r of killed.keys()) revokedNodes.add(r);
       const err = validateKill(e);
       if (err) {
         failures.add("invalid_kill", `invalid_kill: ${err} (seq ${shown(intOr(e["seq"]))})`, {
@@ -2226,7 +2258,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
 
   // Per-call observation + per-node pending, from valid allows only.
   const perCall: Record<string, "observed" | "unobserved" | "unaccounted"> = {};
-  const nodePending = new Map<string, string[]>();
+  const nodePending = new Map<string | null, string[]>();
   for (const [cid, allowE] of allows) {
     if (invalidAllowIds.has(cid)) continue;
     // Spec order matters: "observed" (an outcome exists, BOUND CORRECTLY) is checked FIRST —
@@ -2243,7 +2275,8 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
       perCall[cid] = "unobserved";
     } else {
       perCall[cid] = "unaccounted";
-      const node = toPlain(allowE["node"]) as string;
+      const raw = toPlain(allowE["node"]) as Json | undefined;
+      const node = typeof raw === "string" ? raw : null;
       const list = nodePending.get(node) ?? [];
       list.push(cid);
       nodePending.set(node, list);
@@ -2523,6 +2556,23 @@ export function verifyBundle(
   }
   checks.ledger_fields = unknownOk;
 
+  // (0b3) a node id is a string (the schema's `node`). A root, a spawn and an allow are judged by
+  // the checks that read their node, below; any other entry that carries a node which is a list,
+  // an object, a number or a boolean is reported here, never read by projection and never used as
+  // a key. A null node counts as absent.
+  for (const e of entries) {
+    const ev = toPlain(e["event"]);
+    if (ev === "root" || ev === "spawn" || ev === "allow") continue;
+    const node = toPlain(e["node"]) as Json | undefined;
+    if (node === undefined || node === null || typeof node === "string") continue;
+    log.add(
+      "invalid_node",
+      `invalid_node: seq=${shown(intOr(e["seq"]))} event=${pyRepr((e["event"] ?? null) as CJson)} ` +
+        `carries node ${shown(e["node"])}, which is not a string`,
+      { seq: orNull(e["seq"]), node: orNull(e["node"]), entry: e },
+    );
+  }
+
   // (0c) independently retained expected anchor/head: verified against the BUNDLE's actual
   // computed head, never against its own (possibly forged) enclosed anchor.
   const { expectedAnchor = null, expectedHead = null } = options;
@@ -2605,28 +2655,75 @@ export function verifyBundle(
     checks.integrity = okChain;
   }
 
-  const { auth, parent, failures: afail, definedBy } = nodeAuthorities(entries);
+  const { auth, failures: afail } = nodeAuthorities(entries);
   log.extend(afail);
 
-  // (2) monotonicity: every child ⊆ its parent.
+  // (2) monotonicity: every child ⊆ its parent, read in ledger order. Every spawn is checked, and
+  // the node it names as `parent` has to be one the root or an EARLIER spawn defined, not revoked
+  // by an earlier kill, and not the spawn's own node. Through 0.12.0 a spawn whose parent was
+  // absent, null, or named no node in the bundle was skipped, so a child widened past the
+  // authority it was really given verified OK; the process being watched writes that field. A
+  // node is defined once: a second definition is a failure too, since only one of the two could
+  // be read. The Python implementation's same pass, finding for finding.
   let mono = true;
-  for (const [node, pid] of parent) {
-    if (pid === null || !auth.has(pid) || !auth.has(node)) continue;
-    const child = auth.get(node)!;
-    const p = auth.get(pid)!;
-    // 0.6.x: the subsumption relation ALONE decides. This used to be gated on a literal,
-    // non-wildcard-aware scope difference, which silently accepted a delegation that widened
-    // only ttl or a ceiling whenever the child's scopes happened to be literally a subset of
-    // the parent's — the child was more powerful and the bundle verified clean.
-    if (!child.isNarrowerThan(p)) {
+  const definedAt = new Map<string, LedgerEntry>(); // node -> the entry that defined it, as of this point
+  const revokedAt = new Map<string, CJson | undefined>(); // node -> the seq of the kill that revoked it
+  for (const e of entries) {
+    const ev = toPlain(e["event"]);
+    if (ev === "kill") {
+      noteRevoked(e, revokedAt);
+      continue;
+    }
+    if (ev !== "root" && ev !== "spawn") continue;
+    const node = toPlain(e["node"]) as Json | undefined;
+    if (typeof node !== "string") continue; // unreadable, reported by nodeAuthorities
+    const position = { seq: orNull(e["seq"]), node, entry: e };
+    const first = definedAt.get(node);
+    if (first !== undefined) {
       mono = false;
-      const spawnE = definedBy.get(node);
       log.add(
         "monotonicity",
-        `monotonicity: ${shown(node)} not ⊆ parent ${shown(pid)} (${monotonicityDetail(child, p)})`,
-        { seq: spawnE === undefined ? null : orNull(spawnE["seq"]), node, entry: spawnE ?? null },
+        `monotonicity: ${shown(node)} is defined a second time in this bundle (first at seq ${shown(intOr(first["seq"]))})`,
+        position,
       );
+      continue;
     }
+    if (ev === "spawn") {
+      const pid = toPlain(e["parent"]) as Json | undefined;
+      if (typeof pid !== "string" || !definedAt.has(pid)) {
+        mono = false;
+        log.add(
+          "monotonicity",
+          `monotonicity: ${shown(node)} names no parent defined earlier in this bundle (parent ${shown(e["parent"])})`,
+          position,
+        );
+      } else if (revokedAt.has(pid)) {
+        mono = false;
+        log.add(
+          "monotonicity",
+          `monotonicity: ${shown(node)} is spawned from ${shown(pid)} after ${shown(pid)} was revoked at seq ` +
+            shown(intOr(revokedAt.get(pid))),
+          position,
+        );
+      } else {
+        // 0.6.x: the subsumption relation ALONE decides. This used to be gated on a literal,
+        // non-wildcard-aware scope difference, which silently accepted a delegation that widened
+        // only ttl or a ceiling whenever the child's scopes happened to be literally a subset of
+        // the parent's. An unreadable authority on either side is reported by nodeAuthorities
+        // and fails this check on its own.
+        const child = auth.get(node);
+        const p = auth.get(pid);
+        if (child !== undefined && p !== undefined && !child.isNarrowerThan(p)) {
+          mono = false;
+          log.add(
+            "monotonicity",
+            `monotonicity: ${shown(node)} not ⊆ parent ${shown(pid)} (${monotonicityDetail(child, p)})`,
+            position,
+          );
+        }
+      }
+    }
+    definedAt.set(node, e);
   }
   checks.monotonicity = mono && afail.length === 0;
 
@@ -2637,11 +2734,26 @@ export function verifyBundle(
   // a violation the entry never asserted. Such entries are counted as UNGATED and reported as
   // their own number instead: a reader sees how much of the run was actually measured, which is
   // the honest answer and never a silent one.
+  // Read in ledger order, like monotonicity: an allow is judged against a node defined EARLIER (one
+  // defined only later is unknown at that point), and an allow on a node an earlier kill revoked
+  // is outside its authority, since a revoked node holds none.
   let contained = true;
   let actions = 0;
   let ungated = 0;
+  const known = new Set<string>();
+  const killedAt = new Map<string, CJson | undefined>();
   for (const e of entries) {
-    if (toPlain(e["event"]) !== "allow") continue;
+    const ev = toPlain(e["event"]);
+    if (ev === "root" || ev === "spawn") {
+      const defined = toPlain(e["node"]);
+      if (typeof defined === "string") known.add(defined);
+      continue;
+    }
+    if (ev === "kill") {
+      noteRevoked(e, killedAt);
+      continue;
+    }
+    if (ev !== "allow") continue;
     if (isKnownPolicy(toPlain(e["policy"]))) {
       // Only a policy value the format DEFINES buys the exemption. An entry carrying anything
       // else is reported by `policyFailures` and still measured here, so a made-up marker cannot
@@ -2650,7 +2762,7 @@ export function verifyBundle(
       continue;
     }
     actions += 1;
-    const node = toPlain(e["node"]) as string;
+    const node = toPlain(e["node"]) as Json | undefined;
     const scope = toPlain(e["scope"]) as string;
     // The Python implementation reads `e.get("context") or {}`, so an absent context and any value
     // Python counts as false (null, false, 0, "", [] or {}) are no context. Any other value that
@@ -2660,7 +2772,7 @@ export function verifyBundle(
     const noContext = pyFalsy(rawContext);
     const contextIsObject = isRecordLike(rawContext);
     const ctx = (noContext ? {} : rawContext) as Context;
-    const a = auth.get(node);
+    const a = typeof node === "string" && known.has(node) ? auth.get(node) : undefined;
     if (a === undefined) {
       contained = false;
       log.add("containment", `containment: allow on unknown node ${shown(e["node"])}`, {
@@ -2669,6 +2781,16 @@ export function verifyBundle(
         callId: orNull(e["call_id"]),
         entry: e,
       });
+      continue;
+    }
+    if (killedAt.has(node as string)) {
+      contained = false;
+      log.add(
+        "containment",
+        `containment: allow of ${pyRepr(e["scope"] ?? null)} on ${shown(e["node"])} after ${shown(e["node"])} was ` +
+          `revoked at seq ${shown(intOr(killedAt.get(node as string)))}`,
+        { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: orNull(e["call_id"]), entry: e },
+      );
       continue;
     }
     // A scope that is not a string is no scope the node can hold. Against a wildcard it threw

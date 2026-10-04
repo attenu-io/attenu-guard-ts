@@ -1,4 +1,22 @@
 {
+ "allow_after_kill": {
+  "args": [
+   "verify",
+   "allow_after_kill.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'crm.read' on t:n1 after t:n1 was revoked at seq 3\nFAILED\nentries:\n  seq=0 event=root node=t:n0 state=process-asserted\n  seq=1 event=spawn node=t:n1 state=process-asserted\n  seq=2 event=allow node=t:n1 scope=crm.read state=process-asserted\n  seq=3 event=kill state=process-asserted\n  seq=4 event=allow node=t:n1 scope=crm.read state=process-asserted failed=containment\n"
+ },
+ "allow_before_node": {
+  "args": [
+   "verify",
+   "allow_before_node.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=1\n  - containment: allow on unknown node t:n1\nFAILED\nentries:\n  seq=0 event=root node=t:n0 state=process-asserted\n  seq=1 event=allow node=t:n1 scope=crm.read state=process-asserted failed=containment\n  seq=2 event=spawn node=t:n1 state=process-asserted\n"
+ },
  "anchor_int_huge_badsig": {
   "args": [
    "verify",
@@ -133,6 +151,15 @@
   ],
   "exit": 2,
   "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - unsupported_version: bundle v=True not in [1, 2]\n  - anchor_version_mismatch: anchor v=1 != bundle v=True\n  - root_version_mismatch: root v=1 != bundle v=True\n  - mixed_entry_versions: entries declare v in [1], bundle v=True\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted failed=root_version_mismatch,mixed_entry_versions\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
+ },
+ "deny_node_int": {
+  "args": [
+   "verify",
+   "deny_node_int.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - invalid_node: seq=3 event='deny' carries node 5, which is not a string\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=process-asserted\n  seq=2 event=allow node=parity:n1 scope=docs.write state=process-asserted\n  seq=3 event=deny node=5 scope=web.search state=process-asserted failed=invalid_node\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=containment\n"
  },
  "duplicate_kid": {
   "args": [
@@ -272,6 +299,33 @@
   "exit": 2,
   "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on \"parity\\nOK\\nx:n1\" outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=\"parity\\nOK\\nx:n0\" state=process-asserted\n  seq=1 event=spawn node=\"parity\\nOK\\nx:n1\" state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=\"parity\\nOK\\nx:n1\" scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=\"parity\\nOK\\nx:n1\" scope=web.search state=process-asserted\n  seq=4 event=allow node=\"parity\\nOK\\nx:n1\" scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
  },
+ "node_defined_twice": {
+  "args": [
+   "verify",
+   "node_defined_twice.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=False containment=True anchor=not checked nodes=2 actions_checked=1\n  - monotonicity: t:n1 is defined a second time in this bundle (first at seq 1)\n  - monotonicity: t:n0 is defined a second time in this bundle (first at seq 0)\nFAILED\nentries:\n  seq=0 event=root node=t:n0 state=process-asserted\n  seq=1 event=spawn node=t:n1 state=process-asserted\n  seq=2 event=allow node=t:n1 scope=crm.read state=process-asserted\n  seq=3 event=spawn node=t:n1 state=process-asserted failed=monotonicity\n  seq=4 event=spawn node=t:n0 state=process-asserted failed=monotonicity\n"
+ },
+ "root_node_absent": {
+  "args": [
+   "verify",
+   "root_node_absent.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=False containment=False anchor=not checked nodes=1 actions_checked=2\n  - root None: unreadable authority (node is not a string)\n  - monotonicity: parity:n1 names no parent defined earlier in this bundle (parent parity:n0)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root state=process-asserted failed=unreadable_authority\n  seq=1 event=spawn node=parity:n1 state=process-asserted failed=monotonicity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=process-asserted\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=containment\n"
+ },
+ "root_node_list": {
+  "args": [
+   "verify",
+   "root_node_list.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=False containment=False anchor=not checked nodes=1 actions_checked=2\n  - root [1]: unreadable authority (node is not a string)\n  - monotonicity: parity:n1 names no parent defined earlier in this bundle (parent parity:n0)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=[1] state=process-asserted failed=unreadable_authority\n  seq=1 event=spawn node=parity:n1 state=process-asserted failed=monotonicity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=process-asserted\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=containment\n"
+ },
  "scope_bool": {
   "args": [
    "verify",
@@ -375,6 +429,15 @@
   "exit": 2,
   "stdout": "TAMPERED \u2014 seq gap at 1 (got 2)\nentries:\n  seq=0 event=root node=parity:n0\n  seq=2 event=spawn node=parity:n1 failed=integrity\n  seq=2 event=allow node=parity:n1 scope=docs.write\n  seq=3 event=deny node=parity:n1 scope=web.search\n  seq=4 event=allow node=parity:n1 scope=web.search\n"
  },
+ "spawn_after_kill": {
+  "args": [
+   "verify",
+   "spawn_after_kill.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=False containment=True anchor=not checked nodes=3 actions_checked=1\n  - monotonicity: t:n2 is spawned from t:n1 after t:n1 was revoked at seq 3\nFAILED\nentries:\n  seq=0 event=root node=t:n0 state=process-asserted\n  seq=1 event=spawn node=t:n1 state=process-asserted\n  seq=2 event=allow node=t:n1 scope=crm.read state=process-asserted\n  seq=3 event=kill state=process-asserted\n  seq=4 event=spawn node=t:n2 state=process-asserted failed=monotonicity\n"
+ },
  "string_seq": {
   "args": [
    "verify",
@@ -408,6 +471,27 @@
   "exit": 2,
   "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_subject_mismatch: no entry at seq 9 in this bundle\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=process-asserted\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
  },
+ "ungated": {
+  "args": [
+   "verify",
+   "ungated.bundle.json",
+   "--hs256-key",
+   "73616d706c652d6b6579"
+  ],
+  "exit": 0,
+  "stdout": "integrity=True monotonicity=True containment=True anchor=verified nodes=1 actions_checked=1 ungated=2\nOK\n"
+ },
+ "ungated_entries": {
+  "args": [
+   "verify",
+   "ungated.bundle.json",
+   "--hs256-key",
+   "73616d706c652d6b6579",
+   "--entries"
+  ],
+  "exit": 0,
+  "stdout": "integrity=True monotonicity=True containment=True anchor=verified nodes=1 actions_checked=1 ungated=2\nOK\nentries:\n  seq=0 event=root node=t:n0 state=process-asserted\n  seq=1 event=allow node=t:n0 scope=crm.read state=process-asserted\n  seq=2 event=allow node=t:n0 scope=shell.exec state=process-asserted\n  seq=3 event=allow node=t:n0 scope=admin.delete state=process-asserted\n"
+ },
  "unknown_member_row": {
   "args": [
    "verify",
@@ -426,5 +510,41 @@
   ],
   "exit": 2,
   "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - root_version_mismatch: root v=None != bundle v=1\n  - mixed_entry_versions: entries declare v in [1.5, 'x', False, None], bundle v=1\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted failed=root_version_mismatch,mixed_entry_versions\n  seq=1 event=spawn node=parity:n1 state=process-asserted\n  seq=2 event=allow node=parity:n1 scope=docs.write state=process-asserted\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=containment\n"
+ },
+ "widened_cycle": {
+  "args": [
+   "verify",
+   "widened_cycle.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=False containment=True anchor=not checked nodes=3 actions_checked=1\n  - monotonicity: t:n1 names no parent defined earlier in this bundle (parent t:n2)\nFAILED\nentries:\n  seq=0 event=root node=t:n0 state=process-asserted\n  seq=1 event=spawn node=t:n1 state=process-asserted failed=monotonicity\n  seq=2 event=spawn node=t:n2 state=process-asserted\n  seq=3 event=allow node=t:n2 scope=admin.delete state=process-asserted\n"
+ },
+ "widened_orphan": {
+  "args": [
+   "verify",
+   "widened_orphan.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=False containment=False anchor=not checked nodes=2 actions_checked=2\n  - monotonicity: parity:n1 names no parent defined earlier in this bundle (parent None)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['admin.delete', 'docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=process-asserted failed=monotonicity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=process-asserted\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=containment\n"
+ },
+ "widened_parent_list": {
+  "args": [
+   "verify",
+   "widened_parent_list.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=False containment=False anchor=not checked nodes=2 actions_checked=2\n  - monotonicity: parity:n1 names no parent defined earlier in this bundle (parent ['parity:n0'])\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['admin.delete', 'docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=process-asserted failed=monotonicity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=process-asserted\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=containment\n"
+ },
+ "widened_parent_self": {
+  "args": [
+   "verify",
+   "widened_parent_self.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=False containment=False anchor=not checked nodes=2 actions_checked=2\n  - monotonicity: parity:n1 names no parent defined earlier in this bundle (parent parity:n1)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['admin.delete', 'docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=process-asserted failed=monotonicity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=process-asserted\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=containment\n"
  }
 }

@@ -1,0 +1,73 @@
+{
+ "c14n": "JCS",
+ "chain_id": "t",
+ "entries": [
+  {
+   "agent": "root",
+   "authority": {
+    "constraints": [],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "c14n": "JCS",
+   "chain_id": "t",
+   "event": "root",
+   "hash": "8689c867101400f40892a94aedc1459b7a08340c728b8eec250b73b9e2f8f791",
+   "node": "t:n0",
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 1,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "t",
+   "context": {},
+   "event": "allow",
+   "hash": "4ce540068f0e6c3ca7dc5db877c820c417d60b0d523399e1df15b1e144ed469a",
+   "node": "t:n1",
+   "prev_hash": "8689c867101400f40892a94aedc1459b7a08340c728b8eec250b73b9e2f8f791",
+   "scope": "crm.read",
+   "seq": 1,
+   "tool": null,
+   "ts": 3,
+   "v": 1
+  },
+  {
+   "agent": "agent0",
+   "c14n": "JCS",
+   "chain_id": "t",
+   "event": "spawn",
+   "granted": {
+    "constraints": [],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "hash": "d25e3117703f80d4885869df4f36f64648c40cec9944adf255598097a18e64c8",
+   "node": "t:n1",
+   "parent": "t:n0",
+   "prev_hash": "4ce540068f0e6c3ca7dc5db877c820c417d60b0d523399e1df15b1e144ed469a",
+   "requested": {
+    "constraints": [],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "seq": 2,
+   "task": "t",
+   "ts": 2,
+   "v": 1
+  }
+ ],
+ "note": "offline-verifiable: attenu_guard.evidence.verify_bundle(bundle, signer)",
+ "redaction": {
+  "ok": true,
+  "violations": []
+ },
+ "v": 1
+}

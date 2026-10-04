@@ -1,0 +1,116 @@
+{
+ "c14n": "JCS",
+ "chain_id": "parity",
+ "entries": [
+  {
+   "agent": "supervisor",
+   "authority": {
+    "constraints": [],
+    "scopes": [
+     "docs.write",
+     "web.search"
+    ],
+    "ttl": null
+   },
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "event": "root",
+   "hash": "bd70e1150027b3c72bef36ef1e4baa5b37de273c3c131b6a4a20e224d32ac12e",
+   "node": [
+    1
+   ],
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 1,
+   "v": 1
+  },
+  {
+   "agent": "brief-writer",
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "event": "spawn",
+   "granted": {
+    "constraints": [],
+    "scopes": [
+     "docs.write"
+    ],
+    "ttl": null
+   },
+   "hash": "ac51cbc755f4ccf366568b23c6a141f99b803746fa2e731d2e5a452c37d32aa2",
+   "node": "parity:n1",
+   "parent": "parity:n0",
+   "prev_hash": "bd70e1150027b3c72bef36ef1e4baa5b37de273c3c131b6a4a20e224d32ac12e",
+   "requested": {
+    "constraints": [],
+    "scopes": [
+     "docs.write"
+    ],
+    "ttl": null
+   },
+   "seq": 1,
+   "task": "write the brief",
+   "ts": 2,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "context": {},
+   "event": "allow",
+   "hash": "5727fb3e993ab419c9f544f9c38f4b6228e8aeb2dc0458396e53aa933ccecc2a",
+   "node": "parity:n1",
+   "prev_hash": "ac51cbc755f4ccf366568b23c6a141f99b803746fa2e731d2e5a452c37d32aa2",
+   "scope": "docs.write",
+   "seq": 2,
+   "tool": null,
+   "ts": 3,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "context": {},
+   "disposition": "out_of_authority",
+   "event": "deny",
+   "hash": "73486025ef08b2b5312f5e06628d8f457b6e4b8e504ea732185fd085f8f6e169",
+   "node": "parity:n1",
+   "prev_hash": "5727fb3e993ab419c9f544f9c38f4b6228e8aeb2dc0458396e53aa933ccecc2a",
+   "reason": "scope_not_granted",
+   "reasons": [
+    {
+     "code": "scope_not_granted",
+     "constraint": null,
+     "limit": null,
+     "message": "scope 'web.search' not covered by held scopes ['docs.write']",
+     "requested": "web.search"
+    }
+   ],
+   "scope": "web.search",
+   "seq": 3,
+   "tool": null,
+   "ts": 4,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "context": {},
+   "event": "allow",
+   "hash": "93f00486ecd443b898430c069c21438c20943151c5aff7cf87d83541e7ed1c77",
+   "node": "parity:n1",
+   "prev_hash": "73486025ef08b2b5312f5e06628d8f457b6e4b8e504ea732185fd085f8f6e169",
+   "scope": "web.search",
+   "seq": 4,
+   "tool": null,
+   "ts": 5,
+   "v": 1
+  }
+ ],
+ "envelopes": [],
+ "note": "offline-verifiable: attenu_guard.evidence.verify_bundle(bundle, signer)",
+ "redaction": {
+  "ok": true,
+  "violations": []
+ },
+ "v": 1
+}
