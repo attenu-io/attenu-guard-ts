@@ -13,7 +13,7 @@ import { join, resolve } from "node:path";
 
 import { AuditLog, hashEntry, type LedgerEntry } from "../src/audit.js";
 import { Authority } from "../src/authority.js";
-import type { CJson } from "../src/canonical.js";
+import { RawNumber, type CJson } from "../src/canonical.js";
 import { Allow } from "../src/ceilings.js";
 import {
   ENVELOPE_ALG,
@@ -916,6 +916,43 @@ test("an envelope subject seq or v written 1.0 reads as 1, and one written 1.5 i
       } else {
         assert.equal(status, 2, label);
         assert.ok(stdout.split("\n").includes(line), `${label}:\n${stdout}`);
+      }
+    }
+  });
+});
+
+test("an anchor whose seq or v is past 2^53 fails its signature check in one line, and never throws", () => {
+  // JCS cannot represent such a number here, so there is no signing input to check the anchor's
+  // signature over. Under --hs256-key the CLI stopped with a stack trace. The Python implementation
+  // reports the signature invalid for the float forms, and this build reports it for every form.
+  const entries = withForgedAllow(custodyRun());
+  const bundle = exportBundle(entries, ANCHOR) as unknown as Record<string, unknown>;
+  const anchor = bundle["anchor"] as Record<string, CJson>;
+  const literals = ["1e300", "9007199254740993.0", "9007199254740993"];
+  for (const literal of literals) {
+    assert.deepEqual(
+      AuditLog.verifyAnchor(entries, { ...anchor, seq: new RawNumber(literal, Number(literal)) }, ANCHOR),
+      [false, "anchor signature invalid"],
+      literal,
+    );
+  }
+  const text = JSON.stringify(bundle);
+  const anchorText = JSON.stringify(anchor);
+  assert.equal(text.split(anchorText).length, 2, "the anchor is written once");
+  inTempDir((dir) => {
+    const file = join(dir, "bundle.json");
+    for (const field of ["seq", "v"]) {
+      const written = `"${field}":${String(anchor[field])},`;
+      assert.equal(anchorText.split(written).length, 2, field);
+      for (const literal of literals) {
+        writeFileSync(file, text.replace(anchorText, anchorText.replace(written, `"${field}":${literal},`)));
+        const { stdout, status, stderr } = run(["verify", file, "--hs256-key", META.hs256_secret_hex]);
+        assert.equal(stderr, "", `${field} ${literal}`);
+        assert.equal(status, 2, `${field} ${literal}`);
+        assert.ok(
+          stdout.split("\n").includes("  - integrity(anchor): anchor signature invalid"),
+          `${field} ${literal}:\n${stdout}`,
+        );
       }
     }
   });

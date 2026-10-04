@@ -1,4 +1,28 @@
 {
+ "anchor_seq_huge": {
+  "args": [
+   "verify",
+   "anchor_seq_huge.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--hs256-key",
+   "73616d706c652d6b6579"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=FAILED nodes=2 actions_checked=2\n  - integrity(anchor): anchor signature invalid\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\n"
+ },
+ "anchor_v_huge": {
+  "args": [
+   "verify",
+   "anchor_v_huge.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--hs256-key",
+   "73616d706c652d6b6579"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=FAILED nodes=2 actions_checked=2\n  - anchor_version_mismatch: anchor v=9007199254740992.0 != bundle v=1\n  - integrity(anchor): anchor signature invalid\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\n"
+ },
  "bool_seq": {
   "args": [
    "verify",

@@ -246,7 +246,17 @@ export class AuditLog {
     }
     const sig = Buffer.from(sigHex, "hex");
     const kid = toPlain(a["kid"]) as string | null;
-    if (!signer.verify(canonicalBytes(body), sig, kid)) {
+    let signingInput: Buffer;
+    try {
+      signingInput = canonicalBytes(body);
+    } catch {
+      // A member JCS cannot represent here, such as a number past ±(2^53 - 1) in `seq` or `v`, leaves
+      // no signing input to check the signature over, so the signature does not verify. Reported,
+      // never thrown: a bundle is attacker-supplied. The Python implementation reports an anchor
+      // whose `seq` or `v` is such a number written as a float the same way.
+      return [false, "anchor signature invalid"];
+    }
+    if (!signer.verify(signingInput, sig, kid)) {
       return [false, "anchor signature invalid"];
     }
     const [ok, err] = AuditLog.verify(entries);

@@ -636,6 +636,13 @@ def parity_fixtures() -> None:
     bundle_v_true["v"] = True
     bundle_v_three = copy.deepcopy(forged)
     bundle_v_three["v"] = 3.0
+    # An anchor whose seq or v is a number past 2**53 - 1: no signing input can be rebuilt from it,
+    # and under --hs256-key the signature does not verify. Written as floats; Python raises on the
+    # integer form.
+    anchor_seq_huge = copy.deepcopy(forged)
+    anchor_seq_huge["anchor"]["seq"] = 1e300
+    anchor_v_huge = copy.deepcopy(forged)
+    anchor_v_huge["anchor"]["v"] = 9007199254740993.0
 
     def mixed_versions(entries):
         # None, False, then 0 (one value with False in a Python set, and the first stays), 1.5 and
@@ -669,6 +676,8 @@ def parity_fixtures() -> None:
         "envelope_v_two.bundle.json": envelope_v_two,
         "bundle_v_true.bundle.json": bundle_v_true,
         "bundle_v_three.bundle.json": bundle_v_three,
+        "anchor_seq_huge.bundle.json": anchor_seq_huge,
+        "anchor_v_huge.bundle.json": anchor_v_huge,
         "versions_mixed.bundle.json": _edited(forged, mixed_versions, envelopes=False),
         "keys.json": [row],
         "keys_expired.json": [dict(row, not_after="2000-01-01T00:00:00Z")],
@@ -703,6 +712,8 @@ def parity_fixtures() -> None:
         "bundle_v_true": ["verify", "bundle_v_true.bundle.json", *keys, "--entries"],
         "bundle_v_three": ["verify", "bundle_v_three.bundle.json", *keys, "--entries"],
         "versions_mixed": ["verify", "versions_mixed.bundle.json", "--entries"],
+        "anchor_seq_huge": ["verify", "anchor_seq_huge.bundle.json", *keys, "--hs256-key", HS256_SECRET.hex()],
+        "anchor_v_huge": ["verify", "anchor_v_huge.bundle.json", *keys, "--hs256-key", HS256_SECRET.hex()],
         "expired_row": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_expired.json", "--entries"],
         "unknown_member_row": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_unknown_member.json"],
         "duplicate_kid": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_duplicate_kid.json"],
