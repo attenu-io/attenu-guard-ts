@@ -17,6 +17,17 @@
   "exit": 2,
   "stdout": "TAMPERED \u2014 seq gap at 1 (got True)\nentries:\n  seq=0 event=root node=parity:n0\n  seq=true event=spawn node=parity:n1 failed=integrity\n  seq=2 event=allow node=parity:n1 scope=docs.write\n  seq=3 event=deny node=parity:n1 scope=web.search\n  seq=4 event=allow node=parity:n1 scope=web.search\n"
  },
+ "bool_seq_signed": {
+  "args": [
+   "verify",
+   "bool_seq_signed.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - integrity: seq gap at 1 (got True)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_subject_mismatch: no entry at seq 1 in this bundle\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=true event=spawn node=parity:n1 state=process-asserted failed=integrity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=process-asserted\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=containment\n"
+ },
  "duplicate_kid": {
   "args": [
    "verify",
@@ -26,6 +37,17 @@
   ],
   "exit": 2,
   "stdout": "cannot use --witness-keys keys_duplicate_kid.json: witness key 'witness-parity': more than one row names this kid\n"
+ },
+ "duplicate_seq_later_signed": {
+  "args": [
+   "verify",
+   "duplicate_seq_later_signed.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - integrity: seq gap at 4 (got 3)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=3 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=integrity,containment\n"
  },
  "envelope_v_float": {
   "args": [
@@ -58,7 +80,7 @@
    "--entries"
   ],
   "exit": 2,
-  "stdout": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - integrity: seq gap at 1 (got 1.0)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1.0 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity failed=integrity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
+  "stdout": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - integrity: seq gap at 1 (got 1.0)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_subject_mismatch: no entry at seq 1 in this bundle\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1.0 event=spawn node=parity:n1 state=process-asserted failed=integrity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
  },
  "float_seq_ledger": {
   "args": [
@@ -121,7 +143,7 @@
    "--entries"
   ],
   "exit": 2,
-  "stdout": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - integrity: seq gap at 4 (got None)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_subject_mismatch: subject entry_hash '1fbcf7697fbf829be0efa8eebee2a610065e8cbc0e2578289075aa709ccfaa50' != the hash recomputed for seq None from this bundle (None)\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=null event=allow node=parity:n1 scope=web.search state=process-asserted failed=integrity,containment,envelope_subject_mismatch\n"
+  "stdout": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - integrity: seq gap at 4 (got None)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_subject_mismatch: subject entry_hash '1fbcf7697fbf829be0efa8eebee2a610065e8cbc0e2578289075aa709ccfaa50' != the hash recomputed for seq None from this bundle ('b392afd319a4b86b246b5039815039dcf21cfe5e08a240f4833af8b331fa5263')\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=null event=allow node=parity:n1 scope=web.search state=process-asserted failed=integrity,containment,envelope_subject_mismatch\n"
  },
  "string_seq": {
   "args": [

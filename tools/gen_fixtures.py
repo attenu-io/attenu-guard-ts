@@ -553,6 +553,21 @@ def _edited(bundle: dict, edit, *, envelopes=True) -> dict:
     return b
 
 
+def _signed_by_hand(entry: dict, seq) -> dict:
+    """An envelope naming `seq` whose subject binds `entry`, signed by the parity witness. Built by
+    hand because `sign_envelope` resolves `seq` the way a verifier does, and so refuses to bind an
+    entry that `seq` does not name, which is the forger's envelope this builds."""
+    envelope = {"v": evidence.ENVELOPE_VERSION, "typ": evidence.ENVELOPE_TYP,
+                "subject": {"chain_id": entry["chain_id"], "node": entry["node"], "seq": seq,
+                            "entry_hash": entry["hash"], "event": entry["event"]},
+                "observed": {"result": "matched", "at": "2026-10-05T00:00:00Z",
+                             "method": "signed by hand"},
+                "witness": {"kid": PARITY_KID, "alg": evidence.ENVELOPE_ALG}}
+    signer = Ed25519Signer.from_private_bytes(PARITY_SEED, kid=PARITY_KID)
+    envelope["sig"] = signer.sign(evidence.envelope_signing_input(envelope)).hex()
+    return envelope
+
+
 def _python_cli(args: list, cwd: Path) -> dict:
     """What the PYTHON CLI prints for `args`, run from `cwd` so every path it prints is the
     relative one it was given, and its exit code."""
@@ -588,6 +603,19 @@ def parity_fixtures() -> None:
             entries[index].pop("seq")
         return edit
 
+    # The forged allow given seq 3, the real deny's. A subject naming seq 3 resolves to the later
+    # copy and the witness signs that one; read by seq, the deny above it read witness-signed too.
+    duplicate = _edited(forged, set_seq(4, 3))
+    duplicate["envelopes"] = [evidence.sign_envelope(duplicate["entries"], seq, PARITY_SEED,
+                                                     kid=PARITY_KID, result="indeterminate",
+                                                     at="2026-09-30T07:43:46Z",
+                                                     method="signs what it receives in chain order")
+                              for seq in (1, 2, 3)]
+    # An envelope naming seq 1 that binds the very entry carrying "seq": true, signed by the
+    # trusted witness. True == 1 in Python, and the lookup took that entry for seq 1.
+    bool_signed = _edited(forged, set_seq(1, True))
+    bool_signed["envelopes"] = [_signed_by_hand(bool_signed["entries"][1], 1)]
+
     subject_float = copy.deepcopy(forged)
     subject_float["envelopes"][0]["subject"]["seq"] = 1.0
     envelope_v_float = copy.deepcopy(forged)
@@ -604,6 +632,8 @@ def parity_fixtures() -> None:
         "string_seq.bundle.json": _edited(forged, set_seq(4, "4")),
         "seq_removed.bundle.json": _edited(forged, drop_seq(4)),
         "seq_null.bundle.json": _edited(forged, set_seq(4, None)),
+        "duplicate_seq_later_signed.bundle.json": duplicate,
+        "bool_seq_signed.bundle.json": bool_signed,
         "subject_seq_float.bundle.json": subject_float,
         "envelope_v_float.bundle.json": envelope_v_float,
         # A node name carrying line breaks, printed raw, would add a line reading OK.
@@ -627,6 +657,9 @@ def parity_fixtures() -> None:
         "string_seq": ["verify", "string_seq.bundle.json", *keys, "--entries"],
         "seq_removed": ["verify", "seq_removed.bundle.json", *keys, "--entries"],
         "seq_null": ["verify", "seq_null.bundle.json", *keys, "--entries"],
+        "duplicate_seq_later_signed": ["verify", "duplicate_seq_later_signed.bundle.json", *keys,
+                                       "--entries"],
+        "bool_seq_signed": ["verify", "bool_seq_signed.bundle.json", *keys, "--entries"],
         "subject_seq_float": ["verify", "subject_seq_float.bundle.json", *keys, "--entries"],
         "envelope_v_float": ["verify", "envelope_v_float.bundle.json", *keys, "--entries"],
         "forged_node_newline": ["verify", "forged_node_newline.bundle.json", *keys],

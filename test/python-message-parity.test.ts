@@ -35,7 +35,7 @@ const PYTHON: Record<string, string[]> = {
   ],
   "entry_without_seq": [
     "integrity: seq gap at 1 (got None)",
-    "envelope_subject_mismatch: subject entry_hash '5339c1271ede46a2b783871e7e65e4f0018e8f141f30ef760e8d3e6b0f31bb8d' != the hash recomputed for seq None from this bundle (None)"
+    "envelope_subject_mismatch: subject entry_hash '5339c1271ede46a2b783871e7e65e4f0018e8f141f30ef760e8d3e6b0f31bb8d' != the hash recomputed for seq None from this bundle ('8a3aa660587c8490d6476d44e16394a5c08bd0681fb0e422f44b8ec121379a74')"
   ],
   "authority_member_newline": [
     "root vectors:n0: unreadable authority (authority {'constraints': [{'key': 'max_rows', 'max': 100000}], 'scopes': ['crm.*', 'mail.send'], 'ttl': 3600, 'x\\nOK': 1} carries members this build does not evaluate and will not ignore: 'x\\nOK')",

@@ -6,9 +6,12 @@
  * directory so every path it prints is relative. The cases cover what a reader of one CLI must be
  * able to trust the other on: `--entries` attributing a failure to an entry whose seq is missing,
  * null, a boolean, a string or written `1.0`; a seq written `1.0` in a ledger and in an envelope
- * subject, which Python reads as a float and refuses; an envelope whose `v` is `1.0`; a trust row
- * past its `not_after`; a row carrying a member it does not define (`notAfter`); a kid named twice;
- * and a node name carrying line breaks, which must not add a line to either CLI's output.
+ * subject, which Python reads as a float and refuses; an envelope whose `v` is `1.0`; two entries
+ * sharing a seq with the witness's signature on the later copy, which alone reads witness-signed;
+ * an envelope naming seq 1 that binds an entry whose seq is `true`, which no envelope covers; a
+ * trust row past its `not_after`; a row carrying a member it does not define (`notAfter`); a kid
+ * named twice; and a node name carrying line breaks, which must not add a line to either CLI's
+ * output.
  *
  * The generator writes these only when the installed Python has that verifier, so CI's fixture
  * drift check compares them once its pinned release does, and until then this test holds the
@@ -42,6 +45,8 @@ test("the parity set covers every case the release gate names", () => {
     "string_seq",
     "seq_removed",
     "seq_null",
+    "duplicate_seq_later_signed",
+    "bool_seq_signed",
     "expired_row",
     "unknown_member_row",
     "duplicate_kid",

@@ -38,8 +38,12 @@ const CASES = (JSON.parse(fixtureText("vectors/envelopes/envelope_vectors_v1.jso
 const BASE = CASES.find((c) => c.name === "valid_spawn_envelope")!;
 const SIGNER = new HS256TestSigner(Buffer.from(BASE.signer!.secret_hex, "hex"), BASE.signer!.kid);
 
-/** The entry the corpus's envelope covers, and the kid it names. The other row stays valid. */
+/**
+ * The entry the corpus's envelope covers, by seq and by index, and the kid it names. The other row
+ * stays valid.
+ */
 const SPAWN_SEQ = 1;
+const SPAWN_INDEX = 1;
 const SPAWN_NODE = "vectors:n1";
 const KID = "witness-interop-v1";
 const OTHER = "witness-interop-v1-b";
@@ -74,7 +78,7 @@ function malformed(kid: string, repr: string): { message: string } {
 function assertTrusted(report: ReturnType<typeof verifyAt>, label: string): void {
   assert.equal(report.ok, true, `${label}: ${report.failures.join("; ")}`);
   assert.equal(report.envelopes.states[String(SPAWN_SEQ)], WITNESS_SIGNED, label);
-  assert.equal(report.envelopes.witnesses[String(SPAWN_SEQ)], KID, label);
+  assert.equal(report.envelopes.witnesses[String(SPAWN_INDEX)], KID, label);
 }
 
 function assertExpired(report: ReturnType<typeof verifyAt>, notAfter: string, label: string): void {
@@ -263,21 +267,37 @@ test("an invalid now is refused rather than read as some time", () => {
   assert.throws(() => verifyAt(keys("2027-01-01T00:00:00Z"), "2026-10-04T12:00:00+00:00"), /; got '2026-10-04T12:00:00\+00:00'/);
 });
 
-test("witnesses names a kid exactly where results names a result, on every corpus case", () => {
+test("witnesses names a kid for exactly the witness-signed entries, by index, on every corpus case", () => {
   for (const c of CASES) {
     const signer = c.signer === null ? null : new HS256TestSigner(Buffer.from(c.signer.secret_hex, "hex"), c.signer.kid);
     const report = verifyBundle(c.bundle, signer, {
       witnessKeys: c.witness_keys,
       envelopeBytes: c.raw_hex === undefined ? null : [Buffer.from(c.raw_hex, "hex")],
     });
-    const { results, witnesses } = report.envelopes;
-    assert.deepEqual(Object.keys(witnesses).sort(), Object.keys(results).sort(), c.name);
-    for (const seq of Object.keys(witnesses)) {
+    const { states, witnesses } = report.envelopes;
+    const entries = c.bundle.entries;
+    const signed = entries.flatMap((e, i) =>
+      states[String(e["seq"] ?? i)] === WITNESS_SIGNED ? [String(i)] : [],
+    );
+    assert.deepEqual(Object.keys(witnesses).sort(), signed.sort(), c.name);
+    for (const at of Object.keys(witnesses)) {
+      const seq = entries[Number(at)]!["seq"];
       const named = (c.bundle.envelopes ?? []).some(
-        (e) => e.subject?.["seq"] === Number(seq) && e.witness?.["kid"] === witnesses[seq],
+        (e) => e.subject?.["seq"] === seq && e.witness?.["kid"] === witnesses[at],
       );
-      assert.ok(named, `${c.name}: seq ${seq} names a kid an envelope over it carries`);
+      assert.ok(named, `${c.name}: entry ${at} names a kid an envelope over it carries`);
     }
   }
-  assert.deepEqual(verifyAt(BASE.witness_keys).envelopes.witnesses, { [String(SPAWN_SEQ)]: KID });
+  assert.deepEqual(verifyAt(BASE.witness_keys).envelopes.witnesses, { [String(SPAWN_INDEX)]: KID });
+});
+
+test("an entry two envelopes dispute keeps the first result and leaves witnesses", () => {
+  // The first envelope's result stands in `results`, keyed by seq, as it always has; the entry is
+  // process-asserted, so it has no witness.
+  const c = CASES.find((x) => x.name === "reject_duplicate_subject")!;
+  const report = verifyBundle(c.bundle, null, { witnessKeys: c.witness_keys });
+  const seq = String(c.bundle.envelopes![0]!.subject["seq"]);
+  assert.equal(report.envelopes.states[seq], PROCESS_ASSERTED);
+  assert.ok(Object.hasOwn(report.envelopes.results, seq), "the first envelope's result stands");
+  assert.deepEqual(report.envelopes.witnesses, {});
 });

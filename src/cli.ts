@@ -207,37 +207,25 @@ function entryLine(e: LedgerEntry, rest: readonly (readonly [string, CJson | und
 }
 
 /**
- * A bundle's entries with the state the verifier computed for each. `observed` and `witness` are
- * printed only on a witness-signed entry: an entry that fell back to process-asserted carries no
- * observation the reader may rely on.
+ * A bundle's entries with the state the verifier computed for each, read by index: an entry is
+ * witness-signed exactly when `envelopes.witnesses` holds its index, which is the entry the
+ * verifier resolved an envelope to, so of two entries sharing a seq only the one the witness signed
+ * reads witness-signed. `observed` and `witness` are printed only on such an entry: they are what
+ * its envelope says, and an entry that is process-asserted carries no observation the reader may
+ * rely on.
  */
-/**
- * The key the verifier filed an entry's envelope state under, or `null` when the entry's state
- * cannot be read from that record.
- *
- * The verifier keys its per-entry record by the seq rendered as text, or by the entry's index when
- * it has no seq. A seq that is present and not a number has no key of its own there: `"1"` renders
- * as the text of seq 1, and `"__proto__"` names a property every object has. Such an entry is
- * process-asserted by construction, because an envelope subject's seq is an integer and is looked
- * up by value, so no envelope can cover it.
- */
-function stateKey(e: LedgerEntry, index: number): string | null {
-  if (!("seq" in e)) return String(index);
-  const seq = field(e, "seq");
-  return typeof seq === "number" ? String(seq) : null;
-}
-
 function bundleEntryLines(entries: readonly LedgerEntry[], rep: VerifyReport): string[] {
   const failed = failedByEntry(rep.failure_entries, rep.failure_details);
-  const { states, results, witnesses } = rep.envelopes;
+  const { results, witnesses } = rep.envelopes;
   return entries.map((e, i) => {
-    const key = stateKey(e, i);
-    const state = key !== null && Object.hasOwn(states, key) ? states[key]! : PROCESS_ASSERTED;
-    const signed = key !== null && state === WITNESS_SIGNED;
+    const kid = Object.hasOwn(witnesses, String(i)) ? witnesses[String(i)]! : null;
+    // `results` is keyed the way `states` is: a covered entry's key is its own seq, an integer, or
+    // its index when it has none, and the result there is its envelope's.
+    const key = "seq" in e ? String(field(e, "seq")) : String(i);
     return entryLine(e, [
-      ["state", state],
-      ["observed", signed && Object.hasOwn(results, key) ? results[key]! : null],
-      ["witness", signed && Object.hasOwn(witnesses, key) ? witnesses[key]! : null],
+      ["state", kid === null ? PROCESS_ASSERTED : WITNESS_SIGNED],
+      ["observed", kid !== null && Object.hasOwn(results, key) ? results[key]! : null],
+      ["witness", kid],
       ["failed", failed.get(i)?.join(",") ?? null],
     ]);
   });

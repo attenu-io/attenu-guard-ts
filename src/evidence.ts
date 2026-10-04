@@ -810,24 +810,25 @@ export function envelopeSigningInput(envelope: Record<string, CJson>): Buffer {
 }
 
 /**
- * The key an entry is filed under for envelope lookups: its seq, or its index when it has no seq —
- * Python's `e.get("seq", i)`. A seq that is present and null stays null: it names no entry, so an
- * envelope whose subject names that index does not find this one.
+ * The key `states` and `results` file an entry under: its seq, or its index when it has no seq —
+ * Python's `e.get("seq", i)`. It is a report key, never a lookup: an envelope finds the entry it
+ * covers through `subjectIndex`.
  */
 function seqOrIndex(e: LedgerEntry, i: number): Json {
   return "seq" in e ? orNull(e["seq"]) : i;
 }
 
 /**
- * seq -> the entry's hash RECOMPUTED from the bundle, never read off the entry.
+ * Each entry's hash RECOMPUTED from the bundle, by index, never read off the entry.
  *
  * `entry_hash` in a subject is checked against this. The walk mirrors `AuditLog.verify`, so an
  * entry whose stored `hash` was replaced does not get to supply the value it is compared against.
+ * By index, not by seq: an entry's seq can be missing, another entry's, or not an integer.
  */
-function recomputedHashes(entries: readonly LedgerEntry[]): Map<Json, string | null> {
-  const out = new Map<Json, string | null>();
+function recomputedHashes(entries: readonly LedgerEntry[]): (string | null)[] {
+  const out: (string | null)[] = [];
   let prev = GENESIS;
-  entries.forEach((e, i) => {
+  for (const e of entries) {
     const payload: LedgerEntry = {};
     for (const [k, v] of Object.entries(e)) if (k !== "hash") payload[k] = v;
     let computed: string | null;
@@ -837,20 +838,41 @@ function recomputedHashes(entries: readonly LedgerEntry[]): Map<Json, string | n
       // An unhashable payload has no recomputable hash; that IS the break, at this entry.
       computed = null;
     }
-    out.set(seqOrIndex(e, i), computed);
+    out.push(computed);
     prev = computed ?? GENESIS;
-  });
+  }
   return out;
+}
+
+/**
+ * subject.seq -> the index of the entry an envelope naming that seq covers.
+ *
+ * An entry is keyed by its own seq when that is an integer literal, and by its index when it has
+ * no seq member at all. An entry whose seq is a boolean, a float such as `1.0`, a string or null
+ * is keyed by nothing, so no envelope covers it: keyed by the parsed value, `"seq": 1.0` took the
+ * envelope written for seq 1, and in Python `"seq": true` did too. Where two entries share a key
+ * the later one is covered, as it always was. The Python implementation's `_subject_index`.
+ */
+function subjectIndex(entries: readonly LedgerEntry[]): Map<number, number> {
+  const keyed = new Map<number, number>();
+  entries.forEach((e, i) => {
+    if (!("seq" in e)) keyed.set(i, i);
+    else if (isJsonInteger(e["seq"])) keyed.set(toPlain(e["seq"]) as number, i);
+  });
+  return keyed;
 }
 
 /**
  * The v1 subject for the entry at `seq`, recomputed from the ledger.
  *
- * Throws when `seq` names no entry, or names one whose `event` v1 defines no subject for.
+ * `seq` finds its entry the way a verifier finds it (`subjectIndex`), so the subject is the one the
+ * verifier will check it against. Throws when `seq` names no entry, or names one whose `event` v1
+ * defines no subject for.
  */
 export function envelopeSubject(entries: readonly LedgerEntry[], seq: number): Record<string, CJson> {
-  const entry = entries.find((e) => toPlain(e["seq"]) === seq);
-  if (entry === undefined) throw new Error(`no entry at seq ${seq}`);
+  const at = Number.isInteger(seq) ? subjectIndex(entries).get(seq) : undefined;
+  if (at === undefined) throw new Error(`no entry at seq ${seq}`);
+  const entry = entries[at]!;
   const event = toPlain(entry["event"]) as string;
   if (!ENVELOPE_SUBJECT_MEMBERS.has(event)) {
     throw new Error(`envelope v${ENVELOPE_VERSION} defines no subject for event '${event}'`);
@@ -859,7 +881,7 @@ export function envelopeSubject(entries: readonly LedgerEntry[], seq: number): R
     chain_id: orNull(entry["chain_id"]) as CJson,
     node: orNull(entry["node"]) as CJson,
     seq,
-    entry_hash: recomputedHashes(entries).get(seq) ?? null,
+    entry_hash: recomputedHashes(entries)[at] ?? null,
     event,
   };
   if (event === "allow") subject["call_id"] = orNull(entry["call_id"]) as CJson;
@@ -1158,7 +1180,9 @@ function receivedBytes(raw: unknown): Buffer | null {
 // lexeme decides, since a parsed number keeps it: `1.0` is a float to Python, and a subject naming
 // seq `1.0` names no entry there. The type check comes first and every use is behind it — in Python
 // an unguarded lookup raises on a list or an object and finds the entry at seq 1 for `true`, and
-// the two implementations report the same failure for the same bundle.
+// the two implementations report the same failure for the same bundle. The entries are keyed by
+// the same rule (`subjectIndex`), so an entry whose own seq is `true` or `1.0` is covered by no
+// envelope.
 
 /**
  * The report line: the state and the result together, in the same form for all three results. A
@@ -1178,7 +1202,12 @@ export interface EnvelopeSummary {
   states: Record<string, EnvelopeState>;
   /** The `observed.result` of each witness-signed entry. */
   results: Record<string, Json>;
-  /** The `witness.kid` of the envelope that verified for each entry, filled exactly where `results` is. */
+  /**
+   * The index in `bundle.entries` of every witness-signed entry -> the `witness.kid` of the
+   * envelope that verified for it. By index, not by seq: the index is the entry the subject
+   * resolved to, the one `failure_entries` names, so of two entries sharing a seq only the one the
+   * witness signed is in it. An entry two envelopes dispute is not.
+   */
   witnesses: Record<string, string>;
   /** The report line for each entry: `witness-signed (matched)`, or `process-asserted`. */
   lines: Record<string, string>;
@@ -1232,31 +1261,32 @@ function scoreEnvelopes(
   // The hash walk is what an envelope's binding member is checked against; a bundle carrying
   // none does not pay for it. Every entry is process-asserted in that case, which is the status
   // quo and exactly what this reports.
-  const bySeq = new Map<Json, LedgerEntry>();
-  let recomputed = new Map<Json, string | null>();
-  if (envelopes.length > 0) {
-    entries.forEach((e, i) => bySeq.set(seqOrIndex(e, i), e));
-    recomputed = recomputedHashes(entries);
-  }
+  const subjectAt = envelopes.length > 0 ? subjectIndex(entries) : new Map<number, number>();
+  const recomputed = envelopes.length > 0 ? recomputedHashes(entries) : [];
 
-  // seq -> how many envelopes in this array named it, valid or not. `scoreEnvelope` counts an
-  // envelope in as soon as its subject names an entry this bundle has.
-  const claims = new Map<string, number>();
+  // entry index -> how many envelopes in this array named it, valid or not. `scoreEnvelope` counts
+  // an envelope in as soon as its subject names an entry this bundle has.
+  const claims = new Map<number, number>();
 
   envelopes.forEach((envelope, index) => {
     const raw = rawBytes !== null && index < rawBytes.length ? rawBytes[index] ?? null : null;
-    const covered = scoreEnvelope(envelope, index, bySeq, recomputed, trust, raw, fail, claims);
+    const covered = scoreEnvelope(envelope, index, entries, subjectAt, recomputed, trust, raw, fail, claims);
     if (covered === null) return;
-    setOwn(states, String(covered.seq), WITNESS_SIGNED);
-    setOwn(results, String(covered.seq), covered.result);
-    setOwn(witnesses, String(covered.seq), covered.kid);
+    // Where `states` files that entry; `witnesses` files it by the index the subject resolved to.
+    const key = String(seqOrIndex(entries[covered.at]!, covered.at));
+    setOwn(states, key, WITNESS_SIGNED);
+    setOwn(results, key, covered.result);
+    setOwn(witnesses, String(covered.at), covered.kid);
   });
 
   // The first envelope's result stands in `results` — it is what that witness said, and the
   // duplicate does not erase it — but the STATE falls back, so a contradicted entry never
-  // reports witness-signed and the bundle rejects.
-  for (const [seq, count] of claims) {
-    if (count > 1) setOwn(states, seq, PROCESS_ASSERTED);
+  // reports witness-signed and the bundle rejects; and it leaves `witnesses`.
+  for (const [at, count] of claims) {
+    if (count > 1) {
+      setOwn(states, String(seqOrIndex(entries[at]!, at)), PROCESS_ASSERTED);
+      delete witnesses[String(at)];
+    }
   }
 
   const lines: Record<string, string> = {};
@@ -1296,11 +1326,12 @@ function reprList(values: readonly string[]): string {
 /**
  * One envelope, checked in the order the seven named failures are defined in.
  *
- * Returns the covered entry for an envelope that verified, and `null` for one that did not.
- * Every failure is positioned on the entry the envelope COVERS, found by `subject.seq` — the
- * locators are checked against that entry, not used to find it.
+ * Returns the index in `entries` of the entry an envelope that verified covers, and `null` for one
+ * that did not. Every failure is positioned on the entry the envelope COVERS, found by
+ * `subject.seq` through `subjectIndex` — the locators are checked against that entry, not used to
+ * find it.
  *
- * `claims` is the caller's seq -> count of the envelopes that have named each entry so far, and
+ * `claims` is the caller's entry index -> count of the envelopes that have named it so far, and
  * this function updates it. An envelope claims its entry as soon as `subject.seq` finds one,
  * BEFORE the rest of the subject is checked, so a second envelope over an entry an earlier one
  * already named is `envelope_duplicate_subject` whether either of them is otherwise sound: the
@@ -1310,13 +1341,14 @@ function reprList(values: readonly string[]): string {
 function scoreEnvelope(
   envelope: Envelope,
   index: number,
-  bySeq: Map<Json, LedgerEntry>,
-  recomputed: Map<Json, string | null>,
+  entries: readonly LedgerEntry[],
+  subjectAt: ReadonlyMap<number, number>,
+  recomputed: readonly (string | null)[],
   trust: TrustSet,
   raw: Buffer | string | null,
   fail: FailureLog,
-  claims: Map<string, number>,
-): { seq: Json; node: Json; result: Json; kid: string } | null {
+  claims: Map<number, number>,
+): { at: number; node: Json; result: Json; kid: string } | null {
   const isRecord = (v: unknown): v is Record<string, CJson> =>
     v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof RawNumber);
 
@@ -1329,8 +1361,9 @@ function scoreEnvelope(
     const raw = isRecord(subject) ? subject["seq"] : undefined;
     if (!isJsonInteger(raw)) return [null, null, null];
     const s = toPlain(raw) as number;
-    const entry = bySeq.get(s);
-    if (entry === undefined) return [s, null, null];
+    const at = subjectAt.get(s);
+    if (at === undefined) return [s, null, null];
+    const entry = entries[at]!;
     return [orNull(entry["seq"]), orNull(entry["node"]), entry];
   }
 
@@ -1422,18 +1455,18 @@ function scoreEnvelope(
     return report("envelope_subject_mismatch", "subject seq is not an integer");
   }
   const subjectSeq = toPlain(subject["seq"]) as number;
-  const entry = bySeq.get(subjectSeq);
-  if (entry === undefined) {
+  const at = subjectAt.get(subjectSeq);
+  if (at === undefined) {
     return report("envelope_subject_mismatch", `no entry at seq ${pyRepr(subjectSeq)} in this bundle`);
   }
+  const entry = entries[at]!;
   const seq = orNull(entry["seq"]);
 
   // (3a') one entry, at most one envelope. Counted here, before anything else about this
   // envelope is judged, so the rule cannot be sidestepped by making the second envelope
   // defective in some other way as well.
-  const claimKey = String(seq);
-  const already = claims.get(claimKey) ?? 0;
-  claims.set(claimKey, already + 1);
+  const already = claims.get(at) ?? 0;
+  claims.set(at, already + 1);
   if (already > 0) {
     return report(
       "envelope_duplicate_subject",
@@ -1443,7 +1476,7 @@ function scoreEnvelope(
     );
   }
 
-  const computed = recomputed.get(seq) ?? null;
+  const computed = recomputed[at] ?? null;
   const claimed = toPlain(subject["entry_hash"]) as Json;
   if (claimed !== computed) {
     return report(
@@ -1559,14 +1592,18 @@ function scoreEnvelope(
     return report("envelope_bad_signature", `the signature does not verify under the key kid=${pyRepr(kid)} names`);
   }
   if (nonCanonical) return null;
-  return { seq, node: orNull(entry["node"]), result: toPlain(envelope["observed"]["result"]) as Json, kid };
+  return { at, node: orNull(entry["node"]), result: toPlain(envelope["observed"]["result"]) as Json, kid };
 }
 
 /**
  * Score a bundle's observer envelopes on their own, without the ledger checks.
  *
- * Returns `{ok, ...summary, failure_details}`. `states` maps every entry's seq to
- * `witness-signed` or `process-asserted`; `lines` is the report line for each.
+ * Returns `{ok, ...summary, failure_details, failure_entries}`. `states` maps every entry's seq to
+ * `witness-signed` or `process-asserted`; `lines` is the report line for each. `results` maps a
+ * covered seq to the verifying envelope's `observed.result`. `witnesses` maps the index in
+ * `bundle.entries` of every witness-signed entry to that envelope's `witness.kid`: the entry the
+ * subject resolved to, the one `failure_entries` names, so of two entries sharing a seq only the
+ * one the witness signed is in it.
  */
 export function verifyEnvelopes(
   bundle: Partial<Bundle>,

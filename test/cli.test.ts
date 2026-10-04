@@ -13,8 +13,20 @@ import { join, resolve } from "node:path";
 
 import { AuditLog, hashEntry, type LedgerEntry } from "../src/audit.js";
 import { Authority } from "../src/authority.js";
+import type { CJson } from "../src/canonical.js";
 import { Allow } from "../src/ceilings.js";
-import { exportBundle, parseBundle, signEnvelope, verifyBundle, type Bundle, type WitnessKey } from "../src/evidence.js";
+import {
+  ENVELOPE_ALG,
+  ENVELOPE_TYP,
+  ENVELOPE_VERSION,
+  envelopeSigningInput,
+  exportBundle,
+  parseBundle,
+  signEnvelope,
+  verifyBundle,
+  type Bundle,
+  type WitnessKey,
+} from "../src/evidence.js";
 import { Guard } from "../src/guard.js";
 import { Ed25519Signer, HS256TestSigner } from "../src/wire.js";
 import { META, REPO_ROOT, fixturePath, fixtureText } from "./helpers.js";
@@ -624,10 +636,13 @@ function rehash(entries: LedgerEntry[]): void {
   }
 }
 
-/** `verify --entries` on `bundle`, trusting the test witness: exit code, stdout, entry lines. */
+/**
+ * `verify --entries` on `bundle`, trusting the test witness: exit code, stdout, entry lines. A
+ * string is written as it is, for a literal `JSON.stringify` would not keep.
+ */
 function entriesOf(dir: string, bundle: unknown): { status: number; stdout: string; lines: string[] } {
   const file = join(dir, "bundle.json");
-  writeFileSync(file, JSON.stringify(bundle));
+  writeFileSync(file, typeof bundle === "string" ? bundle : JSON.stringify(bundle));
   const { stdout, status } = run(["verify", file, "--witness-keys", writeWitnessKeys(dir), "--entries"]);
   return { status, stdout, lines: stdout.split("entries:\n")[1]!.trimEnd().split("\n") };
 }
@@ -698,6 +713,90 @@ test("two entries sharing a seq are told apart", () => {
     assert.ok(lines[5]!.startsWith("  seq=4 event=allow node=vectors:n1 scope=crm.export "), lines[5]);
     assert.ok(!lines[4]!.includes("failed="), lines[4]);
     assert.ok(lines[5]!.endsWith(" failed=integrity,containment"), lines[5]);
+  });
+});
+
+// ---- an envelope covers the entry its subject resolves to; --entries reads it by index ----------
+
+/**
+ * An envelope naming `seq` whose subject binds `entry`, signed by the test witness. Built by hand
+ * because `signEnvelope` resolves `seq` the way a verifier does, and so refuses to bind an entry
+ * that `seq` does not name, which is the forger's envelope this builds.
+ */
+function signedByHand(entry: LedgerEntry, seq: number): Record<string, CJson> {
+  const body: Record<string, CJson> = {
+    v: ENVELOPE_VERSION,
+    typ: ENVELOPE_TYP,
+    subject: {
+      chain_id: entry["chain_id"]!,
+      node: entry["node"]!,
+      seq,
+      entry_hash: entry["hash"]!,
+      event: entry["event"]!,
+    },
+    observed: { result: "matched", at: "2026-10-05T00:00:00Z", method: "signed by hand" },
+    witness: { kid: WITNESS_KID, alg: ENVELOPE_ALG },
+  };
+  const sig = Ed25519Signer.fromPrivateBytes(WITNESS_SEED, WITNESS_KID).sign(envelopeSigningInput(body));
+  return { ...body, sig: sig.toString("hex") };
+}
+
+test("of two entries sharing a seq, only the copy the witness signed reads witness-signed", () => {
+  // The forged allow given seq 3, the real deny's. A subject naming seq 3 covers the later entry,
+  // and the witness signs that copy. Read by seq, the deny above it printed witness-signed too,
+  // with nothing failing on its line.
+  const bundle = forgedWith((es) => void (es[4]!["seq"] = 3));
+  const entries = bundle["entries"] as LedgerEntry[];
+  const envelopes = [1, 2, 3].map((seq) =>
+    signEnvelope(entries, seq, WITNESS_SEED, WITNESS_KID, {
+      result: "indeterminate",
+      at: "2026-09-30T12:00:00Z",
+      method: "ledger-tail",
+    }),
+  );
+  assert.equal(envelopes[2]!.subject["entry_hash"], entries[4]!["hash"]);
+  bundle["envelopes"] = envelopes;
+  const witnessKeys = [{ kid: WITNESS_KID, alg: "EdDSA", public_key_hex: WITNESS_PUBLIC_HEX }];
+  const report = verifyBundle(bundle as unknown as Bundle, null, { witnessKeys });
+  assert.deepEqual(report.envelopes.witnesses, { 1: WITNESS_KID, 2: WITNESS_KID, 4: WITNESS_KID });
+  assert.equal(report.envelopes.states["3"], "witness-signed", "states stay keyed by seq");
+  inTempDir((dir) => {
+    const { status, lines } = entriesOf(dir, bundle);
+    assert.equal(status, 2);
+    assert.equal(lines[3], "  seq=3 event=deny node=custody:n1 scope=web.search state=process-asserted");
+    assert.equal(
+      lines[4],
+      "  seq=3 event=allow node=custody:n1 scope=web.search state=witness-signed observed=indeterminate " +
+        "witness=witness-custody failed=integrity,containment",
+    );
+  });
+});
+
+test("an entry whose seq is true or 1.0 takes no envelope", () => {
+  // The envelope names seq 1 and binds the very entry carrying that seq, signed by the trusted
+  // witness. Python found that entry for `true`, since True == 1 there, and this build found it for
+  // `1.0`, read as the number 1; either way it printed witness-signed.
+  inTempDir((dir) => {
+    const bundle = forgedWith((es) => void (es[1]!["seq"] = true));
+    bundle["envelopes"] = [signedByHand((bundle["entries"] as LedgerEntry[])[1]!, 1)];
+    const { status, stdout, lines } = entriesOf(dir, bundle);
+    assert.equal(status, 2);
+    assert.ok(stdout.includes("  - envelope_subject_mismatch: no entry at seq 1 in this bundle\n"), stdout);
+    assert.equal(lines[1], "  seq=true event=spawn node=custody:n1 state=process-asserted failed=integrity");
+
+    // JCS writes 1.0 as 1, so the entry keeps its hash and the envelope the witness signed over
+    // seq 1 still binds it: only the literal changes.
+    const clean = forgedWith(() => undefined);
+    const spawn = JSON.stringify((clean["entries"] as LedgerEntry[])[1]);
+    const text = JSON.stringify(clean);
+    assert.equal(text.split(spawn).length, 2, "the spawn entry is written once");
+    const floated = text.replace(spawn, spawn.replace(/"seq":1(?=[,}])/, '"seq":1.0'));
+    assert.notEqual(floated, text);
+    const f = entriesOf(dir, floated);
+    assert.equal(f.status, 2);
+    assert.ok(f.stdout.includes("  - integrity: seq gap at 1 (got 1.0)\n"), f.stdout);
+    assert.ok(f.stdout.includes("  - envelope_subject_mismatch: no entry at seq 1 in this bundle\n"), f.stdout);
+    assert.equal(f.lines[1], "  seq=1.0 event=spawn node=custody:n1 state=process-asserted failed=integrity");
   });
 });
 
