@@ -80,6 +80,27 @@
   "exit": 2,
   "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
  },
+ "forged_node_newline": {
+  "args": [
+   "verify",
+   "forged_node_newline.bundle.json",
+   "--witness-keys",
+   "keys.json"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on \"parity\\nOK\\nx:n1\" outside its authority ['docs.write']\nFAILED\n"
+ },
+ "forged_node_newline_entries": {
+  "args": [
+   "verify",
+   "forged_node_newline.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on \"parity\\nOK\\nx:n1\" outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=\"parity\\nOK\\nx:n0\" state=process-asserted\n  seq=1 event=spawn node=\"parity\\nOK\\nx:n1\" state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=\"parity\\nOK\\nx:n1\" scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=\"parity\\nOK\\nx:n1\" scope=web.search state=process-asserted\n  seq=4 event=allow node=\"parity\\nOK\\nx:n1\" scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
+ },
  "seq_null": {
   "args": [
    "verify",

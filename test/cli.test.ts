@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 import { AuditLog, hashEntry, type LedgerEntry } from "../src/audit.js";
 import { Authority } from "../src/authority.js";
 import { Allow } from "../src/ceilings.js";
-import { exportBundle, signEnvelope, verifyBundle, type Bundle, type WitnessKey } from "../src/evidence.js";
+import { exportBundle, parseBundle, signEnvelope, verifyBundle, type Bundle, type WitnessKey } from "../src/evidence.js";
 import { Guard } from "../src/guard.js";
 import { Ed25519Signer, HS256TestSigner } from "../src/wire.js";
 import { META, REPO_ROOT, fixturePath, fixtureText } from "./helpers.js";
@@ -747,6 +747,36 @@ test("a seq that is not an integer is a gap in the ledger itself", () => {
       assert.equal(status, 2, bad);
       assert.ok(stdout.startsWith(`TAMPERED — seq gap at 1 (got ${printed})\n`), stdout);
       assert.ok(stdout.split("\n")[3]!.endsWith(" failed=integrity"), stdout);
+    }
+  });
+});
+
+test("an envelope subject seq or an envelope v written 1.0 is refused, as Python refuses a float", () => {
+  // JCS writes 1.0 as 1, so nothing else about the bundle changes; the lexeme is the case. A plain
+  // JSON parse cannot tell 1.0 from 1, and this build reads the literal it kept.
+  const doc = JSON.parse(fixtureText("vectors/envelopes/envelope_vectors_v1.json")) as {
+    cases: { name: string; bundle: unknown; witness_keys: unknown }[];
+  };
+  const c = doc.cases.find((x) => x.name === "valid_spawn_envelope")!;
+  const text = JSON.stringify(c.bundle);
+  assert.equal(text.split('"node":"vectors:n1","seq":1}').length, 2, "one subject names seq 1");
+  assert.equal(text.split('"v":1,"witness"').length, 2, "one envelope declares v 1");
+  inTempDir((dir) => {
+    const keys = join(dir, "keys.json");
+    writeFileSync(keys, JSON.stringify(c.witness_keys));
+    const cases: [string, string, string][] = [
+      ["subject seq", text.replace('"node":"vectors:n1","seq":1}', '"node":"vectors:n1","seq":1.0}'), "  - envelope_subject_mismatch: subject seq is not an integer"],
+      ["envelope v", text.replace('"v":1,"witness"', '"v":1.0,"witness"'), "  - envelope_unknown_version: envelope v=1.0 typ='delegation-event-observation', this build knows v=1 typ='delegation-event-observation'"],
+    ];
+    for (const [label, bundleText, line] of cases) {
+      assert.notEqual(bundleText, text, label);
+      const report = verifyBundle(parseBundle(bundleText), null, { witnessKeys: c.witness_keys as WitnessKey[] });
+      assert.equal(report.ok, false, label);
+      const file = join(dir, "bundle.json");
+      writeFileSync(file, bundleText);
+      const { stdout, status } = run(["verify", file, "--witness-keys", keys]);
+      assert.equal(status, 2, label);
+      assert.ok(stdout.split("\n").includes(line), `${label}:\n${stdout}`);
     }
   });
 });

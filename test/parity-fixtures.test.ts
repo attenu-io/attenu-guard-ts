@@ -7,7 +7,8 @@
  * able to trust the other on: `--entries` attributing a failure to an entry whose seq is missing,
  * null, a boolean, a string or written `1.0`; a seq written `1.0` in a ledger and in an envelope
  * subject, which Python reads as a float and refuses; an envelope whose `v` is `1.0`; a trust row
- * past its `not_after`; a row carrying a member it does not define (`notAfter`); a kid named twice.
+ * past its `not_after`; a row carrying a member it does not define (`notAfter`); a kid named twice;
+ * and a node name carrying line breaks, which must not add a line to either CLI's output.
  *
  * The generator writes these only when the installed Python has that verifier, so CI's fixture
  * drift check compares them once its pinned release does, and until then this test holds the
@@ -45,6 +46,8 @@ test("the parity set covers every case the release gate names", () => {
     "unknown_member_row",
     "duplicate_kid",
     "forged_allow",
+    "forged_node_newline",
+    "forged_node_newline_entries",
   ]) {
     assert.ok(name in CASES, name);
   }

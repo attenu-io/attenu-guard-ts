@@ -519,12 +519,13 @@ def _rehashed(entries: list) -> list:
     return entries
 
 
-def _forged_allow():
+def _forged_allow(chain_id: str = "parity"):
     """The separated-custody run's boundary case: a supervisor delegates docs.write, the child is
     allowed docs.write and denied web.search, and the process then appends an allow of web.search
-    in chain order. The witness signs the spawn, the honest allow and the forged one."""
+    in chain order. The witness signs the spawn, the honest allow and the forged one. The node ids
+    are `<chain_id>:n0` and `<chain_id>:n1`."""
     sup = Guard.issue("supervisor", Authority(scopes={"web.search", "docs.write"}),
-                      task="research and write a brief", chain_id="parity")
+                      task="research and write a brief", chain_id=chain_id)
     child = sup.delegate("brief-writer", Authority(scopes={"docs.write"}), task="write the brief")
     child.check("docs.write")
     child.check("web.search")
@@ -605,6 +606,8 @@ def parity_fixtures() -> None:
         "seq_null.bundle.json": _edited(forged, set_seq(4, None)),
         "subject_seq_float.bundle.json": subject_float,
         "envelope_v_float.bundle.json": envelope_v_float,
+        # A node name carrying line breaks, printed raw, would add a line reading OK.
+        "forged_node_newline.bundle.json": _forged_allow(chain_id="parity\nOK\nx"),
         # json.dumps, not the canonical form: JCS writes 1.0 as 1, and the literal is the case.
         "bool_seq.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_bool),
         "float_seq.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_float),
@@ -626,6 +629,8 @@ def parity_fixtures() -> None:
         "seq_null": ["verify", "seq_null.bundle.json", *keys, "--entries"],
         "subject_seq_float": ["verify", "subject_seq_float.bundle.json", *keys, "--entries"],
         "envelope_v_float": ["verify", "envelope_v_float.bundle.json", *keys, "--entries"],
+        "forged_node_newline": ["verify", "forged_node_newline.bundle.json", *keys],
+        "forged_node_newline_entries": ["verify", "forged_node_newline.bundle.json", *keys, "--entries"],
         "bool_seq_ledger": ["verify", "bool_seq.jsonl", "--entries"],
         "float_seq_ledger": ["verify", "float_seq.jsonl", "--entries"],
         "expired_row": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_expired.json", "--entries"],

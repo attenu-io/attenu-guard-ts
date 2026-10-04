@@ -1,0 +1,191 @@
+{
+ "anchor": {
+  "c14n": "JCS",
+  "chain_id": "parity\nOK\nx",
+  "head": "8318a409957b70425fc805d3eb993c2bbc96aa1d06a106ba9a0a1540c034aa67",
+  "kid": "sample",
+  "seq": 4,
+  "sig": "04be552878b924e69bd648e0ebb8dfaeb5dfb15cf2dd1c3c46d4583f6ba1565b",
+  "ts": 0,
+  "v": 1,
+  "verified": true
+ },
+ "c14n": "JCS",
+ "chain_id": "parity\nOK\nx",
+ "entries": [
+  {
+   "agent": "supervisor",
+   "authority": {
+    "constraints": [],
+    "scopes": [
+     "docs.write",
+     "web.search"
+    ],
+    "ttl": null
+   },
+   "c14n": "JCS",
+   "chain_id": "parity\nOK\nx",
+   "event": "root",
+   "hash": "25ca69a6733b4c29a7ae88621f7b753164b52b971a8c6680be5a7b42828d52b1",
+   "node": "parity\nOK\nx:n0",
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 1,
+   "v": 1
+  },
+  {
+   "agent": "brief-writer",
+   "c14n": "JCS",
+   "chain_id": "parity\nOK\nx",
+   "event": "spawn",
+   "granted": {
+    "constraints": [],
+    "scopes": [
+     "docs.write"
+    ],
+    "ttl": null
+   },
+   "hash": "f3736957ed0e413da7e591b4f5e7f9c48677ac1d2a0252f71d275b2a776fc0b8",
+   "node": "parity\nOK\nx:n1",
+   "parent": "parity\nOK\nx:n0",
+   "prev_hash": "25ca69a6733b4c29a7ae88621f7b753164b52b971a8c6680be5a7b42828d52b1",
+   "requested": {
+    "constraints": [],
+    "scopes": [
+     "docs.write"
+    ],
+    "ttl": null
+   },
+   "seq": 1,
+   "task": "write the brief",
+   "ts": 2,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity\nOK\nx",
+   "context": {},
+   "event": "allow",
+   "hash": "3a0ad659c0390ce30930ac5cb69028ed2d0ea7412d92da7f51e78a2989b4308e",
+   "node": "parity\nOK\nx:n1",
+   "prev_hash": "f3736957ed0e413da7e591b4f5e7f9c48677ac1d2a0252f71d275b2a776fc0b8",
+   "scope": "docs.write",
+   "seq": 2,
+   "tool": null,
+   "ts": 3,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity\nOK\nx",
+   "context": {},
+   "disposition": "out_of_authority",
+   "event": "deny",
+   "hash": "1606170b1d684f20df5547c9def44eb16be18cd93e79f45f24e729c494fa2920",
+   "node": "parity\nOK\nx:n1",
+   "prev_hash": "3a0ad659c0390ce30930ac5cb69028ed2d0ea7412d92da7f51e78a2989b4308e",
+   "reason": "scope_not_granted",
+   "reasons": [
+    {
+     "code": "scope_not_granted",
+     "constraint": null,
+     "limit": null,
+     "message": "scope 'web.search' not covered by held scopes ['docs.write']",
+     "requested": "web.search"
+    }
+   ],
+   "scope": "web.search",
+   "seq": 3,
+   "tool": null,
+   "ts": 4,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity\nOK\nx",
+   "context": {},
+   "event": "allow",
+   "hash": "8318a409957b70425fc805d3eb993c2bbc96aa1d06a106ba9a0a1540c034aa67",
+   "node": "parity\nOK\nx:n1",
+   "prev_hash": "1606170b1d684f20df5547c9def44eb16be18cd93e79f45f24e729c494fa2920",
+   "scope": "web.search",
+   "seq": 4,
+   "tool": null,
+   "ts": 5,
+   "v": 1
+  }
+ ],
+ "envelopes": [
+  {
+   "observed": {
+    "at": "2026-09-30T07:43:46Z",
+    "method": "signs what it receives in chain order",
+    "result": "indeterminate"
+   },
+   "sig": "f475f3436aad698adf2ce7bd3ac082da407bdf1fbc6be233169d4cdf0b6dac0588454d0235126aea4d0e25d051e8d5612881c9574e426f677ab0254cf5f6ea04",
+   "subject": {
+    "chain_id": "parity\nOK\nx",
+    "entry_hash": "f3736957ed0e413da7e591b4f5e7f9c48677ac1d2a0252f71d275b2a776fc0b8",
+    "event": "spawn",
+    "node": "parity\nOK\nx:n1",
+    "seq": 1
+   },
+   "typ": "delegation-event-observation",
+   "v": 1,
+   "witness": {
+    "alg": "EdDSA",
+    "kid": "witness-parity"
+   }
+  },
+  {
+   "observed": {
+    "at": "2026-09-30T07:43:46Z",
+    "method": "signs what it receives in chain order",
+    "result": "indeterminate"
+   },
+   "sig": "d1e22a3166fce5c5a3d2cc13319a5856cda1ec503b0d0d50a1de5d47a45e2a197a9da4be953afd979d1170c71277a135d3ec535cdaf3b126a9121d0f8a7f8206",
+   "subject": {
+    "call_id": null,
+    "chain_id": "parity\nOK\nx",
+    "entry_hash": "3a0ad659c0390ce30930ac5cb69028ed2d0ea7412d92da7f51e78a2989b4308e",
+    "event": "allow",
+    "node": "parity\nOK\nx:n1",
+    "seq": 2
+   },
+   "typ": "delegation-event-observation",
+   "v": 1,
+   "witness": {
+    "alg": "EdDSA",
+    "kid": "witness-parity"
+   }
+  },
+  {
+   "observed": {
+    "at": "2026-09-30T07:43:46Z",
+    "method": "signs what it receives in chain order",
+    "result": "indeterminate"
+   },
+   "sig": "2c35ee069a63f45d3004174e7da0d884ea43c98047310e67cd5cf11442b9768a7faa80d6cc2367c144147b28a0f3b15b3db23412f59bcbd290e4c7e1b3d2a805",
+   "subject": {
+    "call_id": null,
+    "chain_id": "parity\nOK\nx",
+    "entry_hash": "8318a409957b70425fc805d3eb993c2bbc96aa1d06a106ba9a0a1540c034aa67",
+    "event": "allow",
+    "node": "parity\nOK\nx:n1",
+    "seq": 4
+   },
+   "typ": "delegation-event-observation",
+   "v": 1,
+   "witness": {
+    "alg": "EdDSA",
+    "kid": "witness-parity"
+   }
+  }
+ ],
+ "note": "offline-verifiable: attenu_guard.evidence.verify_bundle(bundle, signer)",
+ "redaction": {
+  "ok": true,
+  "violations": []
+ },
+ "v": 1
+}
