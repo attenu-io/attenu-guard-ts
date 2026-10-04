@@ -307,8 +307,8 @@ export class AuditLog {
         // reproduce the recorded one with: the existing integrity failure at this entry, reported
         // and never thrown, since a ledger is attacker-supplied. The Python implementation reports
         // an integer past that range the same way. A float past it hashes there, so a chain carrying
-        // `1e300` verifies in Python and fails here; JCS here refuses it until it serializes every
-        // finite double as RFC 8785 does.
+        // `1e300` verifies in Python and fails here: this JCS refuses an integral number past that
+        // range, where RFC 8785 serializes any finite double.
         reproduced = false;
       }
       if (!reproduced) {

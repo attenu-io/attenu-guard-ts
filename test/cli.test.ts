@@ -975,7 +975,8 @@ test("an entry carrying a number past 2^53 is a hash mismatch at that entry, and
   // reproduced: the existing integrity failure at that entry, with and without an anchor key, where
   // the CLI stopped with a stack trace. The Python implementation reports an integer past that
   // range the same way. A float past it hashes there, so a chain re-hashed around one verifies in
-  // Python and fails here, closed (a known difference until JCS here serializes every finite double).
+  // Python and fails here, closed: a known difference, since this JCS refuses an integral number
+  // past that range, where RFC 8785 serializes any finite double.
   const entries = withForgedAllow(custodyRun());
   const bundle = exportBundle(entries, ANCHOR) as unknown as Record<string, unknown>;
   const text = JSON.stringify(bundle);
