@@ -293,7 +293,19 @@ export class AuditLog {
       if (toPlain(payload["prev_hash"]) !== prev) {
         return [false, `prev_hash mismatch at seq ${expectedSeq}`];
       }
-      if (hashEntry(prev, payload) !== stored) {
+      let reproduced: boolean;
+      try {
+        reproduced = hashEntry(prev, payload) === stored;
+      } catch {
+        // A member JCS cannot represent here, such as a number past ±(2^53 - 1), leaves no hash to
+        // reproduce the recorded one with: the existing integrity failure at this entry, reported
+        // and never thrown, since a ledger is attacker-supplied. The Python implementation reports
+        // an integer past that range the same way. A float past it hashes there, so a chain carrying
+        // `1e300` verifies in Python and fails here; JCS here refuses it until it serializes every
+        // finite double as RFC 8785 does.
+        reproduced = false;
+      }
+      if (!reproduced) {
         return [false, `hash mismatch at seq ${expectedSeq}`];
       }
       prev = stored as string;

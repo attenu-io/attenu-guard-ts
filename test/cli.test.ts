@@ -958,6 +958,60 @@ test("an anchor whose seq or v is past 2^53 fails its signature check in one lin
   });
 });
 
+test("an entry carrying a number past 2^53 is a hash mismatch at that entry, and never throws", () => {
+  // JCS cannot represent such a number here, so the hash recorded on the entry cannot be
+  // reproduced: the existing integrity failure at that entry, with and without an anchor key, where
+  // the CLI stopped with a stack trace. The Python implementation reports an integer past that
+  // range the same way. A float past it hashes there, so a chain re-hashed around one verifies in
+  // Python and fails here, closed (a known difference until JCS here serializes every finite double).
+  const entries = withForgedAllow(custodyRun());
+  const bundle = exportBundle(entries, ANCHOR) as unknown as Record<string, unknown>;
+  const text = JSON.stringify(bundle);
+  const deny = JSON.stringify((bundle["entries"] as LedgerEntry[])[3]);
+  assert.equal(text.split(deny).length, 2, "the deny is written once");
+  assert.equal(deny.split('"ts":4,').length, 2, "the deny carries ts 4");
+  inTempDir((dir) => {
+    const file = join(dir, "bundle.json");
+    const ledger = join(dir, "ledger.jsonl");
+    for (const literal of ["9007199254740993", "1e300"]) {
+      const forged = text.replace(deny, deny.replace('"ts":4,', `"ts":${literal},`));
+      const parsed = parseBundle(forged);
+      assert.deepEqual(AuditLog.verify(parsed.entries), [false, "hash mismatch at seq 3"], literal);
+      const report = verifyBundle(parsed, ANCHOR);
+      assert.equal(report.checks.integrity, false, literal);
+      assert.deepEqual(
+        report.failures.filter((f) => f.startsWith("integrity")),
+        ["integrity: hash mismatch at seq 3", "integrity(anchor): hash mismatch at seq 3"],
+        literal,
+      );
+      assert.equal(report.failure_entries[report.failures.indexOf("integrity: hash mismatch at seq 3")], 3, literal);
+
+      writeFileSync(file, forged);
+      for (const keyArgs of [[], ["--hs256-key", META.hs256_secret_hex]]) {
+        const label = `${literal} ${keyArgs.length > 0 ? "with" : "without"} a key`;
+        const { stdout, status, stderr } = run(["verify", file, ...keyArgs, "--entries"]);
+        assert.equal(stderr, "", label);
+        assert.equal(status, 2, label);
+        const lines = stdout.split("\n");
+        assert.ok(lines.includes("  - integrity: hash mismatch at seq 3"), `${label}:\n${stdout}`);
+        assert.equal(lines.includes("  - integrity(anchor): hash mismatch at seq 3"), keyArgs.length > 0, label);
+        assert.ok(
+          lines.includes("  seq=3 event=deny node=custody:n1 scope=web.search state=process-asserted failed=integrity"),
+          `${label}:\n${stdout}`,
+        );
+      }
+
+      const rows = (JSON.parse(text) as { entries: LedgerEntry[] }).entries.map((e) => JSON.stringify(e));
+      rows[3] = rows[3]!.replace('"ts":4,', `"ts":${literal},`);
+      writeFileSync(ledger, `${rows.join("\n")}\n`);
+      const plain = run(["verify", ledger]);
+      assert.equal(plain.stderr, "", literal);
+      assert.equal(plain.status, 2, literal);
+      assert.equal(plain.stdout, "TAMPERED — hash mismatch at seq 3\n", literal);
+    }
+  });
+});
+
 // ---- a file this build cannot parse is one line, exit 1 -------------------------------------------
 
 test("a bundle the strict parser refuses is one line naming the file and the reason, exit 1", () => {
