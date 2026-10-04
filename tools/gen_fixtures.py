@@ -40,6 +40,13 @@ What lands in `test/fixtures/`:
                            (attenu_guard.vectors.load_bundle_vectors); an older release simply
                            leaves the committed copy alone, so CI's fixture-drift check stays
                            green until the pin is bumped to a release that has them.
+  parity/                  CLI parity cases for `verify --entries`, trust-row `not_after` and
+                           whole-row reading, and strict seq: the inputs, and in cli.json the
+                           stdout and exit code the PYTHON CLI gives for each, run from inside
+                           that directory so every path it prints is relative. The TypeScript
+                           CLI must print the same bytes. Written only when the installed
+                           attenu-guard has that verifier (`failure_entries` in a report); an
+                           older release leaves the committed copies alone, as above.
 """
 from __future__ import annotations
 
@@ -480,6 +487,154 @@ def envelope_vectors() -> str | None:
     return read().decode("utf-8")
 
 
+# --------------------------------------------- CLI parity: --entries, not_after, strict seq
+
+#: The parity witness's Ed25519 seed and kid. Fixed, so every run signs the same bytes; it signs
+#: nothing but these test files and is published here on purpose.
+PARITY_SEED = bytes(range(32))
+PARITY_KID = "witness-parity"
+PARITY_GENESIS = "0" * 64
+
+
+def parity_supported() -> bool:
+    """True when the installed attenu-guard has the verifier these cases pin: per-entry failure
+    attribution (`failure_entries` in a report), `--entries`, `not_after` and whole trust rows.
+    An older release leaves the committed copies alone, as `bundle_vectors` does, so CI's
+    fixture-drift check stays green until the pin names a release that has them."""
+    try:
+        report = evidence.verify_bundle({"v": 1, "c14n": "JCS", "entries": []}, None)
+    except Exception:  # noqa: BLE001 - any failure here means the verifier is not the one pinned
+        return False
+    return "failure_entries" in report
+
+
+def _rehashed(entries: list) -> list:
+    """Re-hash a ledger from genesis, as a forger who edited an entry would."""
+    prev = PARITY_GENESIS
+    for e in entries:
+        e["prev_hash"] = prev
+        e.pop("hash", None)
+        e["hash"] = _hash(prev, e)
+        prev = e["hash"]
+    return entries
+
+
+def _forged_allow():
+    """The separated-custody run's boundary case: a supervisor delegates docs.write, the child is
+    allowed docs.write and denied web.search, and the process then appends an allow of web.search
+    in chain order. The witness signs the spawn, the honest allow and the forged one."""
+    sup = Guard.issue("supervisor", Authority(scopes={"web.search", "docs.write"}),
+                      task="research and write a brief", chain_id="parity")
+    child = sup.delegate("brief-writer", Authority(scopes={"docs.write"}), task="write the brief")
+    child.check("docs.write")
+    child.check("web.search")
+    ledger = sup.audit_log()
+    honest = ledger.entries[2]
+    ledger.append("allow", 5, chain_id=honest["chain_id"], node=honest["node"], scope="web.search",
+                  tool=None, context={})
+    entries = ledger.entries
+    envelopes = [evidence.sign_envelope(entries, seq, PARITY_SEED, kid=PARITY_KID,
+                                        result="indeterminate", at="2026-09-30T07:43:46Z",
+                                        method="signs what it receives in chain order")
+                 for seq in (1, 2, 4)]
+    return evidence.export_bundle(ledger, HS256TestSigner(HS256_SECRET, kid=HS256_KID),
+                                  envelopes=envelopes)
+
+
+def _edited(bundle: dict, edit, *, envelopes=True) -> dict:
+    """`bundle` with `edit` applied to its entries, re-hashed, its anchor dropped."""
+    b = copy.deepcopy(bundle)
+    edit(b["entries"])
+    _rehashed(b["entries"])
+    del b["anchor"]
+    if not envelopes:
+        b["envelopes"] = []
+    return b
+
+
+def _python_cli(args: list, cwd: Path) -> dict:
+    """What the PYTHON CLI prints for `args`, run from `cwd` so every path it prints is the
+    relative one it was given, and its exit code."""
+    import contextlib
+    import io
+    import os
+
+    from attenu_guard import cli
+
+    out = io.StringIO()
+    here = os.getcwd()
+    os.chdir(cwd)
+    try:
+        with contextlib.redirect_stdout(out):
+            code = cli.main(list(args))
+    finally:
+        os.chdir(here)
+    return {"args": list(args), "stdout": out.getvalue(), "exit": code}
+
+
+def parity_fixtures() -> None:
+    forged = _forged_allow()
+    public_hex = Ed25519Signer.from_private_bytes(PARITY_SEED, kid=PARITY_KID).public_bytes_raw().hex()
+    row = {"kid": PARITY_KID, "alg": "EdDSA", "public_key_hex": public_hex}
+
+    def set_seq(index, value):
+        def edit(entries):
+            entries[index]["seq"] = value
+        return edit
+
+    def drop_seq(index):
+        def edit(entries):
+            entries[index].pop("seq")
+        return edit
+
+    subject_float = copy.deepcopy(forged)
+    subject_float["envelopes"][0]["subject"]["seq"] = 1.0
+    envelope_v_float = copy.deepcopy(forged)
+    envelope_v_float["envelopes"][0]["v"] = 1.0
+
+    ledger = [dict(e) for e in forged["entries"]]
+    ledger_bool = _rehashed([dict(e, seq=True) if i == 1 else dict(e) for i, e in enumerate(ledger)])
+    ledger_float = _rehashed([dict(e, seq=1.0) if i == 1 else dict(e) for i, e in enumerate(ledger)])
+
+    files = {
+        "forged_allow.bundle.json": forged,
+        "bool_seq.bundle.json": _edited(forged, set_seq(1, True), envelopes=False),
+        "float_seq.bundle.json": _edited(forged, set_seq(1, 1.0)),
+        "string_seq.bundle.json": _edited(forged, set_seq(4, "4")),
+        "seq_removed.bundle.json": _edited(forged, drop_seq(4)),
+        "seq_null.bundle.json": _edited(forged, set_seq(4, None)),
+        "subject_seq_float.bundle.json": subject_float,
+        "envelope_v_float.bundle.json": envelope_v_float,
+        # json.dumps, not the canonical form: JCS writes 1.0 as 1, and the literal is the case.
+        "bool_seq.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_bool),
+        "float_seq.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_float),
+        "keys.json": [row],
+        "keys_expired.json": [dict(row, not_after="2000-01-01T00:00:00Z")],
+        "keys_unknown_member.json": [dict(row, notAfter="2000-01-01T00:00:00Z")],
+        "keys_duplicate_kid.json": [row, dict(row)],
+    }
+    for name, payload in files.items():
+        write(f"parity/{name}", payload)
+
+    keys = ["--witness-keys", "keys.json"]
+    runs = {
+        "forged_allow": ["verify", "forged_allow.bundle.json", *keys, "--entries"],
+        "bool_seq": ["verify", "bool_seq.bundle.json", "--entries"],
+        "float_seq": ["verify", "float_seq.bundle.json", *keys, "--entries"],
+        "string_seq": ["verify", "string_seq.bundle.json", *keys, "--entries"],
+        "seq_removed": ["verify", "seq_removed.bundle.json", *keys, "--entries"],
+        "seq_null": ["verify", "seq_null.bundle.json", *keys, "--entries"],
+        "subject_seq_float": ["verify", "subject_seq_float.bundle.json", *keys, "--entries"],
+        "envelope_v_float": ["verify", "envelope_v_float.bundle.json", *keys, "--entries"],
+        "bool_seq_ledger": ["verify", "bool_seq.jsonl", "--entries"],
+        "float_seq_ledger": ["verify", "float_seq.jsonl", "--entries"],
+        "expired_row": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_expired.json", "--entries"],
+        "unknown_member_row": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_unknown_member.json"],
+        "duplicate_kid": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_duplicate_kid.json"],
+    }
+    write("parity/cli.json", {name: _python_cli(args, OUT / "parity") for name, args in runs.items()})
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     print(f"writing fixtures to {OUT.relative_to(ROOT)}/")
@@ -555,6 +710,11 @@ def main() -> None:
         write("vectors/envelopes/envelope_vectors_v1.json", envelopes)
     else:
         print("  (installed attenu-guard has no envelope vectors; committed copy left as is)")
+
+    if parity_supported():
+        parity_fixtures()
+    else:
+        print("  (installed attenu-guard predates the --entries verifier; parity/ left as is)")
 
     ok, reason = AuditLog.verify(entries)
     write(

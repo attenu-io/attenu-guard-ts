@@ -1,0 +1,137 @@
+{
+ "bool_seq": {
+  "args": [
+   "verify",
+   "bool_seq.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - integrity: seq gap at 1 (got True)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=true event=spawn node=parity:n1 state=process-asserted failed=integrity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=process-asserted\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=containment\n"
+ },
+ "bool_seq_ledger": {
+  "args": [
+   "verify",
+   "bool_seq.jsonl",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "TAMPERED \u2014 seq gap at 1 (got True)\nentries:\n  seq=0 event=root node=parity:n0\n  seq=true event=spawn node=parity:n1 failed=integrity\n  seq=2 event=allow node=parity:n1 scope=docs.write\n  seq=3 event=deny node=parity:n1 scope=web.search\n  seq=4 event=allow node=parity:n1 scope=web.search\n"
+ },
+ "duplicate_kid": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_duplicate_kid.json"
+  ],
+  "exit": 2,
+  "stdout": "cannot use --witness-keys keys_duplicate_kid.json: witness key 'witness-parity': more than one row names this kid\n"
+ },
+ "envelope_v_float": {
+  "args": [
+   "verify",
+   "envelope_v_float.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_unknown_version: envelope v=1.0 typ='delegation-event-observation', this build knows v=1 typ='delegation-event-observation'\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=process-asserted failed=envelope_unknown_version\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
+ },
+ "expired_row": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_expired.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_unknown_witness: witness kid='witness-parity' alg='EdDSA' is not in the trusted witness keys ([]): the key expired at not_after='2000-01-01T00:00:00Z'\n  - envelope_unknown_witness: witness kid='witness-parity' alg='EdDSA' is not in the trusted witness keys ([]): the key expired at not_after='2000-01-01T00:00:00Z'\n  - envelope_unknown_witness: witness kid='witness-parity' alg='EdDSA' is not in the trusted witness keys ([]): the key expired at not_after='2000-01-01T00:00:00Z'\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=process-asserted failed=envelope_unknown_witness\n  seq=2 event=allow node=parity:n1 scope=docs.write state=process-asserted failed=envelope_unknown_witness\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=containment,envelope_unknown_witness\n"
+ },
+ "float_seq": {
+  "args": [
+   "verify",
+   "float_seq.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - integrity: seq gap at 1 (got 1.0)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1.0 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity failed=integrity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
+ },
+ "float_seq_ledger": {
+  "args": [
+   "verify",
+   "float_seq.jsonl",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "TAMPERED \u2014 seq gap at 1 (got 1.0)\nentries:\n  seq=0 event=root node=parity:n0\n  seq=1.0 event=spawn node=parity:n1 failed=integrity\n  seq=2 event=allow node=parity:n1 scope=docs.write\n  seq=3 event=deny node=parity:n1 scope=web.search\n  seq=4 event=allow node=parity:n1 scope=web.search\n"
+ },
+ "forged_allow": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
+ },
+ "seq_null": {
+  "args": [
+   "verify",
+   "seq_null.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - integrity: seq gap at 4 (got None)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_subject_mismatch: no entry at seq 4 in this bundle\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=null event=allow node=parity:n1 scope=web.search state=process-asserted failed=integrity,containment\n"
+ },
+ "seq_removed": {
+  "args": [
+   "verify",
+   "seq_removed.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - integrity: seq gap at 4 (got None)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_subject_mismatch: subject entry_hash '1fbcf7697fbf829be0efa8eebee2a610065e8cbc0e2578289075aa709ccfaa50' != the hash recomputed for seq None from this bundle (None)\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=null event=allow node=parity:n1 scope=web.search state=process-asserted failed=integrity,containment,envelope_subject_mismatch\n"
+ },
+ "string_seq": {
+  "args": [
+   "verify",
+   "string_seq.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - integrity: seq gap at 4 (got 4)\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_subject_mismatch: no entry at seq 4 in this bundle\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=integrity,containment\n"
+ },
+ "subject_seq_float": {
+  "args": [
+   "verify",
+   "subject_seq_float.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_subject_mismatch: subject seq is not an integer\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=process-asserted\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
+ },
+ "unknown_member_row": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_unknown_member.json"
+  ],
+  "exit": 2,
+  "stdout": "cannot use --witness-keys keys_unknown_member.json: witness key 'witness-parity': the row carries members this build does not evaluate and will not ignore: 'notAfter'\n"
+ }
+}

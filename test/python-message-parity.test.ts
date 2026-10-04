@@ -52,6 +52,10 @@ const PYTHON: Record<string, string[]> = {
   "constraint_dimension_rewritten": [
     "spawn vectors:n1: unreadable granted (constraint {'key': 'max_calls', 'max': 5, 'applies_to': 'fs.write\\x85\\x1b[2K'} names dimension 'max_calls' but this build reads it as 'max_calls[fs.write\\x85\\x1b[2K]'; refusing rather than silently changing which dimension is bounded)",
     "containment: allow on unknown node vectors:n1"
+  ],
+  "unknown_ceiling_null_key": [
+    "monotonicity: vectors:n1 not \u2286 parent vectors:n0 (ceiling None unbounded, parent holds None={'key': None, 'type': 'zzz'})",
+    "containment: allow of 'mail.send' on vectors:n0 outside its authority ['crm.*', 'mail.send']"
   ]
 };
 
@@ -111,6 +115,16 @@ const CASES: [string, Bundle, WitnessKey[] | null][] = [
   [
     "authority_scope_u2028",
     mutated(VALID_V2, (es) => void ((authorityOf(es[0]!, "authority")["scopes"] as string[])[0] = "crm.\u2028x")),
+    null,
+  ],
+  // A ceiling this build does not define, with a null key: Python names the key as the wire
+  // carried it, `None`, where this build's text key is empty.
+  [
+    "unknown_ceiling_null_key",
+    mutated(VALID_V2, (es) => {
+      authorityOf(es[0]!, "authority")["constraints"] = [{ key: null, type: "zzz" }];
+      authorityOf(es[1]!, "granted")["constraints"] = [];
+    }),
     null,
   ],
   [

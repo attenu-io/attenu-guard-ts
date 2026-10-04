@@ -47,7 +47,7 @@ import { createHash } from "node:crypto";
 
 import { AuditLog, SCHEMA_VERSION, chainIdOf, hashEntry, GENESIS, type Anchor, type LedgerEntry } from "./audit.js";
 import { Authority } from "./authority.js";
-import { describeInFinding, type Context } from "./ceilings.js";
+import { describeInFinding, wireKeyOf, type Context } from "./ceilings.js";
 import { pyRepr, pyStr, pyStrRepr, shown } from "./display.js";
 import { CAPTURES, BODY_STATES, POLICIES, BodyState, Capture } from "./reasons.js";
 import { PARAMS_HASH_REASONS } from "./params.js";
@@ -462,7 +462,7 @@ function monotonicityDetail(child: Authority, parent: Authority): string {
     const parentCeiling = parent.ceilings.find((c) => String(c.key) === key)!;
     const childCeiling = childByKey.get(key);
     if (childCeiling === undefined) {
-      return `ceiling ${shown(key)} unbounded, parent holds ${describeInFinding(parentCeiling)}`;
+      return `ceiling ${shown(wireKeyOf(parentCeiling))} unbounded, parent holds ${describeInFinding(parentCeiling)}`;
     }
     if (!parentCeiling.subsumes(childCeiling)) {
       return (
@@ -1153,16 +1153,12 @@ function receivedBytes(raw: unknown): Buffer | null {
   return null;
 }
 
-/**
- * A subject `seq` this build will look an entry up by: a JSON integer, and never a boolean.
- *
- * The type check comes first and every use of `seq` is behind it — in Python an unguarded lookup
- * raises on a list or an object and finds the entry at seq 1 for `true`, and the two
- * implementations report the same failure for the same bundle.
- */
-function isSeq(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value);
-}
+// A subject `seq` this build looks an entry up by, and an envelope's `v`, must be a JSON integer
+// written as one, and never a boolean (`isJsonInteger`, canonical.ts): Python's `_is_seq`. The
+// lexeme decides, since a parsed number keeps it: `1.0` is a float to Python, and a subject naming
+// seq `1.0` names no entry there. The type check comes first and every use is behind it — in Python
+// an unguarded lookup raises on a list or an object and finds the entry at seq 1 for `true`, and
+// the two implementations report the same failure for the same bundle.
 
 /**
  * The report line: the state and the result together, in the same form for all three results. A
@@ -1330,8 +1326,9 @@ function scoreEnvelope(
     // Every failure is positioned by `subject.seq`, and `subject` is attacker-supplied, so the
     // lookup is guarded: a seq that is not an integer positions nothing, which is honest — it
     // names no entry — and it is never used as a key.
-    const s = isRecord(subject) ? (toPlain(subject["seq"]) as Json) : null;
-    if (!isSeq(s)) return [null, null, null];
+    const raw = isRecord(subject) ? subject["seq"] : undefined;
+    if (!isJsonInteger(raw)) return [null, null, null];
+    const s = toPlain(raw) as number;
     const entry = bySeq.get(s);
     if (entry === undefined) return [s, null, null];
     return [orNull(entry["seq"]), orNull(entry["node"]), entry];
@@ -1352,11 +1349,11 @@ function scoreEnvelope(
   // further about it can be read safely.
   const v = toPlain(envelope["v"] as CJson) as Json;
   const typ = toPlain(envelope["typ"] as CJson) as Json;
-  if (v !== ENVELOPE_VERSION || typ !== ENVELOPE_TYP) {
+  if (!isJsonInteger(envelope["v"] as CJson) || v !== ENVELOPE_VERSION || typ !== ENVELOPE_TYP) {
     return report(
       "envelope_unknown_version",
-      `envelope v=${pyRepr(v)} typ=${pyRepr(typ)}, this build knows v=${ENVELOPE_VERSION} ` +
-        `typ='${ENVELOPE_TYP}'`,
+      `envelope v=${pyRepr((envelope["v"] ?? null) as CJson)} typ=${pyRepr((envelope["typ"] ?? null) as CJson)}, ` +
+        `this build knows v=${ENVELOPE_VERSION} typ='${ENVELOPE_TYP}'`,
     );
   }
 
@@ -1421,10 +1418,10 @@ function scoreEnvelope(
   // (3a) the binding member. `seq` is the lookup key, so there is nothing to compare it against;
   // the entry it finds supplies the hash the subject is checked against. It is also the one
   // subject member used as a KEY, so its type is checked before it is used as one.
-  const subjectSeq = toPlain(subject["seq"]) as Json;
-  if (!isSeq(subjectSeq)) {
+  if (!isJsonInteger(subject["seq"])) {
     return report("envelope_subject_mismatch", "subject seq is not an integer");
   }
+  const subjectSeq = toPlain(subject["seq"]) as number;
   const entry = bySeq.get(subjectSeq);
   if (entry === undefined) {
     return report("envelope_subject_mismatch", `no entry at seq ${pyRepr(subjectSeq)} in this bundle`);

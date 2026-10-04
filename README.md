@@ -214,7 +214,9 @@ containment rejects, and then the bundle fails. `attenu-guard verify FILE
 --entries` prints one line per entry with its state and the checks that failed
 on it, so the signature and the failure are read side by side. A failure is
 matched to its entry by index, so an entry whose seq is missing or forged still
-shows it.
+shows it. Each line is `key=value` tokens split by single spaces: the key is the
+text before the first `=`, a value never contains a space, and a value that
+starts with `"` is a JSON string.
 
 A trust-set row may carry `not_after`, an RFC 3339 date-time in UTC written with
 `Z`, such as `2026-10-05T00:00:00Z`. A row whose `not_after` is at or before the

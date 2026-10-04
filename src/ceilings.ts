@@ -108,6 +108,15 @@ export function describe(ceiling: Ceiling): string {
 }
 
 /**
+ * A ceiling's key as the wire carried it, which is what a finding names. A ceiling this build does
+ * not define keeps whatever its key was, null included, where its `key` property is text: the
+ * Python implementation prints a null key as `None`.
+ */
+export function wireKeyOf(ceiling: Ceiling): CJson {
+  return ceiling instanceof UnknownCeiling ? (ceiling.raw["key"] ?? null) : ceiling.key;
+}
+
+/**
  * A ceiling as a verifier finding prints it: `describe`'s text, with every value the bundle supplied
  * printed through `shown` (display.ts), so the finding stays on one line.
  *
@@ -134,7 +143,7 @@ export function describeInFinding(ceiling: Ceiling): string {
   if (kind === Allow) return `${shown(ceiling.key)} in [${members((ceiling as Allow).oneOf)}]`;
   if (kind === Deny) return `${shown(ceiling.key)} not in [${members((ceiling as Deny).notOneOf)}]`;
   if (kind === Prefix) return `${shown(ceiling.key)} startswith ${shown((ceiling as Prefix).prefix)}`;
-  const key = ceiling instanceof UnknownCeiling ? (ceiling.raw["key"] ?? null) : ceiling.key;
+  const key = wireKeyOf(ceiling);
   const text =
     typeof ceiling.describe === "function" ? ceiling.describe() : `${pyStr(key)}=${pyRepr(ceiling.toWire())}`;
   return /^[ -~]*$/.test(text) ? text : escaped(text);
