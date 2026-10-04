@@ -11,10 +11,10 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { join, resolve } from "node:path";
 
-import { hashEntry, type LedgerEntry } from "../src/audit.js";
+import { AuditLog, hashEntry, type LedgerEntry } from "../src/audit.js";
 import { Authority } from "../src/authority.js";
 import { Allow } from "../src/ceilings.js";
-import { exportBundle, signEnvelope } from "../src/evidence.js";
+import { exportBundle, signEnvelope, verifyBundle, type Bundle, type WitnessKey } from "../src/evidence.js";
 import { Guard } from "../src/guard.js";
 import { Ed25519Signer, HS256TestSigner } from "../src/wire.js";
 import { META, REPO_ROOT, fixturePath, fixtureText } from "./helpers.js";
@@ -95,10 +95,13 @@ test("--help, -h and verify --help print usage and exit 0", () => {
 test("--help lists --entries in the Python CLI's words", () => {
   const { stdout } = run(["--help"]);
   assert.match(stdout, /\[--witness-keys FILE\] \[--entries\]/);
-  assert.ok(
-    stdout.includes("--entries adds one line per entry: its envelope state and the checks that failed on it)"),
-    stdout,
-  );
+  for (const line of [
+    "--entries adds one line per entry: its envelope state and the checks that failed on it;",
+    'a line is key=value tokens split by single spaces, the key before the first "=",',
+    'and a value never contains a space; one that starts with " is a JSON string)',
+  ]) {
+    assert.ok(stdout.includes(line), line);
+  }
 });
 
 // ---- observer envelopes: --witness-keys -----------------------------------------------------
@@ -587,6 +590,164 @@ test("--entries never shows a forged string seq as witness-signed", () => {
     assert.ok(lines.includes("  seq=__proto__ event=spawn node=vectors:evil state=process-asserted"), stdout);
     assert.doesNotMatch(stdout, /state=\{\}/);
     assert.equal(lines.filter((l) => l.includes("witness=")).length, 1, "only the real seq 1 is witness-signed");
+  });
+});
+
+// ---- --entries attributes a failure to its entry by index, never by seq ---------------------------
+
+/** The forged-allow bundle with `edit` applied to its entries, re-hashed, the anchor dropped. */
+function forgedWith(edit: (entries: LedgerEntry[]) => void): Record<string, unknown> {
+  const entries = withForgedAllow(custodyRun());
+  const envelopes = [1, 2, 4].map((seq) =>
+    signEnvelope(entries, seq, WITNESS_SEED, WITNESS_KID, {
+      result: "indeterminate",
+      at: "2026-09-30T12:00:00Z",
+      method: "ledger-tail",
+    }),
+  );
+  const bundle = exportBundle(entries, ANCHOR, { envelopes }) as unknown as Record<string, unknown>;
+  const edited = (bundle["entries"] as LedgerEntry[]).map((e) => ({ ...e }));
+  edit(edited);
+  rehash(edited);
+  bundle["entries"] = edited;
+  delete bundle["anchor"];
+  return bundle;
+}
+
+function rehash(entries: LedgerEntry[]): void {
+  let prev = "0".repeat(64);
+  for (const e of entries) {
+    e["prev_hash"] = prev;
+    delete e["hash"];
+    e["hash"] = hashEntry(prev, e);
+    prev = e["hash"] as string;
+  }
+}
+
+/** `verify --entries` on `bundle`, trusting the test witness: exit code, stdout, entry lines. */
+function entriesOf(dir: string, bundle: unknown): { status: number; stdout: string; lines: string[] } {
+  const file = join(dir, "bundle.json");
+  writeFileSync(file, JSON.stringify(bundle));
+  const { stdout, status } = run(["verify", file, "--witness-keys", writeWitnessKeys(dir), "--entries"]);
+  return { status, stdout, lines: stdout.split("entries:\n")[1]!.trimEnd().split("\n") };
+}
+
+test("an entry without a seq prints seq=null and keeps its failures", () => {
+  // Findings about this entry carried no seq, were taken for chain-level ones, and the forged
+  // allow printed a clean line under a FAILED verdict.
+  const variants: [string, (es: LedgerEntry[]) => void, string][] = [
+    // The envelope over seq 4 still finds this entry (its index stands in for the missing seq),
+    // and its entry_hash no longer matches.
+    ["seq removed", (es) => void delete es[4]!["seq"], "integrity,containment,envelope_subject_mismatch"],
+    // A null seq finds nothing, so that envelope failure is about no entry.
+    ["seq null", (es) => void (es[4]!["seq"] = null), "integrity,containment"],
+  ];
+  inTempDir((dir) => {
+    for (const [label, edit, failed] of variants) {
+      const { status, stdout, lines } = entriesOf(dir, forgedWith(edit));
+      assert.equal(status, 2, label);
+      assert.ok(stdout.includes("integrity: seq gap at 4 (got None)"), label);
+      assert.equal(lines[4], `  seq=null event=allow node=custody:n1 scope=web.search state=process-asserted failed=${failed}`, label);
+      assert.deepEqual(lines.filter((l) => l.includes("failed=")), [lines[4]], label);
+    }
+  });
+});
+
+test("a boolean seq breaks the chain at its own entry", () => {
+  inTempDir((dir) => {
+    const bundle = forgedWith((es) => void (es[1]!["seq"] = true));
+    bundle["envelopes"] = [];
+    const { status, stdout, lines } = entriesOf(dir, bundle);
+    assert.equal(status, 2);
+    assert.ok(stdout.includes("integrity=False"));
+    assert.ok(stdout.includes("  - integrity: seq gap at 1 (got True)\n"));
+    assert.equal(lines[1], "  seq=true event=spawn node=custody:n1 state=process-asserted failed=integrity");
+    assert.ok(lines[4]!.endsWith(" failed=containment"), lines[4]);
+  });
+});
+
+test("a string seq is a seq gap about its own entry", () => {
+  inTempDir((dir) => {
+    const { status, stdout, lines } = entriesOf(dir, forgedWith((es) => void (es[4]!["seq"] = "4")));
+    assert.equal(status, 2);
+    assert.ok(stdout.includes("integrity: seq gap at 4 (got 4)"));
+    assert.ok(lines[4]!.endsWith(" failed=integrity,containment"), lines[4]);
+    assert.deepEqual(lines.filter((l) => l.includes("failed=")), [lines[4]]);
+  });
+});
+
+test("two entries sharing a seq are told apart", () => {
+  // A forged allow inserted after the real one at seq 4, on the same node, with its own call_id.
+  // Matching failures by seq and node could not tell the two apart.
+  const doc = JSON.parse(fixtureText("vectors/envelopes/envelope_vectors_v1.json")) as {
+    cases: { name: string; bundle: Record<string, unknown> & { entries: LedgerEntry[] } }[];
+  };
+  const bundle = JSON.parse(JSON.stringify(doc.cases.find((c) => c.name === "absent_envelope")!.bundle)) as Record<
+    string,
+    unknown
+  > & { entries: LedgerEntry[] };
+  const entries = bundle.entries;
+  assert.deepEqual([entries[4]!["seq"], entries[4]!["event"]], [4, "allow"]);
+  entries.splice(5, 0, { ...entries[4]!, scope: "crm.export", call_id: "ab".repeat(16) });
+  rehash(entries);
+  delete bundle["anchor"];
+  inTempDir((dir) => {
+    const { status, lines } = entriesOf(dir, bundle);
+    assert.equal(status, 2);
+    assert.ok(lines[4]!.startsWith("  seq=4 event=allow node=vectors:n1 scope=crm.read "), lines[4]);
+    assert.ok(lines[5]!.startsWith("  seq=4 event=allow node=vectors:n1 scope=crm.export "), lines[5]);
+    assert.ok(!lines[4]!.includes("failed="), lines[4]);
+    assert.ok(lines[5]!.endsWith(" failed=integrity,containment"), lines[5]);
+  });
+});
+
+test("a reason twice on one entry is listed once, and failure_entries names the entry", () => {
+  const doc = JSON.parse(fixtureText("vectors/envelopes/envelope_vectors_v1.json")) as {
+    cases: { name: string; bundle: Bundle; witness_keys: WitnessKey[] }[];
+  };
+  const c = doc.cases.find((x) => x.name === "valid_spawn_envelope")!;
+  const bundle = JSON.parse(JSON.stringify(c.bundle)) as Bundle;
+  const envelope = bundle.envelopes![0]!;
+  bundle.envelopes = [envelope, structuredClone(envelope), structuredClone(envelope)];
+  const report = verifyBundle(bundle, null, { witnessKeys: c.witness_keys });
+  assert.deepEqual(report.failure_details.map((d) => d.reason), ["envelope_duplicate_subject", "envelope_duplicate_subject"]);
+  assert.deepEqual(report.failure_entries, [1, 1]);
+  inTempDir((dir) => {
+    const file = join(dir, "dup.json");
+    const keys = join(dir, "vector-keys.json");
+    writeFileSync(file, JSON.stringify(bundle));
+    writeFileSync(keys, JSON.stringify(c.witness_keys));
+    const { stdout, status } = run(["verify", file, "--witness-keys", keys, "--entries"]);
+    assert.equal(status, 2);
+    assert.ok(
+      stdout.includes("\n  seq=1 event=spawn node=vectors:n1 state=process-asserted failed=envelope_duplicate_subject\n"),
+      stdout,
+    );
+  });
+});
+
+test("a seq that is not an integer is a gap in the ledger itself", () => {
+  // `1.0` is a float to the Python implementation and `true` its bool, so neither is seq 1 there;
+  // here a parsed ledger keeps each literal, and the same seqs are the same gap.
+  inTempDir((dir) => {
+    const file = join(dir, "l.jsonl");
+    const root = Guard.issue("a", new Authority({ scopes: ["x.read"] }), { chainId: "c" });
+    root.delegate("b", new Authority({ scopes: ["x.read"] }), "t");
+    const clean = root.auditLog().entries.map((e) => JSON.stringify(e));
+    for (const [bad, printed] of [["true", "True"], ["1.0", "1.0"], ['"1"', "1"]] as const) {
+      // Re-hashed as a forger would; JCS writes 1.0 as 1, so that literal keeps the old hash.
+      const entries = clean.map((line) => JSON.parse(line) as LedgerEntry);
+      entries[1]!["seq"] = bad === "1.0" ? 1 : (JSON.parse(bad) as LedgerEntry[string]);
+      rehash(entries);
+      const lines = entries.map((e) => JSON.stringify(e));
+      if (bad === "1.0") lines[1] = lines[1]!.replace('"seq":1,', '"seq":1.0,');
+      writeFileSync(file, `${lines.join("\n")}\n`);
+      assert.deepEqual(AuditLog.verify(AuditLog.parseLines(`${lines.join("\n")}\n`)), [false, `seq gap at 1 (got ${printed})`], bad);
+      const { stdout, status } = run(["verify", file, "--entries"]);
+      assert.equal(status, 2, bad);
+      assert.ok(stdout.startsWith(`TAMPERED — seq gap at 1 (got ${printed})\n`), stdout);
+      assert.ok(stdout.split("\n")[3]!.endsWith(" failed=integrity"), stdout);
+    }
   });
 });
 

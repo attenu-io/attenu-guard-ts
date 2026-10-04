@@ -145,11 +145,38 @@ test("a leap day and a year below 100 are real dates", () => {
   assertExpired(verifyAt(keys("2024-02-29T23:59:59Z")), "2024-02-29T23:59:59Z", "leap day");
 });
 
-test("an expired row neither adds nor removes a kid another row trusts", () => {
+test("a kid has one row: a second row naming it is refused, whatever its expiry", () => {
+  // The later row used to win, so a row added to expire a key could leave it trusted, and an
+  // expired row beside a live one did. The Python implementation refuses the same rows.
   const valid = BASE.witness_keys.find((row) => row.kid === KID)!;
   const expired = { ...valid, not_after: "2026-01-01T00:00:00Z" };
-  assertTrusted(verifyAt([expired, valid]), "expired row first");
-  assertTrusted(verifyAt([valid, expired]), "expired row last");
+  for (const rows of [[expired, valid], [valid, expired], [valid, valid]]) {
+    assert.throws(() => verifyAt(rows), { message: `witness key '${KID}': more than one row names this kid` });
+  }
+});
+
+test("a row is read whole: a member outside kid, alg, public_key_hex and not_after is refused", () => {
+  // Read by projection, a misspelled `notAfter` was a key that never expired.
+  const valid = BASE.witness_keys.find((row) => row.kid === KID)!;
+  assert.throws(() => verifyAt([{ ...valid, notAfter: "2026-01-01T00:00:00Z" } as WitnessKey]), {
+    message: `witness key '${KID}': the row carries members this build does not evaluate and will not ignore: 'notAfter'`,
+  });
+  assert.throws(() => verifyAt([{ ...valid, comment: "x", "z\nOK": 1 } as WitnessKey]), {
+    message:
+      `witness key '${KID}': the row carries members this build does not evaluate and will not ignore: ` +
+      "'comment', 'z\\nOK'",
+  });
+});
+
+test("in the {kid: row} form a row may repeat its kid, and must agree with it", () => {
+  const valid = BASE.witness_keys.find((row) => row.kid === KID)!;
+  const other = BASE.witness_keys.find((row) => row.kid === OTHER)!;
+  const asRecord = (rows: Record<string, unknown>) =>
+    verifyBundle(BASE.bundle, SIGNER, { witnessKeys: rows as never, now: NOW });
+  assert.equal(asRecord({ [KID]: valid, [OTHER]: other }).ok, true, "a row that repeats its own kid");
+  assert.throws(() => asRecord({ [KID]: other }), {
+    message: `witness key '${KID}': its row names a different kid, '${OTHER}'`,
+  });
 });
 
 test("an expired row for a kid no envelope names changes nothing", () => {

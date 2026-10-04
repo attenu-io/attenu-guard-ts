@@ -212,15 +212,19 @@ holder observed. It does not attest that the action was permitted. Monotonicity
 and containment answer that, from the ledger: a witness can sign an allow that
 containment rejects, and then the bundle fails. `attenu-guard verify FILE
 --entries` prints one line per entry with its state and the checks that failed
-on it, so the signature and the failure are read side by side.
+on it, so the signature and the failure are read side by side. A failure is
+matched to its entry by index, so an entry whose seq is missing or forged still
+shows it.
 
 A trust-set row may carry `not_after`, an RFC 3339 date-time in UTC written with
 `Z`, such as `2026-10-05T00:00:00Z`. A row whose `not_after` is at or before the
 verification time is not trusted, so an envelope naming its kid fails
 `envelope_unknown_witness`, and the message says when the key expired. The
 verification time is `now` in `verifyBundle`'s options, and the current time
-when it is not given. A trust file the CLI cannot use is one line naming the
-file and, for a bad row, the kid, with exit code 2.
+when it is not given. A row is read whole: a member other than `kid`, `alg`,
+`public_key_hex` and `not_after`, or a second row for one kid, is refused. A
+trust file the CLI cannot use is one line naming the file and, for a bad row,
+the kid, with exit code 2.
 
 No value from a bundle can add a line to `attenu-guard verify` output. A value
 printed without quotes prints as it is only when it is printable ASCII with no

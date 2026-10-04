@@ -52,6 +52,16 @@ function isIntegerLiteralText(raw: string): boolean {
 }
 
 /**
+ * An integer as Python's `json` reads one: a JSON integer literal (no `.`, `e` or `E`) when the
+ * value kept its literal, an integral number when it did not, and never a boolean. `1.0` is a
+ * float to Python, so a ledger seq written `1.0` is not seq 1 in either implementation.
+ */
+export function isJsonInteger(value: CJson | undefined): boolean {
+  if (value instanceof RawNumber) return isIntegerLiteralText(value.raw);
+  return typeof value === "number" && Number.isInteger(value);
+}
+
+/**
  * Check a parsed number's ORIGINAL source text, before the double it parsed
  * into (which may already have silently rounded two different literals to the
  * same value) is used for anything.

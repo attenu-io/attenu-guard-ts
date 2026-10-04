@@ -18,6 +18,7 @@ import { dirname } from "node:path";
 import {
   canonicalBytes,
   canonicalJson,
+  isJsonInteger,
   parseJson,
   toPlain,
   type CJson,
@@ -265,7 +266,9 @@ export class AuditLog {
     let prev = GENESIS;
     let expectedSeq = 0;
     for (const e of entries) {
-      const seq = asNumber(e["seq"]);
+      // An integer, written as one, and never a boolean: a chain re-hashed around `"seq": 1.0`
+      // or `"seq": true` at index 1 is a seq gap there, as it is to the Python implementation.
+      const seq = isJsonInteger(e["seq"]) ? asNumber(e["seq"]) : undefined;
       if (seq !== expectedSeq) {
         // `seq` is the entry's own value, which a forged ledger chooses: printed by the one rule
         // (display.ts `shown`) so it cannot end the reader's line and start another.

@@ -34,6 +34,7 @@
 import {
   canonicalBytes,
   compareCodePoints,
+  isJsonInteger,
   parseJson,
   pyNumber,
   RawNumber,
@@ -46,7 +47,7 @@ import { createHash } from "node:crypto";
 
 import { AuditLog, SCHEMA_VERSION, chainIdOf, hashEntry, GENESIS, type Anchor, type LedgerEntry } from "./audit.js";
 import { Authority } from "./authority.js";
-import { describe as describeCeiling, type Context } from "./ceilings.js";
+import { describeInFinding, type Context } from "./ceilings.js";
 import { pyRepr, pyStr, pyStrRepr, shown } from "./display.js";
 import { CAPTURES, BODY_STATES, POLICIES, BodyState, Capture } from "./reasons.js";
 import { PARAMS_HASH_REASONS } from "./params.js";
@@ -353,6 +354,8 @@ interface FailurePosition {
   seq?: Json;
   node?: Json;
   callId?: Json;
+  /** The ledger entry the failure is about: one of the bundle's own entry objects, never a copy. */
+  entry?: LedgerEntry | null;
 }
 
 /**
@@ -369,16 +372,38 @@ interface FailurePosition {
 class FailureLog {
   readonly messages: string[] = [];
   readonly details: FailureDetail[] = [];
+  /**
+   * A third list in step with those two: the ledger entry each failure is about, or `null` for a
+   * failure about no single entry. It stays out of `details`, whose member set is the published
+   * contract, and `entryIndices` turns it into positions in the bundle's `entries`, which
+   * `verifyBundle` reports as `failure_entries`. A position is exact where a seq is not: an
+   * entry's seq can be missing, null, a boolean or a duplicate, and its index is still its own.
+   */
+  readonly about: (LedgerEntry | null)[] = [];
 
   add(reason: string, detail: string, position: FailurePosition = {}): void {
-    const { seq = null, node = null, callId = null } = position;
+    const { seq = null, node = null, callId = null, entry = null } = position;
     this.messages.push(detail);
     this.details.push({ reason, seq, node, call_id: callId, detail });
+    this.about.push(entry);
   }
 
   extend(other: FailureLog): void {
     this.messages.push(...other.messages);
     this.details.push(...other.details);
+    this.about.push(...other.about);
+  }
+
+  /**
+   * For each failure, the index in `entries` of the entry it is about, or `null`. Found by
+   * identity: every entry a check reports on is one of these objects.
+   */
+  entryIndices(entries: readonly LedgerEntry[]): (number | null)[] {
+    const at = new Map<LedgerEntry, number>();
+    entries.forEach((e, i) => {
+      if (!at.has(e)) at.set(e, i);
+    });
+    return this.about.map((e) => (e === null ? null : (at.get(e) ?? null)));
   }
 
   get length(): number {
@@ -437,12 +462,12 @@ function monotonicityDetail(child: Authority, parent: Authority): string {
     const parentCeiling = parent.ceilings.find((c) => String(c.key) === key)!;
     const childCeiling = childByKey.get(key);
     if (childCeiling === undefined) {
-      return `ceiling ${shown(key)} unbounded, parent holds ${describeCeiling(parentCeiling)}`;
+      return `ceiling ${shown(key)} unbounded, parent holds ${describeInFinding(parentCeiling)}`;
     }
     if (!parentCeiling.subsumes(childCeiling)) {
       return (
-        `ceiling ${describeCeiling(childCeiling)} looser than parent ` +
-        `${describeCeiling(parentCeiling)}`
+        `ceiling ${describeInFinding(childCeiling)} looser than parent ` +
+        `${describeInFinding(parentCeiling)}`
       );
     }
   }
@@ -477,6 +502,7 @@ function nodeAuthorities(entries: readonly LedgerEntry[]): NodeAuthorities {
         failures.add("unreadable_authority", `root ${shown(e["node"])}: unreadable authority (${(exc as Error).message})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
+          entry: e,
         });
       }
     } else if (ev === "spawn") {
@@ -488,6 +514,7 @@ function nodeAuthorities(entries: readonly LedgerEntry[]): NodeAuthorities {
         failures.add("unreadable_granted", `spawn ${shown(e["node"])}: unreadable granted (${(exc as Error).message})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
+          entry: e,
         });
       }
     }
@@ -783,6 +810,15 @@ export function envelopeSigningInput(envelope: Record<string, CJson>): Buffer {
 }
 
 /**
+ * The key an entry is filed under for envelope lookups: its seq, or its index when it has no seq —
+ * Python's `e.get("seq", i)`. A seq that is present and null stays null: it names no entry, so an
+ * envelope whose subject names that index does not find this one.
+ */
+function seqOrIndex(e: LedgerEntry, i: number): Json {
+  return "seq" in e ? orNull(e["seq"]) : i;
+}
+
+/**
  * seq -> the entry's hash RECOMPUTED from the bundle, never read off the entry.
  *
  * `entry_hash` in a subject is checked against this. The walk mirrors `AuditLog.verify`, so an
@@ -801,7 +837,7 @@ function recomputedHashes(entries: readonly LedgerEntry[]): Map<Json, string | n
       // An unhashable payload has no recomputable hash; that IS the break, at this entry.
       computed = null;
     }
-    out.set(orNull(e["seq"]) ?? i, computed);
+    out.set(seqOrIndex(e, i), computed);
     prev = computed ?? GENESIS;
   });
   return out;
@@ -918,16 +954,37 @@ function trustedWitnesses(
 ): TrustSet {
   const trusted = new Map<string, [string, Buffer]>();
   const expired = new Map<string, string>();
+  const seen = new Set<string>();
   if (witnessKeys === null || witnessKeys === undefined) return { trusted, expired };
   const rows: [unknown, unknown][] = Array.isArray(witnessKeys)
     ? witnessKeys.map((k) => [isRecordLike(k) ? k["kid"] : undefined, k])
     : Object.entries(witnessKeys);
   for (const [kid, value] of rows) {
     if (typeof kid !== "string") throw new Error("witness key kid must be a string");
+    // One row per kid. The later row used to win, so a row added to expire a key could leave it
+    // trusted, and an expired row beside a live one did.
+    if (seen.has(kid)) throw new Error(`witness key ${pyStrRepr(kid)}: more than one row names this kid`);
+    seen.add(kid);
     let key: unknown = value;
     let notAfter: string | null = null;
     let until: Instant | null = null;
     if (isRecordLike(value)) {
+      // Read whole: a row read by projection let a misspelled `notAfter` leave a key that never
+      // expired. In the `{kid: row}` form a row may repeat its kid, and must agree with it.
+      const unknown = Object.keys(value)
+        .filter((m) => !TRUST_ROW_MEMBERS.has(m))
+        .sort(compareCodePoints);
+      if (unknown.length > 0) {
+        throw new Error(
+          `witness key ${pyStrRepr(kid)}: the row carries members this build does not evaluate ` +
+            `and will not ignore: ${unknown.map(pyStrRepr).join(", ")}`,
+        );
+      }
+      if ("kid" in value && value["kid"] !== kid) {
+        throw new Error(
+          `witness key ${pyStrRepr(kid)}: its row names a different kid, ${pyRepr(value["kid"] as Json)}`,
+        );
+      }
       const alg = value["alg"];
       if (alg !== ENVELOPE_ALG) {
         throw new Error(`witness key ${pyStrRepr(kid)}: alg must be '${ENVELOPE_ALG}', got ${pyRepr(alg as Json)}`);
@@ -967,6 +1024,9 @@ function trustedWitnesses(
 export function validateWitnessKeys(witnessKeys: readonly WitnessKey[]): void {
   trustedWitnesses(witnessKeys, verificationTime(null));
 }
+
+/** A trust-set row's members. A row is read whole: anything else in it is refused. */
+const TRUST_ROW_MEMBERS: ReadonlySet<string> = new Set(["kid", "alg", "public_key_hex", "not_after"]);
 
 /**
  * The trust set at the verification time: the rows still valid, and the kids whose rows had
@@ -1170,7 +1230,7 @@ function scoreEnvelopes(
   const results: Record<string, Json> = {};
   const witnesses: Record<string, string> = {};
   entries.forEach((e, i) => {
-    setOwn(states, String(orNull(e["seq"]) ?? i), PROCESS_ASSERTED);
+    setOwn(states, String(seqOrIndex(e, i)), PROCESS_ASSERTED);
   });
 
   // The hash walk is what an envelope's binding member is checked against; a bundle carrying
@@ -1179,7 +1239,7 @@ function scoreEnvelopes(
   const bySeq = new Map<Json, LedgerEntry>();
   let recomputed = new Map<Json, string | null>();
   if (envelopes.length > 0) {
-    entries.forEach((e, i) => bySeq.set(orNull(e["seq"]) ?? i, e));
+    entries.forEach((e, i) => bySeq.set(seqOrIndex(e, i), e));
     recomputed = recomputedHashes(entries);
   }
 
@@ -1266,20 +1326,20 @@ function scoreEnvelope(
 
   const subject: unknown = isRecord(envelope) ? envelope["subject"] : undefined;
 
-  function position(): [Json, Json] {
+  function position(): [Json, Json, LedgerEntry | null] {
     // Every failure is positioned by `subject.seq`, and `subject` is attacker-supplied, so the
     // lookup is guarded: a seq that is not an integer positions nothing, which is honest — it
     // names no entry — and it is never used as a key.
     const s = isRecord(subject) ? (toPlain(subject["seq"]) as Json) : null;
-    if (!isSeq(s)) return [null, null];
+    if (!isSeq(s)) return [null, null, null];
     const entry = bySeq.get(s);
-    if (entry === undefined) return [s, null];
-    return [orNull(entry["seq"]), orNull(entry["node"])];
+    if (entry === undefined) return [s, null, null];
+    return [orNull(entry["seq"]), orNull(entry["node"]), entry];
   }
 
   function report(reason: string, detail: string): null {
-    const [seq, node] = position();
-    fail.add(reason, `${reason}: ${detail}`, { seq, node });
+    const [seq, node, entry] = position();
+    fail.add(reason, `${reason}: ${detail}`, { seq, node, entry });
     return null;
   }
 
@@ -1514,14 +1574,15 @@ function scoreEnvelope(
 export function verifyEnvelopes(
   bundle: Partial<Bundle>,
   options: VerifyEnvelopesOptions = {},
-): EnvelopeSummary & { ok: boolean; failure_details: FailureDetail[] } {
+): EnvelopeSummary & { ok: boolean; failure_details: FailureDetail[]; failure_entries: (number | null)[] } {
+  const entries = bundle.entries ?? [];
   const [summary, fail] = scoreEnvelopes(
-    bundle.entries ?? [],
+    entries,
     bundle.envelopes ?? [],
     trustedWitnesses(options.witnessKeys ?? null, verificationTime(options.now)),
     options.envelopeBytes ?? null,
   );
-  return { ok: fail.length === 0, ...summary, failure_details: fail.details };
+  return { ok: fail.length === 0, ...summary, failure_details: fail.details, failure_entries: fail.entryIndices(entries) };
 }
 
 // =============================================================================================
@@ -1821,7 +1882,7 @@ function policyFailures(entries: readonly LedgerEntry[], bundleV: Json): Failure
   for (const e of entries) {
     if (!("policy" in e)) continue;
     const ev = toPlain(e["event"]);
-    const position = { seq: orNull(e["seq"]), node: orNull(e["node"]) };
+    const position = { seq: orNull(e["seq"]), node: orNull(e["node"]), entry: e };
     if (ev === "allow") {
       if (bundleV === 2) continue; // validateAllow owns this entry's message
       if (!isKnownPolicy(toPlain(e["policy"]))) {
@@ -1854,7 +1915,7 @@ function v2FieldLeaksOnV1(entries: readonly LedgerEntry[]): FailureLog {
         "v2_field_on_v1",
         `v2_field_on_v1: seq=${shown(e["seq"])} event=${pyRepr(e["event"] ?? null)} ` +
           `carries v2-only field(s) ${reprList(leaked)} on a schema_version=1 entry`,
-        { seq: orNull(e["seq"]), node: orNull(e["node"]) },
+        { seq: orNull(e["seq"]), node: orNull(e["node"]), entry: e },
       );
     }
   }
@@ -1895,6 +1956,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
         failures.add("invalid_root", `invalid_root: ${err} (seq ${shown(e["seq"])})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
+          entry: e,
         });
       }
     } else if (ev === "spawn") {
@@ -1908,6 +1970,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
         failures.add("invalid_kill", `invalid_kill: ${err} (seq ${shown(e["seq"])})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
+          entry: e,
         });
       }
     }
@@ -1923,7 +1986,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
             "duplicate_call_id",
             `duplicate_call_id: call_id ${shown(e["call_id"])} on seq ${shown(e["seq"])} (${ev}) already used at seq ` +
               `${shown(prior[2])} (${prior[0]})`,
-            { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: cid },
+            { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: cid, entry: e },
           );
         } else {
           seenCallIds.set(cid, [ev, node, e["seq"] ?? null]);
@@ -1935,6 +1998,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
           callId: cid ?? null,
+          entry: e,
         });
         if (ev === "allow" && cid !== null && cid !== undefined) invalidAllowIds.add(cid);
         continue;
@@ -1948,6 +2012,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
           callId: cid ?? null,
+          entry: e,
         });
         continue;
       }
@@ -1956,7 +2021,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
           "duplicate_outcome",
           `duplicate_outcome: call_id ${shown(e["call_id"])} at seq ${shown(e["seq"])} (first at seq ` +
             `${shown(outcomes.get(cid)!["seq"])})`,
-          { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: cid },
+          { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: cid, entry: e },
         );
         continue;
       }
@@ -1981,7 +2046,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
       failures.add(
         "outcome_without_allow",
         `outcome_without_allow: call_id ${shown(oc["call_id"])} at seq ${shown(oc["seq"])} has no allow in this chain`,
-        { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid },
+        { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid, entry: oc },
       );
       continue;
     }
@@ -1991,7 +2056,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
         "cross_ref",
         `cross_ref: call_id ${shown(oc["call_id"])} allow on node ${pyRepr(allowE["node"] ?? null)} but ` +
           `outcome on node ${pyRepr(oc["node"] ?? null)}`,
-        { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid },
+        { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid, entry: oc },
       );
     }
     const ocSeq = toPlain(oc["seq"]);
@@ -2002,7 +2067,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
         "outcome_before_allow",
         `outcome_before_allow: call_id ${shown(oc["call_id"])} outcome seq ${shown(oc["seq"])} not ` +
           `after allow seq ${shown(allowE["seq"])}`,
-        { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid },
+        { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid, entry: oc },
       );
     }
     const ah = toPlain(allowE["authorized_params_hash"]);
@@ -2012,7 +2077,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
         "params_mismatch",
         `params_mismatch: call_id ${shown(oc["call_id"])} authorized_params_hash ` +
           `${shown(allowE["authorized_params_hash"])} != invoked_params_hash ${shown(oc["invoked_params_hash"])}`,
-        { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid },
+        { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid, entry: oc },
       );
     }
     if (nodeOk && orderOk) boundOk.add(cid);
@@ -2102,7 +2167,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
  * consistently re-hashed ledger fails against the signed anchor, not here, and that failure is
  * chain-level.
  */
-export function integrityPosition(entries: readonly LedgerEntry[]): [Json, Json] {
+export function integrityBreak(entries: readonly LedgerEntry[]): number | null {
   let prev: Json = GENESIS;
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i]!;
@@ -2113,17 +2178,18 @@ export function integrityPosition(entries: readonly LedgerEntry[]): [Json, Json]
     let broken: boolean;
     try {
       broken =
+        !isJsonInteger(e["seq"]) ||
         orNull(e["seq"]) !== i ||
         orNull(payload["prev_hash"]) !== prev ||
         hashEntry(prev as string, payload) !== orNull(e["hash"]);
     } catch {
       // An unhashable payload is itself the break, at this entry.
-      return [orNull(e["seq"]), orNull(e["node"])];
+      return i;
     }
-    if (broken) return [orNull(e["seq"]), orNull(e["node"])];
+    if (broken) return i;
     prev = orNull(e["hash"]);
   }
-  return [null, null];
+  return null;
 }
 
 export interface VerifyReport {
@@ -2136,6 +2202,13 @@ export interface VerifyReport {
    * reason AND the position of every failure instead of matching prose.
    */
   failure_details: FailureDetail[];
+  /**
+   * In step with `failures` and `failure_details` again: the index in `bundle.entries` of the entry
+   * each failure is about, or `null` for a failure about no single entry. Exact where a seq is
+   * not, since a forged entry's seq can be missing, null, a boolean or a duplicate; it is what
+   * `attenu-guard verify --entries` attributes by.
+   */
+  failure_entries: (number | null)[];
   nodes: number;
   actions_checked: number;
   /**
@@ -2258,7 +2331,7 @@ export function verifyBundle(
     log.add(
       "root_version_mismatch",
       `root_version_mismatch: root v=${pyRepr(rootEntry["v"] ?? null)} != bundle v=${pyRepr(bundleV)}`,
-      { seq: orNull(rootEntry["seq"]), node: orNull(rootEntry["node"]) },
+      { seq: orNull(rootEntry["seq"]), node: orNull(rootEntry["node"]), entry: rootEntry },
     );
   }
   const mixedEntries = entries.filter((e) => toPlain(e["v"]) !== bundleV);
@@ -2274,7 +2347,7 @@ export function verifyBundle(
     log.add(
       "mixed_entry_versions",
       `mixed_entry_versions: entries declare v in [${mixed.map((v) => pyRepr(v)).join(", ")}], bundle v=${pyRepr(bundleV)}`,
-      { seq: orNull(mixedEntries[0]!["seq"]), node: orNull(mixedEntries[0]!["node"]) },
+      { seq: orNull(mixedEntries[0]!["seq"]), node: orNull(mixedEntries[0]!["node"]), entry: mixedEntries[0]! },
     );
   }
   checks.version = versionOk;
@@ -2305,7 +2378,7 @@ export function verifyBundle(
         "unknown_ledger_fields",
         `unknown_ledger_fields: entry carries fields this verifier does not evaluate and will ` +
           `not ignore: ${extra.map((f) => shown(f)).join(", ")}`,
-        { seq: orNull(e["seq"]), node: orNull(e["node"]) },
+        { seq: orNull(e["seq"]), node: orNull(e["node"]), entry: e },
       );
     }
   }
@@ -2358,6 +2431,7 @@ export function verifyBundle(
     log.add("chain_id_mismatch", `chain_id_mismatch: an entry does not carry chain_id=${pyRepr(bundleChainId)}`, {
       seq: orNull(foreign["seq"]),
       node: orNull(foreign["node"]),
+      entry: foreign,
     });
   }
   const anchorChainId = orNull(anchor["chain_id"]);
@@ -2373,8 +2447,13 @@ export function verifyBundle(
   // (1) integrity: the hash chain, plus the signed anchor when a key is given.
   const [okChain, err] = AuditLog.verify(entries);
   if (!okChain) {
-    const [badSeq, badNode] = integrityPosition(entries);
-    log.add("integrity", `integrity: ${err}`, { seq: badSeq, node: badNode });
+    const bad = integrityBreak(entries);
+    const badEntry = bad === null ? null : entries[bad]!;
+    log.add("integrity", `integrity: ${err}`, {
+      seq: badEntry === null ? null : orNull(badEntry["seq"]),
+      node: badEntry === null ? null : orNull(badEntry["node"]),
+      entry: badEntry,
+    });
   }
   if (signer !== null) {
     const [okAnchor, aerr] = AuditLog.verifyAnchor(entries, anchor, signer);
@@ -2406,7 +2485,7 @@ export function verifyBundle(
       log.add(
         "monotonicity",
         `monotonicity: ${shown(node)} not ⊆ parent ${shown(pid)} (${monotonicityDetail(child, p)})`,
-        { seq: spawnE === undefined ? null : orNull(spawnE["seq"]), node },
+        { seq: spawnE === undefined ? null : orNull(spawnE["seq"]), node, entry: spawnE ?? null },
       );
     }
   }
@@ -2442,6 +2521,7 @@ export function verifyBundle(
         seq: orNull(e["seq"]),
         node: orNull(e["node"]),
         callId: orNull(e["call_id"]),
+        entry: e,
       });
       continue;
     }
@@ -2451,7 +2531,7 @@ export function verifyBundle(
         "containment",
         `containment: allow of ${pyRepr(e["scope"] ?? null)} on ${shown(e["node"])} outside its authority ` +
           reprList(Array.from(a.scopes).sort(compareCodePoints)),
-        { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: orNull(e["call_id"]) },
+        { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: orNull(e["call_id"]), entry: e },
       );
     }
   }
@@ -2497,6 +2577,7 @@ export function verifyBundle(
     checks,
     failures: log.messages,
     failure_details: log.details,
+    failure_entries: log.entryIndices(entries),
     nodes: auth.size,
     actions_checked: actions,
     ungated,

@@ -29,7 +29,6 @@
  */
 
 import { readFileSync } from "node:fs";
-import { isDeepStrictEqual } from "node:util";
 
 import { AuditLog, type LedgerEntry } from "./audit.js";
 import { parseJson, toPlain, type CJson, type Json } from "./canonical.js";
@@ -37,7 +36,7 @@ import { BARE, escaped, integerText, oneLine } from "./display.js";
 import {
   PROCESS_ASSERTED,
   WITNESS_SIGNED,
-  integrityPosition,
+  integrityBreak,
   parseBundle,
   validateWitnessKeys,
   verifyBundle,
@@ -59,7 +58,9 @@ const USAGE = `attenu-guard — command-line tool.
                                      (integrity · child ⊆ parent · containment;
                                       --hs256-key/--pubkey checks the anchor;
                                       --witness-keys FILE supplies the trusted observer-envelope keys;
-                                      --entries adds one line per entry: its envelope state and the checks that failed on it)
+                                      --entries adds one line per entry: its envelope state and the checks that failed on it;
+                                      a line is key=value tokens split by single spaces, the key before the first "=",
+                                      and a value never contains a space; one that starts with " is a JSON string)
 `;
 
 /** A `--witness-keys` file that was read and is not a trust set. The message says why. */
@@ -141,48 +142,28 @@ function field(e: LedgerEntry, name: string): Json {
   return plain === undefined ? null : plain;
 }
 
-/** A seq as an index key, or `null` for an object or array seq, which is compared whole instead. */
-function seqKey(seq: Json): string | null {
-  return typeof seq === "number" || typeof seq === "string" || typeof seq === "boolean" ? JSON.stringify(seq) : null;
-}
-
 /**
- * Entry index -> the checks that failed on that entry: the `reason` of every finding positioned on
- * it, each once, in the order the verifier reported them.
+ * Entry index -> the checks that failed on that entry: the `reason` of every failure about it,
+ * each once, in the order the verifier reported them.
  *
- * A finding lands on every entry whose own seq equals the finding's seq, and whose node and call_id
- * equal the finding's wherever the finding carries them. In a ledger whose seqs are unique that is
- * one entry. A finding with no seq is about no single entry (a version, root, anchor or chain-id
- * failure, or an envelope whose subject names no entry), and stays in the bundle-level output
- * only. Entries are indexed by seq first, so a long ledger with a finding on every entry is not a
- * quadratic walk.
+ * `failureEntries` is the verifier's own record of the entry each failure is about, by index
+ * (`VerifyReport.failure_entries`), so a failure lands on its entry even when that entry's seq is
+ * missing, null, a boolean, a string or another entry's. A failure about no single entry (a
+ * version, root, anchor or chain-id failure, or an envelope whose subject names no entry) is in
+ * the bundle-level output already and lands on no line.
  */
-function failedByEntry(entries: readonly LedgerEntry[], findings: readonly FailureDetail[]): Map<number, string[]> {
-  const bySeq = new Map<string, number[]>();
-  entries.forEach((e, i) => {
-    const key = seqKey(field(e, "seq"));
-    if (key === null) return;
-    const list = bySeq.get(key);
-    if (list === undefined) bySeq.set(key, [i]);
-    else list.push(i);
-  });
+function failedByEntry(
+  failureEntries: readonly (number | null)[],
+  details: readonly FailureDetail[],
+): Map<number, string[]> {
   const failed = new Map<number, string[]>();
-  for (const f of findings) {
-    if (f.seq === null) continue;
-    const key = seqKey(f.seq);
-    const candidates =
-      key !== null
-        ? (bySeq.get(key) ?? [])
-        : entries.flatMap((e, i) => (isDeepStrictEqual(field(e, "seq"), f.seq) ? [i] : []));
-    for (const i of candidates) {
-      const e = entries[i]!;
-      if (f.node !== null && !isDeepStrictEqual(f.node, field(e, "node"))) continue;
-      if (f.call_id !== null && !isDeepStrictEqual(f.call_id, field(e, "call_id"))) continue;
-      const reasons = failed.get(i) ?? [];
-      if (!reasons.includes(f.reason)) reasons.push(f.reason);
-      failed.set(i, reasons);
-    }
-  }
+  failureEntries.forEach((index, k) => {
+    if (index === null) return;
+    const reason = details[k]!.reason;
+    const reasons = failed.get(index) ?? [];
+    if (!reasons.includes(reason)) reasons.push(reason);
+    failed.set(index, reasons);
+  });
   return failed;
 }
 
@@ -201,13 +182,28 @@ function entryValue(value: CJson): string {
   return integerText(value) ?? escaped(value);
 }
 
-/** One `--entries` line: `key=value` pairs in a fixed order, a key with no value left out. */
-function entryLine(pairs: readonly (readonly [string, CJson | undefined])[]): string {
-  const shown: string[] = [];
+/**
+ * One `--entries` line: two spaces, then `key=value` tokens separated by single spaces, in a fixed
+ * order. `seq` is always printed, as `seq=null` for an entry that has none: an entry without a seq
+ * is exactly the entry a reader must see. Any other key with no value is left out.
+ *
+ * How a line parses: no token contains whitespace; the key is the text before the token's first
+ * `=`, and keys never contain one, though a value may (`scope=failed=containment` is the scope
+ * "failed=containment"); a value that starts with `"` is a JSON string, and any other value is
+ * printed as it is.
+ */
+function entryLine(e: LedgerEntry, rest: readonly (readonly [string, CJson | undefined])[]): string {
+  const tokens = [`seq=${entryValue(e["seq"] ?? null)}`];
+  const pairs: (readonly [string, CJson | undefined])[] = [
+    ["event", e["event"]],
+    ["node", e["node"]],
+    ["scope", e["scope"]],
+    ...rest,
+  ];
   for (const [key, value] of pairs) {
-    if (value !== null && value !== undefined) shown.push(`${key}=${entryValue(value)}`);
+    if (value !== null && value !== undefined) tokens.push(`${key}=${entryValue(value)}`);
   }
-  return `  ${shown.join(" ")}`;
+  return `  ${tokens.join(" ")}`;
 }
 
 /**
@@ -232,17 +228,13 @@ function stateKey(e: LedgerEntry, index: number): string | null {
 }
 
 function bundleEntryLines(entries: readonly LedgerEntry[], rep: VerifyReport): string[] {
-  const failed = failedByEntry(entries, rep.failure_details);
+  const failed = failedByEntry(rep.failure_entries, rep.failure_details);
   const { states, results, witnesses } = rep.envelopes;
   return entries.map((e, i) => {
     const key = stateKey(e, i);
     const state = key !== null && Object.hasOwn(states, key) ? states[key]! : PROCESS_ASSERTED;
     const signed = key !== null && state === WITNESS_SIGNED;
-    return entryLine([
-      ["seq", e["seq"]],
-      ["event", e["event"]],
-      ["node", e["node"]],
-      ["scope", e["scope"]],
+    return entryLine(e, [
       ["state", state],
       ["observed", signed && Object.hasOwn(results, key) ? results[key]! : null],
       ["witness", signed && Object.hasOwn(witnesses, key) ? witnesses[key]! : null],
@@ -252,17 +244,13 @@ function bundleEntryLines(entries: readonly LedgerEntry[], rep: VerifyReport): s
 }
 
 /** A plain ledger's entries. A plain ledger carries no envelopes, so there is no state to print. */
-function ledgerEntryLines(entries: readonly LedgerEntry[], findings: readonly FailureDetail[]): string[] {
-  const failed = failedByEntry(entries, findings);
-  return entries.map((e, i) =>
-    entryLine([
-      ["seq", e["seq"]],
-      ["event", e["event"]],
-      ["node", e["node"]],
-      ["scope", e["scope"]],
-      ["failed", failed.get(i)?.join(",") ?? null],
-    ]),
-  );
+function ledgerEntryLines(
+  entries: readonly LedgerEntry[],
+  failureEntries: readonly (number | null)[],
+  details: readonly FailureDetail[],
+): string[] {
+  const failed = failedByEntry(failureEntries, details);
+  return entries.map((e, i) => entryLine(e, [["failed", failed.get(i)?.join(",") ?? null]]));
 }
 
 /** One JSON object with an `entries` member: what `exportBundle` writes. */
@@ -409,14 +397,15 @@ function verify(args: string[]): number {
   const [ok, reason] = AuditLog.verify(entries);
   process.stdout.write(ok ? "OK\n" : `TAMPERED — ${reason}\n`);
   if (listEntries) {
-    // A plain ledger has one check, the hash chain. When it breaks, it is positioned with the
-    // same walk the bundle verifier uses for its `integrity` finding.
-    const findings: FailureDetail[] = [];
+    // A plain ledger has one check, the hash chain, and its failure is about the entry a bundle's
+    // integrity failure is about: the first one the chain does not reproduce at.
+    const at: (number | null)[] = [];
+    const details: FailureDetail[] = [];
     if (!ok) {
-      const [seq, node] = integrityPosition(entries);
-      findings.push({ reason: "integrity", seq, node, call_id: null, detail: `integrity: ${reason}` });
+      at.push(integrityBreak(entries));
+      details.push({ reason: "integrity", seq: null, node: null, call_id: null, detail: `integrity: ${reason}` });
     }
-    writeEntries(ledgerEntryLines(entries, findings));
+    writeEntries(ledgerEntryLines(entries, at, details));
   }
   return ok ? 0 : 2;
 }

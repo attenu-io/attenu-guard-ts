@@ -16,7 +16,7 @@
  */
 
 import { MAX_SAFE_INTEGER, compareCodePoints, pyNumber, toPlain, type CJson, type Json } from "./canonical.js";
-import { pyRepr, shown, shownText } from "./display.js";
+import { escaped, pyRepr, pyStr, shown, shownText } from "./display.js";
 import { Decision, Reason, ReasonCode } from "./reasons.js";
 
 /**
@@ -101,18 +101,43 @@ export function ctxFieldOf(ceiling: Ceiling): string {
   return ceiling.key;
 }
 
-/**
- * Uniform human-readable rendering of any ceiling. Never parsed back.
- *
- * The values in a description can come from a bundle (the evidence verifier puts them in the
- * monotonicity message), so every built-in prints each one through `shown` (display.ts): as it is
- * when it is printable ASCII without space, `"` or `\`, as escaped JSON otherwise. A description is
- * therefore always one line, and clean values print as they always have. The wire form of a
- * ceiling without a description of its own prints as Python prints the dict.
- */
+/** Uniform human-readable rendering of any ceiling. Never parsed back. */
 export function describe(ceiling: Ceiling): string {
   if (typeof ceiling.describe === "function") return ceiling.describe();
-  return `${shown(ceiling.key)}=${pyRepr(ceiling.toWire())}`;
+  return `${ceiling.key}=${JSON.stringify(ceiling.toWire())}`;
+}
+
+/**
+ * A ceiling as a verifier finding prints it: `describe`'s text, with every value the bundle supplied
+ * printed through `shown` (display.ts), so the finding stays on one line.
+ *
+ * `describe` itself is left alone, so dashboards and `Authority.describe()` print a region called
+ * "São Paulo" as it is, and for values in the bare set the two agree character for character. A
+ * ceiling this build does not define prints the Python implementation's description of it — its key,
+ * `=`, and the wire object as Python prints a dict — as it is when that is printable ASCII, spaces
+ * included, and as escaped JSON otherwise. Same text as the Python implementation's finding.
+ */
+export function describeInFinding(ceiling: Ceiling): string {
+  // A bound the wire supplied: a number prints as `describe` prints it; anything else is shown.
+  const bound = (v: unknown): string => (typeof v === "number" ? pyNumber(v) : shown(v as CJson));
+  const members = (values: Iterable<Json>): string =>
+    sortByStr(values)
+      .map((v) => shownText(strOf(v), v))
+      .join(", ");
+  // By exact class, as the Python implementation matches by exact type: a subclass of a built-in
+  // describes itself, and is printed the way any other ceiling this build does not define is.
+  const kind = (ceiling as object).constructor;
+  if (kind === RowLimit) return `${shown(ceiling.key)}<=${bound((ceiling as RowLimit).maxRows)}`;
+  if (kind === SpendCap) return `${shown(ceiling.key)}<=${bound((ceiling as SpendCap).maxSpend)}`;
+  if (kind === CallLimit) return `${shown(ceiling.key)}<=${bound((ceiling as CallLimit).maxCalls)}`;
+  if (kind === EgressRank) return `${shown(ceiling.key)}<=${shown((ceiling as EgressRank).level)}`;
+  if (kind === Allow) return `${shown(ceiling.key)} in [${members((ceiling as Allow).oneOf)}]`;
+  if (kind === Deny) return `${shown(ceiling.key)} not in [${members((ceiling as Deny).notOneOf)}]`;
+  if (kind === Prefix) return `${shown(ceiling.key)} startswith ${shown((ceiling as Prefix).prefix)}`;
+  const key = ceiling instanceof UnknownCeiling ? (ceiling.raw["key"] ?? null) : ceiling.key;
+  const text =
+    typeof ceiling.describe === "function" ? ceiling.describe() : `${pyStr(key)}=${pyRepr(ceiling.toWire())}`;
+  return /^[ -~]*$/.test(text) ? text : escaped(text);
 }
 
 /**
@@ -163,7 +188,7 @@ export class RowLimit implements Ceiling {
   }
 
   describe(): string {
-    return `${shown(this.key)}<=${pyNumber(this.maxRows)}`;
+    return `${this.key}<=${pyNumber(this.maxRows)}`;
   }
 
   narrow(other: Ceiling): RowLimit {
@@ -204,7 +229,7 @@ export class SpendCap implements Ceiling {
   }
 
   describe(): string {
-    return `${shown(this.key)}<=${pyNumber(this.maxSpend)}`;
+    return `${this.key}<=${pyNumber(this.maxSpend)}`;
   }
 
   narrow(other: Ceiling): SpendCap {
@@ -274,7 +299,7 @@ export class CallLimit implements Ceiling {
   }
 
   describe(): string {
-    return `${shown(this.key)}<=${pyNumber(this.maxCalls)}`;
+    return `${this.key}<=${pyNumber(this.maxCalls)}`;
   }
 
   narrow(other: Ceiling): CallLimit {
@@ -316,7 +341,7 @@ export class EgressRank implements Ceiling {
   }
 
   describe(): string {
-    return `${shown(this.key)}<=${shown(this.level)}`;
+    return `${this.key}<=${this.level}`;
   }
 
   narrow(other: Ceiling): EgressRank {
@@ -371,7 +396,7 @@ export class Allow implements Ceiling {
   }
 
   describe(): string {
-    return `${shown(this.key)} in [${sortByStr(this.oneOf).map((v) => shownText(strOf(v), v)).join(", ")}]`;
+    return `${this.key} in [${sortByStr(this.oneOf).map(strOf).join(", ")}]`;
   }
 
   narrow(other: Ceiling): Allow {
@@ -426,7 +451,7 @@ export class Deny implements Ceiling {
   }
 
   describe(): string {
-    return `${shown(this.key)} not in [${sortByStr(this.notOneOf).map((v) => shownText(strOf(v), v)).join(", ")}]`;
+    return `${this.key} not in [${sortByStr(this.notOneOf).map(strOf).join(", ")}]`;
   }
 
   narrow(other: Ceiling): Deny {
@@ -486,7 +511,7 @@ export class Prefix implements Ceiling {
   }
 
   describe(): string {
-    return `${shown(this.key)} startswith ${shown(this.prefix)}`;
+    return `${this.key} startswith ${this.prefix}`;
   }
 
   narrow(other: Ceiling): Prefix {
