@@ -1250,6 +1250,17 @@ function atOrBefore(a: Instant, b: Instant): boolean {
   return a.fraction.padEnd(width, "0") <= b.fraction.padEnd(width, "0");
 }
 
+/**
+ * Python's truthiness for a parsed JSON value, read where the Python implementation writes
+ * `value or default`: absent, null, false, a zero, "", [] and {} are false.
+ */
+function pyFalsy(value: Json | undefined): boolean {
+  if (value === undefined || value === null || value === false || value === 0 || value === "") return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+}
+
 /** A plain object (not an array, not null, not a Buffer). */
 function isRecordLike(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Uint8Array);
@@ -2641,7 +2652,14 @@ export function verifyBundle(
     actions += 1;
     const node = toPlain(e["node"]) as string;
     const scope = toPlain(e["scope"]) as string;
-    const ctx = (toPlain(e["context"]) as Context | null) ?? {};
+    // The Python implementation reads `e.get("context") or {}`, so an absent context and any value
+    // Python counts as false (null, false, 0, "", [] or {}) are no context. Any other value that
+    // is not an object is not a context the allow could have been checked against, and it does not
+    // verify: it is the containment finding below. (Python 0.19.0 raises on it.)
+    const rawContext = toPlain(e["context"]) as Json | undefined;
+    const noContext = pyFalsy(rawContext);
+    const contextIsObject = isRecordLike(rawContext);
+    const ctx = (noContext ? {} : rawContext) as Context;
     const a = auth.get(node);
     if (a === undefined) {
       contained = false;
@@ -2655,8 +2673,9 @@ export function verifyBundle(
     }
     // A scope that is not a string is no scope the node can hold. Against a wildcard it threw
     // (`startsWith` on a number or null) out of the verifier; it is this finding either way, as
-    // in the Python implementation.
-    if (typeof scope !== "string" || !a.permits(scope, ctx).allowed) {
+    // in the Python implementation. A context that is neither absent, nor false to Python, nor an
+    // object is this finding too.
+    if (typeof scope !== "string" || !(noContext || contextIsObject) || !a.permits(scope, ctx).allowed) {
       contained = false;
       log.add(
         "containment",

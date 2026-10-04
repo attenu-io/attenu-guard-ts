@@ -1088,34 +1088,50 @@ test("an anchor sig that is not a string is not hex, and a null one reads as abs
   }
 });
 
-test("an allow whose context is not an object is read, never a throw", () => {
-  // The Python implementation raises on these (a TypeError or ValueError in `permits`), a
-  // difference it defers. This build reads a context that is not an object as no context, as it
-  // reads an absent one, and a context member of the wrong type fails the ceiling it is checked
-  // against: a verdict either way, never an exception.
+test("an allow whose context is not an object is the containment finding; one Python reads as none is none", () => {
+  // The Python implementation reads `context or {}`, so absent, null, false, 0, "", [] and {} are
+  // no context, and the allow is checked as one without. Any other value that is not an object is
+  // not a context the allow could have been checked against, so the allow does not verify: the
+  // containment finding at that allow, where it verified as if it had none. Python 0.19.0 raises
+  // there, a known difference. A context member of the wrong type fails the ceiling it is checked
+  // against, as before.
   const seed = (fixtureJson("vectors/bundles/bundle_vectors_v1.json") as { cases: { name: string; bundle: Bundle }[] })
     .cases.find((c) => c.name === "valid_bundle_v2")!.bundle;
-  const cases: [CJson, boolean][] = [
-    [[1], true],
-    [5, true],
-    ["x", true],
-    [true, true],
+  const line = "containment: allow of 'mail.send' on vectors:n0 outside its authority ['crm.*', 'mail.send']";
+  const cases: [CJson | undefined, boolean][] = [
+    [[1], false],
+    [5, false],
+    ["x", false],
+    [true, false],
     [{ rows: "many" }, false],
+    [null, true],
+    [undefined, true],
+    [false, true],
+    [0, true],
+    ["", true],
+    [[], true],
+    [{}, true],
   ];
   inTempDir((dir) => {
     const file = join(dir, "bundle.json");
     for (const [context, ok] of cases) {
       const bundle = JSON.parse(JSON.stringify(seed)) as Record<string, unknown> & { entries: LedgerEntry[] };
       assert.equal(bundle.entries[2]!["event"], "allow");
-      bundle.entries[2]!["context"] = context;
+      if (context === undefined) delete bundle.entries[2]!["context"];
+      else bundle.entries[2]!["context"] = context;
       rehash(bundle.entries);
       delete bundle["anchor"];
-      const label = JSON.stringify(context);
-      assert.equal(verifyBundle(bundle as unknown as Bundle, null).ok, ok, label);
+      const label = context === undefined ? "absent" : JSON.stringify(context);
+      const report = verifyBundle(bundle as unknown as Bundle, null);
+      assert.equal(report.ok, ok, label);
+      assert.deepEqual(report.failures, ok ? [] : [line], label);
+      assert.deepEqual(report.failure_entries, ok ? [] : [2], label);
       writeFileSync(file, JSON.stringify(bundle));
-      const { status, stderr } = run(["verify", file, "--entries"]);
+      const { stdout, status, stderr } = run(["verify", file, "--entries"]);
       assert.equal(stderr, "", label);
       assert.equal(status, ok ? 0 : 2, label);
+      const allow = stdout.split("\n").find((l) => l.startsWith("  seq=2 event=allow node=vectors:n0"));
+      assert.equal(allow?.endsWith(" failed=containment"), !ok, `${label}:\n${stdout}`);
     }
   });
 });
