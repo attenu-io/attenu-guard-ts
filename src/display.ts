@@ -30,19 +30,32 @@ export function pyStrRepr(s: string): string {
   const quote = s.includes("'") && !s.includes('"') ? '"' : "'";
   let out = quote;
   // By code point: a surrogate pair is one character to Python, and a lone surrogate is one too.
-  for (const ch of s) {
-    const cp = ch.codePointAt(0)!;
-    if (ch === quote || ch === "\\") out += `\\${ch}`;
-    else if (ch === "\t") out += "\\t";
-    else if (ch === "\n") out += "\\n";
-    else if (ch === "\r") out += "\\r";
-    else if (cp < 0x20 || cp === 0x7f) out += `\\x${hex(cp, 2)}`;
-    else if (cp < 0x7f || !NOT_PRINTABLE.test(ch)) out += ch;
-    else if (cp <= 0xff) out += `\\x${hex(cp, 2)}`;
-    else if (cp <= 0xffff) out += `\\u${hex(cp, 4)}`;
-    else out += `\\U${hex(cp, 8)}`;
-  }
+  for (const ch of s) out += ch === quote || ch === "\\" ? `\\${ch}` : reprChar(ch);
   return out + quote;
+}
+
+/**
+ * `text` with every character Python's `repr` would escape written as that escape, and nothing
+ * else changed: no quotes added, no backslash doubled. For a parser's message, which can quote a
+ * fragment of the input it refused: one line, always.
+ */
+export function oneLine(text: string): string {
+  let out = "";
+  for (const ch of text) out += reprChar(ch);
+  return out;
+}
+
+/** One character as Python's `repr` writes it inside a string, the quote and backslash aside. */
+function reprChar(ch: string): string {
+  const cp = ch.codePointAt(0)!;
+  if (ch === "\t") return "\\t";
+  if (ch === "\n") return "\\n";
+  if (ch === "\r") return "\\r";
+  if (cp < 0x20 || cp === 0x7f) return `\\x${hex(cp, 2)}`;
+  if (cp < 0x7f || !NOT_PRINTABLE.test(ch)) return ch;
+  if (cp <= 0xff) return `\\x${hex(cp, 2)}`;
+  if (cp <= 0xffff) return `\\u${hex(cp, 4)}`;
+  return `\\U${hex(cp, 8)}`;
 }
 
 /**
@@ -107,8 +120,10 @@ export function shownText(text: string, value: CJson): string {
 
 /**
  * `value` as whitespace-free, ASCII-only JSON: Python's
- * `json.dumps(value, ensure_ascii=True, separators=(",", ":"))` with every space written as
- *  . That form holds no whitespace and no line break, and a JSON parser gives the value back.
+ * `json.dumps(value, ensure_ascii=True, separators=(",", ":"))`, with every space then written as
+ * `\u0020`. Inside a string that is `\"` and `\\`, the short escapes `\n` `\t` `\r` `\b` `\f`, and
+ * a lower-case `\uXXXX` for every other UTF-16 unit outside printable ASCII. That form holds no
+ * whitespace and no line break, and a JSON parser gives the value back.
  */
 export function escaped(value: CJson): string {
   return pyJson(value).replace(/ /g, "\\u0020");

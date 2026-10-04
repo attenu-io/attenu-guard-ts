@@ -1170,7 +1170,7 @@ function scoreEnvelopes(
   const results: Record<string, Json> = {};
   const witnesses: Record<string, string> = {};
   entries.forEach((e, i) => {
-    states[String(orNull(e["seq"]) ?? i)] = PROCESS_ASSERTED;
+    setOwn(states, String(orNull(e["seq"]) ?? i), PROCESS_ASSERTED);
   });
 
   // The hash walk is what an envelope's binding member is checked against; a bundle carrying
@@ -1191,21 +1191,21 @@ function scoreEnvelopes(
     const raw = rawBytes !== null && index < rawBytes.length ? rawBytes[index] ?? null : null;
     const covered = scoreEnvelope(envelope, index, bySeq, recomputed, trust, raw, fail, claims);
     if (covered === null) return;
-    states[String(covered.seq)] = WITNESS_SIGNED;
-    results[String(covered.seq)] = covered.result;
-    witnesses[String(covered.seq)] = covered.kid;
+    setOwn(states, String(covered.seq), WITNESS_SIGNED);
+    setOwn(results, String(covered.seq), covered.result);
+    setOwn(witnesses, String(covered.seq), covered.kid);
   });
 
   // The first envelope's result stands in `results` — it is what that witness said, and the
   // duplicate does not erase it — but the STATE falls back, so a contradicted entry never
   // reports witness-signed and the bundle rejects.
   for (const [seq, count] of claims) {
-    if (count > 1) states[seq] = PROCESS_ASSERTED;
+    if (count > 1) setOwn(states, seq, PROCESS_ASSERTED);
   }
 
   const lines: Record<string, string> = {};
   for (const [seq, state] of Object.entries(states)) {
-    lines[seq] = envelopeLine(state, results[seq] ?? null);
+    setOwn(lines, seq, envelopeLine(state, Object.hasOwn(results, seq) ? results[seq]! : null));
   }
   const summary: EnvelopeSummary = {
     status: fail.length === 0 ? "verified" : "FAILED",
@@ -1221,6 +1221,15 @@ function scoreEnvelopes(
     failures: [...fail.messages],
   };
   return [summary, fail];
+}
+
+/**
+ * `record[key] = value` as an own property, whatever the key. A key is an entry's seq rendered as
+ * text, and a bundle chooses its seqs: a plain assignment of `"__proto__"` would reach the
+ * prototype setter and record nothing.
+ */
+function setOwn<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, { value, enumerable: true, configurable: true, writable: true });
 }
 
 /** Python `repr` for a member set, so both implementations print the same failure strings. */

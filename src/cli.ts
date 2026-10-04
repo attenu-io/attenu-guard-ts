@@ -32,9 +32,10 @@ import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 
 import { AuditLog, type LedgerEntry } from "./audit.js";
-import { toPlain, type CJson, type Json } from "./canonical.js";
-import { BARE, escaped, integerText } from "./display.js";
+import { parseJson, toPlain, type CJson, type Json } from "./canonical.js";
+import { BARE, escaped, integerText, oneLine } from "./display.js";
 import {
+  PROCESS_ASSERTED,
   WITNESS_SIGNED,
   integrityPosition,
   parseBundle,
@@ -214,21 +215,37 @@ function entryLine(pairs: readonly (readonly [string, CJson | undefined])[]): st
  * printed only on a witness-signed entry: an entry that fell back to process-asserted carries no
  * observation the reader may rely on.
  */
+/**
+ * The key the verifier filed an entry's envelope state under, or `null` when the entry's state
+ * cannot be read from that record.
+ *
+ * The verifier keys its per-entry record by the seq rendered as text, or by the entry's index when
+ * it has no seq. A seq that is present and not a number has no key of its own there: `"1"` renders
+ * as the text of seq 1, and `"__proto__"` names a property every object has. Such an entry is
+ * process-asserted by construction, because an envelope subject's seq is an integer and is looked
+ * up by value, so no envelope can cover it.
+ */
+function stateKey(e: LedgerEntry, index: number): string | null {
+  if (!("seq" in e)) return String(index);
+  const seq = field(e, "seq");
+  return typeof seq === "number" ? String(seq) : null;
+}
+
 function bundleEntryLines(entries: readonly LedgerEntry[], rep: VerifyReport): string[] {
   const failed = failedByEntry(entries, rep.failure_details);
+  const { states, results, witnesses } = rep.envelopes;
   return entries.map((e, i) => {
-    // The key the verifier filed this entry's state under.
-    const key = String(field(e, "seq") ?? i);
-    const state = rep.envelopes.states[key] ?? null;
-    const signed = state === WITNESS_SIGNED;
+    const key = stateKey(e, i);
+    const state = key !== null && Object.hasOwn(states, key) ? states[key]! : PROCESS_ASSERTED;
+    const signed = key !== null && state === WITNESS_SIGNED;
     return entryLine([
       ["seq", e["seq"]],
       ["event", e["event"]],
       ["node", e["node"]],
       ["scope", e["scope"]],
       ["state", state],
-      ["observed", signed ? rep.envelopes.results[key] : null],
-      ["witness", signed ? rep.envelopes.witnesses[key] : null],
+      ["observed", signed && Object.hasOwn(results, key) ? results[key]! : null],
+      ["witness", signed && Object.hasOwn(witnesses, key) ? witnesses[key]! : null],
       ["failed", failed.get(i)?.join(",") ?? null],
     ]);
   });
@@ -246,6 +263,41 @@ function ledgerEntryLines(entries: readonly LedgerEntry[], findings: readonly Fa
       ["failed", failed.get(i)?.join(",") ?? null],
     ]),
   );
+}
+
+/** One JSON object with an `entries` member: what `exportBundle` writes. */
+function isBundleShaped(value: unknown): boolean {
+  return value !== null && typeof value === "object" && !Array.isArray(value) && "entries" in value;
+}
+
+/**
+ * Why a file that is neither a bundle nor a ledger could not be read, in one line.
+ *
+ * A file that is ONE JSON object with `entries`, read by JavaScript's lenient parser, is a bundle
+ * the strict one refused — a duplicate member, a number past the double range, a lone surrogate —
+ * and that refusal is the reason. Anything else was read as JSON Lines, and the reason is the first
+ * line that does not parse. A parser's message can quote the input, so it goes through `oneLine`.
+ */
+function unparsable(text: string, bundleError: unknown, ledgerError: unknown): string {
+  if (bundleError !== null) {
+    let lenient: unknown = null;
+    try {
+      lenient = JSON.parse(text);
+    } catch {
+      lenient = null;
+    }
+    if (isBundleShaped(lenient)) return oneLine((bundleError as Error).message);
+  }
+  const lines = text.split(/\r?\n/);
+  for (let n = 0; n < lines.length; n++) {
+    if (lines[n]!.trim() === "") continue;
+    try {
+      parseJson(lines[n]!);
+    } catch (err) {
+      return `line ${n + 1}: ${oneLine((err as Error).message)}`;
+    }
+  }
+  return oneLine((ledgerError as Error).message);
 }
 
 function writeEntries(lines: readonly string[]): void {
@@ -285,15 +337,14 @@ function verify(args: string[]): number {
     return 1;
   }
   let bundle: Bundle | null = null;
+  let bundleError: unknown = null;
   try {
     // A bundle is ONE JSON object; a ledger is JSON Lines.
     const parsed = parseBundle(text) as unknown;
-    bundle =
-      parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && "entries" in parsed
-        ? (parsed as Bundle)
-        : null;
-  } catch {
+    bundle = isBundleShaped(parsed) ? (parsed as Bundle) : null;
+  } catch (err) {
     bundle = null;
+    bundleError = err;
   }
 
   if (bundle !== null) {
@@ -339,7 +390,15 @@ function verify(args: string[]): number {
     return rep.ok ? 0 : 2;
   }
 
-  const entries = AuditLog.parseLines(text);
+  let entries: LedgerEntry[];
+  try {
+    entries = AuditLog.parseLines(text);
+  } catch (err) {
+    // Neither a bundle nor a ledger this build reads: one line, not a stack trace. Exit 1, as the
+    // Python CLI exits on a file it cannot parse.
+    process.stdout.write(`cannot parse ${path}: ${unparsable(text, bundleError, err)}\n`);
+    return 1;
+  }
   if (entries.length === 0) {
     // A ledger with no entries has nothing to verify. Reporting it OK would be a fail-open: a
     // truncated or never-written file would pass the same check as a clean chain.

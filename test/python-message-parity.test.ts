@@ -36,6 +36,22 @@ const PYTHON: Record<string, string[]> = {
   "entry_without_seq": [
     "integrity: seq gap at 1 (got None)",
     "envelope_subject_mismatch: subject entry_hash '5339c1271ede46a2b783871e7e65e4f0018e8f141f30ef760e8d3e6b0f31bb8d' != the hash recomputed for seq None from this bundle (None)"
+  ],
+  "authority_member_newline": [
+    "root vectors:n0: unreadable authority (authority {'constraints': [{'key': 'max_rows', 'max': 100000}], 'scopes': ['crm.*', 'mail.send'], 'ttl': 3600, 'x\\nOK': 1} carries members this build does not evaluate and will not ignore: 'x\\nOK')",
+    "containment: allow on unknown node vectors:n0"
+  ],
+  "constraint_member_newline": [
+    "spawn vectors:n1: unreadable granted (constraint {'key': 'max_rows', 'max': 5000, 'y\\nOK': 1} carries members this build does not evaluate and will not ignore: 'y\\nOK')",
+    "containment: allow on unknown node vectors:n1"
+  ],
+  "authority_scope_u2028": [
+    "root vectors:n0: unreadable authority (invalid scope 'crm.\\u2028x': expected lowercase dot-separated segments; '*' is permitted only as the complete final segment after a dot)",
+    "containment: allow on unknown node vectors:n0"
+  ],
+  "constraint_dimension_rewritten": [
+    "spawn vectors:n1: unreadable granted (constraint {'key': 'max_calls', 'max': 5, 'applies_to': 'fs.write\\x85\\x1b[2K'} names dimension 'max_calls' but this build reads it as 'max_calls[fs.write\\x85\\x1b[2K]'; refusing rather than silently changing which dimension is bounded)",
+    "containment: allow on unknown node vectors:n1"
   ]
 };
 
@@ -60,6 +76,10 @@ function mutated(seed: Bundle, mutate: (entries: LedgerEntry[]) => void): Bundle
   return bundle;
 }
 
+function authorityOf(entry: LedgerEntry, member: "authority" | "granted"): Record<string, unknown> {
+  return entry[member] as unknown as Record<string, unknown>;
+}
+
 function first(entries: LedgerEntry[], event: string): LedgerEntry {
   return entries.find((e) => e["event"] === event)!;
 }
@@ -79,6 +99,31 @@ const CASES: [string, Bundle, WitnessKey[] | null][] = [
     null,
   ],
   ["entry_without_seq", mutated(ENVELOPED.bundle, (es) => void delete es[1]!["seq"]), ENVELOPED.witness_keys],
+  // The messages inside "unreadable authority (...)" carry the bundle's member names, scopes and
+  // values. Python prints them through repr; JSON spelling here left U+2028, DEL and C1 characters
+  // raw, and a member name joined bare could end the line.
+  ["authority_member_newline", mutated(VALID_V2, (es) => void (authorityOf(es[0]!, "authority")["x\nOK"] = 1)), null],
+  [
+    "constraint_member_newline",
+    mutated(VALID_V2, (es) => void ((authorityOf(es[1]!, "granted")["constraints"] as Record<string, unknown>[])[0]!["y\nOK"] = 1)),
+    null,
+  ],
+  [
+    "authority_scope_u2028",
+    mutated(VALID_V2, (es) => void ((authorityOf(es[0]!, "authority")["scopes"] as string[])[0] = "crm.\u2028x")),
+    null,
+  ],
+  [
+    "constraint_dimension_rewritten",
+    mutated(VALID_V2, (es) =>
+      void (authorityOf(es[1]!, "granted")["constraints"] as unknown[]).push({
+        key: "max_calls",
+        max: 5,
+        applies_to: "fs.write\u0085\u001b[2K",
+      }),
+    ),
+    null,
+  ],
 ];
 
 for (const [name, bundle, witnessKeys] of CASES) {

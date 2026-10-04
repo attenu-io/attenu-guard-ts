@@ -557,6 +557,62 @@ test("a forged seq cannot add a line to a plain ledger's verdict", () => {
   });
 });
 
+// ---- --entries reads a state only for the entry it belongs to -----------------------------------
+
+test("--entries never shows a forged string seq as witness-signed", () => {
+  // The verifier keys its per-entry record by the seq rendered as text, so "1" shared a key with
+  // seq 1 and printed that entry's witness, and "__proto__" printed `state={}`. An envelope subject's
+  // seq is an integer, so an entry whose seq is not a number is process-asserted by construction.
+  const doc = JSON.parse(fixtureText("vectors/envelopes/envelope_vectors_v1.json")) as {
+    cases: { name: string; bundle: { entries: LedgerEntry[] }; witness_keys: unknown }[];
+  };
+  const c = doc.cases.find((x) => x.name === "valid_spawn_envelope")!;
+  const entries = c.bundle.entries.map((e) => ({ ...e }));
+  for (const seq of ["1", "__proto__"]) {
+    const head = entries[entries.length - 1]!;
+    const forged: LedgerEntry = { ...entries[1]!, seq, node: "vectors:evil", prev_hash: head["hash"]! };
+    delete forged["hash"];
+    forged["hash"] = hashEntry(head["hash"] as string, forged);
+    entries.push(forged);
+  }
+  inTempDir((dir) => {
+    const bundle = join(dir, "forged.bundle.json");
+    const keys = join(dir, "keys.json");
+    writeFileSync(bundle, JSON.stringify({ ...c.bundle, entries }));
+    writeFileSync(keys, JSON.stringify(c.witness_keys));
+    const { stdout } = run(["verify", bundle, "--witness-keys", keys, "--entries"]);
+    const lines = stdout.split("\n");
+    assert.ok(lines.includes("  seq=1 event=spawn node=vectors:n1 state=witness-signed observed=matched witness=witness-interop-v1"), stdout);
+    assert.ok(lines.includes("  seq=1 event=spawn node=vectors:evil state=process-asserted failed=integrity"), stdout);
+    assert.ok(lines.includes("  seq=__proto__ event=spawn node=vectors:evil state=process-asserted"), stdout);
+    assert.doesNotMatch(stdout, /state=\{\}/);
+    assert.equal(lines.filter((l) => l.includes("witness=")).length, 1, "only the real seq 1 is witness-signed");
+  });
+});
+
+// ---- a file this build cannot parse is one line, exit 1 -------------------------------------------
+
+test("a bundle the strict parser refuses is one line naming the file and the reason, exit 1", () => {
+  inTempDir((dir) => {
+    const file = join(dir, "bundle.json");
+    const cases: [string, string][] = [
+      ['{"v":2,"entries":[],"entries":[]}', 'duplicate JSON object member "entries"'],
+      ['{"v":2,"entries":[{"seq":1e400}]}', "non-finite numbers are not permitted"],
+      ['{"v":2,"entries":[{"node":"\\ud800"}]}', "lone UTF-16 surrogates are not permitted"],
+      // The parser quotes the member it refused; a separator in it is escaped, never printed raw.
+      ['{"entries":[],"a\\u2028b":1,"a\\u2028b":2}', 'duplicate JSON object member "a\\u2028b"'],
+      ["{not json", "line 1: expected an object key at position 1"],
+      ['{"seq":0}\n{bad\n', "line 2: expected an object key at position 1"],
+    ];
+    for (const [content, reason] of cases) {
+      writeFileSync(file, content);
+      const { stdout, stderr, status } = run(["verify", file]);
+      assert.deepEqual([status, stdout, stderr], [1, `cannot parse ${file}: ${reason}\n`, ""], content);
+      assert.equal(run(["verify", file, "--entries"]).stdout, `cannot parse ${file}: ${reason}\n`, content);
+    }
+  });
+});
+
 // ---- a malformed trust file is one line naming the file and the kid, exit 2 ---------------------
 
 function badRow(fields: Record<string, unknown>): unknown[] {
