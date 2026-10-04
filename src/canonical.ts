@@ -52,13 +52,30 @@ function isIntegerLiteralText(raw: string): boolean {
 }
 
 /**
- * An integer as Python's `json` reads one: a JSON integer literal (no `.`, `e` or `E`) when the
- * value kept its literal, an integral number when it did not, and never a boolean. `1.0` is a
- * float to Python, so a ledger seq written `1.0` is not seq 1 in either implementation.
+ * `value` as the integer it is, or `null` when it is not one.
+ *
+ * The rule for every `seq` and `v` this package reads off a ledger, a bundle or an envelope: an
+ * integral number, as the schema's `integer` type defines it (JSON Schema 2020-12,
+ * `schema/agent-audit.schema.json` in the Python distribution). `1.0` is 1 and `-0` is 0, and
+ * RFC 8785 writes both as the integer, so they hash alike. A boolean is not a number here, and
+ * neither is a string, null, or a number that is fractional or not finite. The same rule as the
+ * Python implementation's `audit._integral`.
  */
-export function isJsonInteger(value: CJson | undefined): boolean {
-  if (value instanceof RawNumber) return isIntegerLiteralText(value.raw);
-  return typeof value === "number" && Number.isInteger(value);
+export function integral(value: CJson | undefined): number | null {
+  const n = value instanceof RawNumber ? value.value : value;
+  if (typeof n !== "number" || !Number.isInteger(n)) return null;
+  return n === 0 ? 0 : n;
+}
+
+/**
+ * `value` as a message prints it: the integer when it is integral (`integral`) and inside the
+ * I-JSON safe range, so `1.0` reads 1, and the value unchanged otherwise. Past ±(2^53 - 1) a number
+ * is not exact across implementations, and it keeps the literal it was written with. The same rule
+ * as the Python implementation's `audit._int_or`.
+ */
+export function intOr(value: CJson | undefined): CJson | undefined {
+  const n = integral(value);
+  return n === null || Math.abs(n) > MAX_SAFE_INTEGER ? value : n;
 }
 
 /**

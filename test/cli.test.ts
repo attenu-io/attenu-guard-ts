@@ -431,7 +431,8 @@ test("--entries prints a value that could forge a line as escaped JSON, never as
       "  seq=0 event=root node=n0 failed=integrity",
       String.raw`  seq=1 event=allow node="n\u00201" scope="crm.read\n\u0020\u0020seq=9\u0020event=allow\u0020node=n0\u0020scope=x"`,
       String.raw`  seq=2 event=allow node=n0 scope="r\u00e9sum\u00e9\u0020\ud83d\ude00"`,
-      String.raw`  seq=3.0 event=deny node=n0 scope="say\u0020\"hi\"\u0020\\\u0020bye"`,
+      // `3.0` is integral, so it prints as the integer it is, as the verifier reads it.
+      String.raw`  seq=3 event=deny node=n0 scope="say\u0020\"hi\"\u0020\\\u0020bye"`,
       String.raw`  seq=4 event=true node=["a",1,null] scope={"k":"v\u0020w"}`,
       `  seq=5 event=allow node="" scope=a=b,c`,
       "",
@@ -772,31 +773,35 @@ test("of two entries sharing a seq, only the copy the witness signed reads witne
   });
 });
 
-test("an entry whose seq is true or 1.0 takes no envelope", () => {
+test("an entry whose seq is true, 1.5 or a string takes no envelope, and one written 1.0 is seq 1", () => {
   // The envelope names seq 1 and binds the very entry carrying that seq, signed by the trusted
-  // witness. Python found that entry for `true`, since True == 1 there, and this build found it for
-  // `1.0`, read as the number 1; either way it printed witness-signed.
+  // witness. In Python `true` found that entry, since True == 1 there, and it printed
+  // witness-signed. A boolean, a fractional number or a string is no seq, so it names nothing.
   inTempDir((dir) => {
-    const bundle = forgedWith((es) => void (es[1]!["seq"] = true));
-    bundle["envelopes"] = [signedByHand((bundle["entries"] as LedgerEntry[])[1]!, 1)];
-    const { status, stdout, lines } = entriesOf(dir, bundle);
-    assert.equal(status, 2);
-    assert.ok(stdout.includes("  - envelope_subject_mismatch: no entry at seq 1 in this bundle\n"), stdout);
-    assert.equal(lines[1], "  seq=true event=spawn node=custody:n1 state=process-asserted failed=integrity");
+    for (const [bad, printed] of [[true, "true"], [1.5, "1.5"], ["1", "1"]] as const) {
+      const bundle = forgedWith((es) => void (es[1]!["seq"] = bad));
+      bundle["envelopes"] = [signedByHand((bundle["entries"] as LedgerEntry[])[1]!, 1)];
+      const { status, stdout, lines } = entriesOf(dir, bundle);
+      assert.equal(status, 2, printed);
+      assert.ok(stdout.includes("  - envelope_subject_mismatch: no entry at seq 1 in this bundle\n"), stdout);
+      assert.equal(lines[1], `  seq=${printed} event=spawn node=custody:n1 state=process-asserted failed=integrity`);
+    }
 
-    // JCS writes 1.0 as 1, so the entry keeps its hash and the envelope the witness signed over
-    // seq 1 still binds it: only the literal changes.
+    // The schema's integer type counts 1.0 as an integer, and JCS writes it as 1, so the entry
+    // keeps its hash, the envelope the witness signed over seq 1 still covers it, and it prints 1.
     const clean = forgedWith(() => undefined);
     const spawn = JSON.stringify((clean["entries"] as LedgerEntry[])[1]);
     const text = JSON.stringify(clean);
     assert.equal(text.split(spawn).length, 2, "the spawn entry is written once");
     const floated = text.replace(spawn, spawn.replace(/"seq":1(?=[,}])/, '"seq":1.0'));
     assert.notEqual(floated, text);
+    const asWritten = entriesOf(dir, text);
     const f = entriesOf(dir, floated);
-    assert.equal(f.status, 2);
-    assert.ok(f.stdout.includes("  - integrity: seq gap at 1 (got 1.0)\n"), f.stdout);
-    assert.ok(f.stdout.includes("  - envelope_subject_mismatch: no entry at seq 1 in this bundle\n"), f.stdout);
-    assert.equal(f.lines[1], "  seq=1.0 event=spawn node=custody:n1 state=process-asserted failed=integrity");
+    assert.equal(f.stdout, asWritten.stdout, "1.0 reads exactly as 1");
+    assert.equal(
+      f.lines[1],
+      "  seq=1 event=spawn node=custody:n1 state=witness-signed observed=indeterminate witness=witness-custody",
+    );
   });
 });
 
@@ -826,20 +831,18 @@ test("a reason twice on one entry is listed once, and failure_entries names the 
 });
 
 test("a seq that is not an integer is a gap in the ledger itself", () => {
-  // `1.0` is a float to the Python implementation and `true` its bool, so neither is seq 1 there;
-  // here a parsed ledger keeps each literal, and the same seqs are the same gap.
+  // A boolean is not a number here, a string is not one, and 1.5 is not an integer, so none of
+  // them is seq 1, in either implementation; a forger's re-hash does not change that.
   inTempDir((dir) => {
     const file = join(dir, "l.jsonl");
     const root = Guard.issue("a", new Authority({ scopes: ["x.read"] }), { chainId: "c" });
     root.delegate("b", new Authority({ scopes: ["x.read"] }), "t");
     const clean = root.auditLog().entries.map((e) => JSON.stringify(e));
-    for (const [bad, printed] of [["true", "True"], ["1.0", "1.0"], ['"1"', "1"]] as const) {
-      // Re-hashed as a forger would; JCS writes 1.0 as 1, so that literal keeps the old hash.
+    for (const [bad, printed] of [["true", "True"], ["1.5", "1.5"], ['"1"', "1"]] as const) {
       const entries = clean.map((line) => JSON.parse(line) as LedgerEntry);
-      entries[1]!["seq"] = bad === "1.0" ? 1 : (JSON.parse(bad) as LedgerEntry[string]);
+      entries[1]!["seq"] = JSON.parse(bad) as LedgerEntry[string];
       rehash(entries);
       const lines = entries.map((e) => JSON.stringify(e));
-      if (bad === "1.0") lines[1] = lines[1]!.replace('"seq":1,', '"seq":1.0,');
       writeFileSync(file, `${lines.join("\n")}\n`);
       assert.deepEqual(AuditLog.verify(AuditLog.parseLines(`${lines.join("\n")}\n`)), [false, `seq gap at 1 (got ${printed})`], bad);
       const { stdout, status } = run(["verify", file, "--entries"]);
@@ -850,32 +853,70 @@ test("a seq that is not an integer is a gap in the ledger itself", () => {
   });
 });
 
-test("an envelope subject seq or an envelope v written 1.0 is refused, as Python refuses a float", () => {
-  // JCS writes 1.0 as 1, so nothing else about the bundle changes; the lexeme is the case. A plain
-  // JSON parse cannot tell 1.0 from 1, and this build reads the literal it kept.
+test("an integral seq is that integer in the ledger, and prints as one", () => {
+  // The schema's integer type (JSON Schema 2020-12) counts 1.0 as an integer, and JCS writes 1.0,
+  // -0.0 and 1e0 as the integer, so the chain hashes exactly as it did: the ledger verifies, and
+  // --entries prints the integer, as the Python implementation reads and prints it.
+  inTempDir((dir) => {
+    const file = join(dir, "l.jsonl");
+    const root = Guard.issue("a", new Authority({ scopes: ["x.read"] }), { chainId: "c" });
+    root.delegate("b", new Authority({ scopes: ["x.read"] }), "t");
+    const clean = root.auditLog().entries.map((e) => JSON.stringify(e));
+    for (const [index, literal, printed] of [[1, "1.0", "1"], [0, "-0.0", "0"], [1, "1e0", "1"]] as const) {
+      const lines = [...clean];
+      const written = `"seq":${index},`;
+      assert.equal(lines[index]!.split(written).length, 2, literal);
+      lines[index] = lines[index]!.replace(written, `"seq":${literal},`);
+      const text = `${lines.join("\n")}\n`;
+      writeFileSync(file, text);
+      assert.deepEqual(AuditLog.verify(AuditLog.parseLines(text)), [true, null], literal);
+      const { stdout, status } = run(["verify", file, "--entries"]);
+      assert.equal(status, 0, `${literal}: ${stdout}`);
+      assert.ok(stdout.includes(`\n  seq=${printed} event=`), stdout);
+    }
+  });
+});
+
+test("an envelope subject seq or v written 1.0 reads as 1, and one written 1.5 is refused", () => {
+  // JCS writes 1.0 as 1, so the witness's signature still verifies over it, and the schema's
+  // integer type counts it as 1; the report and the output are the ones the bundle written with 1
+  // gets. 1.5 is not an integer: it is no seq and no version.
   const doc = JSON.parse(fixtureText("vectors/envelopes/envelope_vectors_v1.json")) as {
     cases: { name: string; bundle: unknown; witness_keys: unknown }[];
   };
   const c = doc.cases.find((x) => x.name === "valid_spawn_envelope")!;
+  const witnessKeys = c.witness_keys as WitnessKey[];
   const text = JSON.stringify(c.bundle);
-  assert.equal(text.split('"node":"vectors:n1","seq":1}').length, 2, "one subject names seq 1");
-  assert.equal(text.split('"v":1,"witness"').length, 2, "one envelope declares v 1");
+  const subject = '"node":"vectors:n1","seq":1}';
+  const version = '"v":1,"witness"';
+  assert.equal(text.split(subject).length, 2, "one subject names seq 1");
+  assert.equal(text.split(version).length, 2, "one envelope declares v 1");
   inTempDir((dir) => {
     const keys = join(dir, "keys.json");
-    writeFileSync(keys, JSON.stringify(c.witness_keys));
-    const cases: [string, string, string][] = [
-      ["subject seq", text.replace('"node":"vectors:n1","seq":1}', '"node":"vectors:n1","seq":1.0}'), "  - envelope_subject_mismatch: subject seq is not an integer"],
-      ["envelope v", text.replace('"v":1,"witness"', '"v":1.0,"witness"'), "  - envelope_unknown_version: envelope v=1.0 typ='delegation-event-observation', this build knows v=1 typ='delegation-event-observation'"],
+    const file = join(dir, "bundle.json");
+    writeFileSync(keys, JSON.stringify(witnessKeys));
+    writeFileSync(file, text);
+    const asWritten = run(["verify", file, "--witness-keys", keys]);
+    assert.equal(asWritten.status, 0, asWritten.stdout);
+    const variants: [string, string, string | null][] = [
+      ["subject seq 1.0", text.replace(subject, subject.replace("1}", "1.0}")), null],
+      ["envelope v 1.0", text.replace(version, '"v":1.0,"witness"'), null],
+      ["subject seq 1.5", text.replace(subject, subject.replace("1}", "1.5}")), "  - envelope_subject_mismatch: subject seq is not an integer"],
+      ["envelope v 1.5", text.replace(version, '"v":1.5,"witness"'), "  - envelope_unknown_version: envelope v=1.5 typ='delegation-event-observation', this build knows v=1 typ='delegation-event-observation'"],
     ];
-    for (const [label, bundleText, line] of cases) {
+    for (const [label, bundleText, line] of variants) {
       assert.notEqual(bundleText, text, label);
-      const report = verifyBundle(parseBundle(bundleText), null, { witnessKeys: c.witness_keys as WitnessKey[] });
-      assert.equal(report.ok, false, label);
-      const file = join(dir, "bundle.json");
+      const report = verifyBundle(parseBundle(bundleText), null, { witnessKeys });
+      assert.equal(report.ok, line === null, `${label}: ${report.failures.join("; ")}`);
       writeFileSync(file, bundleText);
       const { stdout, status } = run(["verify", file, "--witness-keys", keys]);
-      assert.equal(status, 2, label);
-      assert.ok(stdout.split("\n").includes(line), `${label}:\n${stdout}`);
+      if (line === null) {
+        assert.equal(stdout, asWritten.stdout, label);
+        assert.equal(status, 0, label);
+      } else {
+        assert.equal(status, 2, label);
+        assert.ok(stdout.split("\n").includes(line), `${label}:\n${stdout}`);
+      }
     }
   });
 });

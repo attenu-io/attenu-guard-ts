@@ -34,7 +34,8 @@
 import {
   canonicalBytes,
   compareCodePoints,
-  isJsonInteger,
+  intOr,
+  integral,
   parseJson,
   pyNumber,
   RawNumber,
@@ -810,12 +811,13 @@ export function envelopeSigningInput(envelope: Record<string, CJson>): Buffer {
 }
 
 /**
- * The key `states` and `results` file an entry under: its seq, or its index when it has no seq —
- * Python's `e.get("seq", i)`. It is a report key, never a lookup: an envelope finds the entry it
- * covers through `subjectIndex`.
+ * Where `states` and `results` file an entry: its seq when it has one, as the integer when it is
+ * integral (`intOr`: `1.0` is filed as 1), and its index when it has none. The Python
+ * implementation's `_state_key`, rendered as a record key. It is a report key, never a lookup: an
+ * envelope finds the entry it covers through `subjectIndex`.
  */
-function seqOrIndex(e: LedgerEntry, i: number): Json {
-  return "seq" in e ? orNull(e["seq"]) : i;
+export function stateKey(e: LedgerEntry, index: number): string {
+  return String("seq" in e ? orNull(intOr(e["seq"])) : index);
 }
 
 /**
@@ -847,19 +849,112 @@ function recomputedHashes(entries: readonly LedgerEntry[]): (string | null)[] {
 /**
  * subject.seq -> the index of the entry an envelope naming that seq covers.
  *
- * An entry is keyed by its own seq when that is an integer literal, and by its index when it has
- * no seq member at all. An entry whose seq is a boolean, a float such as `1.0`, a string or null
- * is keyed by nothing, so no envelope covers it: keyed by the parsed value, `"seq": 1.0` took the
- * envelope written for seq 1, and in Python `"seq": true` did too. Where two entries share a key
- * the later one is covered, as it always was. The Python implementation's `_subject_index`.
+ * An entry is keyed by its own seq when that is an integral number and not a boolean, as the
+ * schema's integer type defines (`integral`: `1.0` is 1), and by its index when it has no seq
+ * member at all. An entry whose seq is a boolean, a string, null, or a fractional number is keyed
+ * by nothing, so no envelope covers it: in Python, keyed by the raw value, `"seq": true` took the
+ * envelope written for seq 1, and here a null seq was keyed by its index. Where two entries share
+ * a key the later one is covered, as it always was. The Python implementation's `_subject_index`.
  */
 function subjectIndex(entries: readonly LedgerEntry[]): Map<number, number> {
   const keyed = new Map<number, number>();
   entries.forEach((e, i) => {
-    if (!("seq" in e)) keyed.set(i, i);
-    else if (isJsonInteger(e["seq"])) keyed.set(toPlain(e["seq"]) as number, i);
+    if (!("seq" in e)) {
+      keyed.set(i, i);
+      return;
+    }
+    const seq = integral(e["seq"]);
+    if (seq !== null) keyed.set(seq, i);
   });
   return keyed;
+}
+
+/**
+ * Two `seq` or `v` values are the same: equal integers when either is integral (`integral`), so
+ * `1.0` is 1; otherwise the same value of the same type, so `true` is not 1 and `"1"` is not 1. An
+ * absent value is null, as Python's `dict.get` reads it. The Python implementation's
+ * `_same_number`.
+ */
+function sameNumber(a: CJson | undefined, b: CJson | undefined): boolean {
+  const ia = integral(a);
+  const ib = integral(b);
+  if (ia !== null || ib !== null) return ia === ib;
+  const pa = orNull(a);
+  const pb = orNull(b);
+  return pyTypeOf(pa) === pyTypeOf(pb) && pyEquals(pa, pb);
+}
+
+/** The Python type of a parsed JSON value, which tells a boolean from a number as `type()` does. */
+function pyTypeOf(value: Json): string {
+  if (value === null) return "NoneType";
+  if (Array.isArray(value)) return "list";
+  if (typeof value === "number") return Number.isInteger(value) ? "int" : "float";
+  return typeof value === "object" ? "dict" : typeof value;
+}
+
+/**
+ * Python's `==` on two parsed JSON values: numbers and booleans by value (`True == 1`), strings by
+ * text, lists and objects member by member.
+ */
+function pyEquals(a: Json, b: Json): boolean {
+  const x: Json = typeof a === "boolean" ? Number(a) : a;
+  const y: Json = typeof b === "boolean" ? Number(b) : b;
+  if (typeof x !== "object" || typeof y !== "object" || x === null || y === null) return x === y;
+  if (Array.isArray(x) || Array.isArray(y)) {
+    return Array.isArray(x) && Array.isArray(y) && x.length === y.length && x.every((v, i) => pyEquals(v, y[i]!));
+  }
+  const keys = Object.keys(x);
+  return (
+    keys.length === Object.keys(y).length && keys.every((k) => Object.hasOwn(y, k) && pyEquals(x[k]!, y[k]!))
+  );
+}
+
+/** Python's `{value!r}` of an integral-or-not `seq` or `v`: the integer when it is integral (`intOr`). */
+function reprIntOr(value: CJson | undefined): string {
+  return pyRepr((intOr(value) ?? null) as CJson);
+}
+
+/**
+ * The distinct versions of `values`, as a Python set holds them: two that Python's `==` calls equal
+ * are one (`True` and 1 included), and the first of them stays. A list or an object has no place
+ * in a Python set (Python raises there), and each is kept on its own.
+ */
+function pySetOf(values: readonly CJson[]): CJson[] {
+  const seen = new Set<string>();
+  const out: CJson[] = [];
+  for (const value of values) {
+    const plain = toPlain(value);
+    const key =
+      plain === null
+        ? "None"
+        : typeof plain === "boolean" || typeof plain === "number"
+          ? `n:${Number(plain) === 0 ? 0 : Number(plain)}`
+          : typeof plain === "string"
+            ? `s:${plain}`
+            : null;
+    if (key !== null) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    out.push(value);
+  }
+  return out;
+}
+
+/**
+ * The order `mixed_entry_versions` lists versions in: numbers in numeric order, and anything else
+ * after them by its Python `repr`, so a boolean beside a string still sorts. The Python
+ * implementation's `_version_order`.
+ */
+function compareVersions(a: CJson, b: CJson): number {
+  const numberOf = (v: CJson): number | null =>
+    v instanceof RawNumber ? v.value : typeof v === "number" ? v : null;
+  const na = numberOf(a);
+  const nb = numberOf(b);
+  if (na !== null && nb !== null) return na - nb;
+  if (na !== null) return -1;
+  if (nb !== null) return 1;
+  return compareCodePoints(pyRepr(a), pyRepr(b));
 }
 
 /**
@@ -870,8 +965,9 @@ function subjectIndex(entries: readonly LedgerEntry[]): Map<number, number> {
  * defines no subject for.
  */
 export function envelopeSubject(entries: readonly LedgerEntry[], seq: number): Record<string, CJson> {
-  const at = Number.isInteger(seq) ? subjectIndex(entries).get(seq) : undefined;
-  if (at === undefined) throw new Error(`no entry at seq ${seq}`);
+  const n = integral(seq);
+  const at = n === null ? undefined : subjectIndex(entries).get(n);
+  if (n === null || at === undefined) throw new Error(`no entry at seq ${seq}`);
   const entry = entries[at]!;
   const event = toPlain(entry["event"]) as string;
   if (!ENVELOPE_SUBJECT_MEMBERS.has(event)) {
@@ -880,7 +976,7 @@ export function envelopeSubject(entries: readonly LedgerEntry[], seq: number): R
   const subject: Record<string, CJson> = {
     chain_id: orNull(entry["chain_id"]) as CJson,
     node: orNull(entry["node"]) as CJson,
-    seq,
+    seq: n,
     entry_hash: recomputedHashes(entries)[at] ?? null,
     event,
   };
@@ -1175,14 +1271,14 @@ function receivedBytes(raw: unknown): Buffer | null {
   return null;
 }
 
-// A subject `seq` this build looks an entry up by, and an envelope's `v`, must be a JSON integer
-// written as one, and never a boolean (`isJsonInteger`, canonical.ts): Python's `_is_seq`. The
-// lexeme decides, since a parsed number keeps it: `1.0` is a float to Python, and a subject naming
-// seq `1.0` names no entry there. The type check comes first and every use is behind it — in Python
-// an unguarded lookup raises on a list or an object and finds the entry at seq 1 for `true`, and
-// the two implementations report the same failure for the same bundle. The entries are keyed by
-// the same rule (`subjectIndex`), so an entry whose own seq is `true` or `1.0` is covered by no
-// envelope.
+// A subject `seq` this build looks an entry up by, and an envelope's `v`, must be an integral
+// number and never a boolean (`integral`, canonical.ts), as the schema's integer type defines:
+// Python's `_is_seq`. `1.0` is 1, and RFC 8785 writes it as 1, so an envelope signed over one
+// verifies as if signed over the other. The type check comes first and every use is behind it — in
+// Python an unguarded lookup raises on a list or an object and finds the entry at seq 1 for
+// `true`, and the two implementations report the same failure for the same bundle. The entries are
+// keyed by the same rule (`subjectIndex`), so an entry whose own seq is `true` or `1.5` is covered
+// by no envelope.
 
 /**
  * The report line: the state and the result together, in the same form for all three results. A
@@ -1255,7 +1351,7 @@ function scoreEnvelopes(
   const results: Record<string, Json> = {};
   const witnesses: Record<string, string> = {};
   entries.forEach((e, i) => {
-    setOwn(states, String(seqOrIndex(e, i)), PROCESS_ASSERTED);
+    setOwn(states, stateKey(e, i), PROCESS_ASSERTED);
   });
 
   // The hash walk is what an envelope's binding member is checked against; a bundle carrying
@@ -1273,7 +1369,7 @@ function scoreEnvelopes(
     const covered = scoreEnvelope(envelope, index, entries, subjectAt, recomputed, trust, raw, fail, claims);
     if (covered === null) return;
     // Where `states` files that entry; `witnesses` files it by the index the subject resolved to.
-    const key = String(seqOrIndex(entries[covered.at]!, covered.at));
+    const key = stateKey(entries[covered.at]!, covered.at);
     setOwn(states, key, WITNESS_SIGNED);
     setOwn(results, key, covered.result);
     setOwn(witnesses, String(covered.at), covered.kid);
@@ -1284,7 +1380,7 @@ function scoreEnvelopes(
   // reports witness-signed and the bundle rejects; and it leaves `witnesses`.
   for (const [at, count] of claims) {
     if (count > 1) {
-      setOwn(states, String(seqOrIndex(entries[at]!, at)), PROCESS_ASSERTED);
+      setOwn(states, stateKey(entries[at]!, at), PROCESS_ASSERTED);
       delete witnesses[String(at)];
     }
   }
@@ -1358,9 +1454,8 @@ function scoreEnvelope(
     // Every failure is positioned by `subject.seq`, and `subject` is attacker-supplied, so the
     // lookup is guarded: a seq that is not an integer positions nothing, which is honest — it
     // names no entry — and it is never used as a key.
-    const raw = isRecord(subject) ? subject["seq"] : undefined;
-    if (!isJsonInteger(raw)) return [null, null, null];
-    const s = toPlain(raw) as number;
+    const s = isRecord(subject) ? integral(subject["seq"]) : null;
+    if (s === null) return [null, null, null];
     const at = subjectAt.get(s);
     if (at === undefined) return [s, null, null];
     const entry = entries[at]!;
@@ -1380,12 +1475,12 @@ function scoreEnvelope(
 
   // (1) version — a `v` or `typ` this build does not know is a DIFFERENT CONTRACT, and nothing
   // further about it can be read safely.
-  const v = toPlain(envelope["v"] as CJson) as Json;
+  // The version is read by the seq rule (`integral`): `1.0` is 1, and `true` is not.
   const typ = toPlain(envelope["typ"] as CJson) as Json;
-  if (!isJsonInteger(envelope["v"] as CJson) || v !== ENVELOPE_VERSION || typ !== ENVELOPE_TYP) {
+  if (integral(envelope["v"] as CJson) !== ENVELOPE_VERSION || typ !== ENVELOPE_TYP) {
     return report(
       "envelope_unknown_version",
-      `envelope v=${pyRepr((envelope["v"] ?? null) as CJson)} typ=${pyRepr((envelope["typ"] ?? null) as CJson)}, ` +
+      `envelope v=${reprIntOr(envelope["v"] as CJson)} typ=${pyRepr((envelope["typ"] ?? null) as CJson)}, ` +
         `this build knows v=${ENVELOPE_VERSION} typ='${ENVELOPE_TYP}'`,
     );
   }
@@ -1451,16 +1546,17 @@ function scoreEnvelope(
   // (3a) the binding member. `seq` is the lookup key, so there is nothing to compare it against;
   // the entry it finds supplies the hash the subject is checked against. It is also the one
   // subject member used as a KEY, so its type is checked before it is used as one.
-  if (!isJsonInteger(subject["seq"])) {
+  const subjectSeq = integral(subject["seq"]);
+  if (subjectSeq === null) {
     return report("envelope_subject_mismatch", "subject seq is not an integer");
   }
-  const subjectSeq = toPlain(subject["seq"]) as number;
   const at = subjectAt.get(subjectSeq);
   if (at === undefined) {
-    return report("envelope_subject_mismatch", `no entry at seq ${pyRepr(subjectSeq)} in this bundle`);
+    return report("envelope_subject_mismatch", `no entry at seq ${reprIntOr(subject["seq"])} in this bundle`);
   }
   const entry = entries[at]!;
-  const seq = orNull(entry["seq"]);
+  // The messages below print an integral seq as its integer, and an entry without one as None.
+  const seq = (intOr(entry["seq"]) ?? null) as CJson;
 
   // (3a') one entry, at most one envelope. Counted here, before anything else about this
   // envelope is judged, so the rule cannot be sidestepped by making the second envelope
@@ -1922,7 +2018,7 @@ function policyFailures(entries: readonly LedgerEntry[], bundleV: Json): Failure
       if (!isKnownPolicy(toPlain(e["policy"]))) {
         failures.add(
           "invalid_policy",
-          `invalid_policy: seq=${shown(e["seq"])} allow carries policy ` +
+          `invalid_policy: seq=${shown(intOr(e["seq"]))} allow carries policy ` +
             `${pyRepr(e["policy"] ?? null)}, not a value this format defines`,
           position,
         );
@@ -1931,7 +2027,7 @@ function policyFailures(entries: readonly LedgerEntry[], bundleV: Json): Failure
       if (ev === "deny" && bundleV === 2) continue; // validateDeny owns this entry's message
       failures.add(
         "policy_on_non_allow",
-        `policy_on_non_allow: seq=${shown(e["seq"])} event=${pyRepr(e["event"] ?? null)} ` +
+        `policy_on_non_allow: seq=${shown(intOr(e["seq"]))} event=${pyRepr(e["event"] ?? null)} ` +
           "carries `policy`, which is an allow-only field",
         position,
       );
@@ -1947,7 +2043,7 @@ function v2FieldLeaksOnV1(entries: readonly LedgerEntry[]): FailureLog {
     if (leaked.length > 0) {
       failures.add(
         "v2_field_on_v1",
-        `v2_field_on_v1: seq=${shown(e["seq"])} event=${pyRepr(e["event"] ?? null)} ` +
+        `v2_field_on_v1: seq=${shown(intOr(e["seq"]))} event=${pyRepr(e["event"] ?? null)} ` +
           `carries v2-only field(s) ${reprList(leaked)} on a schema_version=1 entry`,
         { seq: orNull(e["seq"]), node: orNull(e["node"]), entry: e },
       );
@@ -1987,7 +2083,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
       if (node !== null) nodes.add(node);
       const err = validateRoot(e);
       if (err) {
-        failures.add("invalid_root", `invalid_root: ${err} (seq ${shown(e["seq"])})`, {
+        failures.add("invalid_root", `invalid_root: ${err} (seq ${shown(intOr(e["seq"]))})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
           entry: e,
@@ -2001,7 +2097,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
       for (const r of (toPlain(e["revoked"]) as string[] | null) ?? []) revokedNodes.add(r);
       const err = validateKill(e);
       if (err) {
-        failures.add("invalid_kill", `invalid_kill: ${err} (seq ${shown(e["seq"])})`, {
+        failures.add("invalid_kill", `invalid_kill: ${err} (seq ${shown(intOr(e["seq"]))})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
           entry: e,
@@ -2018,8 +2114,8 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
           // record, the first one having been legitimate when it was written.
           failures.add(
             "duplicate_call_id",
-            `duplicate_call_id: call_id ${shown(e["call_id"])} on seq ${shown(e["seq"])} (${ev}) already used at seq ` +
-              `${shown(prior[2])} (${prior[0]})`,
+            `duplicate_call_id: call_id ${shown(e["call_id"])} on seq ${shown(intOr(e["seq"]))} (${ev}) already used at seq ` +
+              `${shown(intOr(prior[2]))} (${prior[0]})`,
             { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: cid, entry: e },
           );
         } else {
@@ -2028,7 +2124,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
       }
       const err = ev === "allow" ? validateAllow(e) : validateDeny(e);
       if (err) {
-        failures.add(`invalid_${ev}`, `invalid_${ev}: ${err} (seq ${shown(e["seq"])})`, {
+        failures.add(`invalid_${ev}`, `invalid_${ev}: ${err} (seq ${shown(intOr(e["seq"]))})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
           callId: cid ?? null,
@@ -2042,7 +2138,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
       const cid = toPlain(e["call_id"]) as string | null;
       const err = validateOutcome(e);
       if (err) {
-        failures.add("invalid_outcome", `invalid_outcome: ${err} (seq ${shown(e["seq"])})`, {
+        failures.add("invalid_outcome", `invalid_outcome: ${err} (seq ${shown(intOr(e["seq"]))})`, {
           seq: orNull(e["seq"]),
           node: orNull(e["node"]),
           callId: cid ?? null,
@@ -2053,8 +2149,8 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
       if (cid !== null && outcomes.has(cid)) {
         failures.add(
           "duplicate_outcome",
-          `duplicate_outcome: call_id ${shown(e["call_id"])} at seq ${shown(e["seq"])} (first at seq ` +
-            `${shown(outcomes.get(cid)!["seq"])})`,
+          `duplicate_outcome: call_id ${shown(e["call_id"])} at seq ${shown(intOr(e["seq"]))} (first at seq ` +
+            `${shown(intOr(outcomes.get(cid)!["seq"]))})`,
           { seq: orNull(e["seq"]), node: orNull(e["node"]), callId: cid, entry: e },
         );
         continue;
@@ -2079,7 +2175,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
     if (allowE === undefined) {
       failures.add(
         "outcome_without_allow",
-        `outcome_without_allow: call_id ${shown(oc["call_id"])} at seq ${shown(oc["seq"])} has no allow in this chain`,
+        `outcome_without_allow: call_id ${shown(oc["call_id"])} at seq ${shown(intOr(oc["seq"]))} has no allow in this chain`,
         { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid, entry: oc },
       );
       continue;
@@ -2099,8 +2195,8 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
     if (!orderOk) {
       failures.add(
         "outcome_before_allow",
-        `outcome_before_allow: call_id ${shown(oc["call_id"])} outcome seq ${shown(oc["seq"])} not ` +
-          `after allow seq ${shown(allowE["seq"])}`,
+        `outcome_before_allow: call_id ${shown(oc["call_id"])} outcome seq ${shown(intOr(oc["seq"]))} not ` +
+          `after allow seq ${shown(intOr(allowE["seq"]))}`,
         { seq: orNull(oc["seq"]), node: orNull(oc["node"]), callId: cid, entry: oc },
       );
     }
@@ -2192,14 +2288,14 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
 }
 
 /**
- * `[seq, node]` of the FIRST entry the hash chain does not reproduce at — position only.
+ * The index of the FIRST entry the hash chain does not reproduce at — position only.
  *
  * `AuditLog.verify` stays the authority on WHETHER the chain is broken and on the message this
  * module reports; this walk exists so the structured twin of that message can say WHERE, which
  * the message's own text does not expose in a parseable form. Mirrors `AuditLog.verify`'s walk
- * exactly (same seq/prev_hash/hash order). `[null, null]` when nothing entry-local is wrong — a
- * consistently re-hashed ledger fails against the signed anchor, not here, and that failure is
- * chain-level.
+ * exactly (same seq/prev_hash/hash order, and the same rule that a seq is an integral number and
+ * never a boolean, `integral`). `null` when nothing entry-local is wrong — a consistently
+ * re-hashed ledger fails against the signed anchor, not here, and that failure is chain-level.
  */
 export function integrityBreak(entries: readonly LedgerEntry[]): number | null {
   let prev: Json = GENESIS;
@@ -2212,8 +2308,7 @@ export function integrityBreak(entries: readonly LedgerEntry[]): number | null {
     let broken: boolean;
     try {
       broken =
-        !isJsonInteger(e["seq"]) ||
-        orNull(e["seq"]) !== i ||
+        integral(e["seq"]) !== i ||
         orNull(payload["prev_hash"]) !== prev ||
         hashEntry(prev as string, payload) !== orNull(e["hash"]);
     } catch {
@@ -2333,19 +2428,20 @@ export function verifyBundle(
   const log = new FailureLog();
 
   // (0) version: the bundle must declare a schema version this build understands, and — when
-  // an anchor is present — the anchor must be anchoring THAT version, not a different one.
-  const bundleV = toPlain(bundle.v as CJson | undefined) as Json;
-  let versionOk = typeof bundleV === "number" && SUPPORTED_BUNDLE_VERSIONS.has(bundleV);
+  // an anchor is present — the anchor must be anchoring THAT version, not a different one. A
+  // version is read by the seq rule (`integral`): `2.0` is 2, and `true` is not.
+  const rawV = bundle.v as CJson | undefined;
+  const bundleV = integral(rawV);
+  let versionOk = bundleV !== null && SUPPORTED_BUNDLE_VERSIONS.has(bundleV);
   if (!versionOk) {
     const supported = Array.from(SUPPORTED_BUNDLE_VERSIONS).sort((a, b) => a - b);
-    log.add("unsupported_version", `unsupported_version: bundle v=${pyRepr(bundleV)} not in [${supported.join(", ")}]`);
+    log.add("unsupported_version", `unsupported_version: bundle v=${reprIntOr(rawV)} not in [${supported.join(", ")}]`);
   }
-  const anchorV = toPlain(anchor["v"]) as Json;
-  if (anchorPresent && anchorV !== bundleV) {
+  if (anchorPresent && !sameNumber(anchor["v"], rawV)) {
     versionOk = false;
     log.add(
       "anchor_version_mismatch",
-      `anchor_version_mismatch: anchor v=${pyRepr(anchorV)} != bundle v=${pyRepr(bundleV)}`,
+      `anchor_version_mismatch: anchor v=${reprIntOr(anchor["v"])} != bundle v=${reprIntOr(rawV)}`,
     );
   }
 
@@ -2360,27 +2456,25 @@ export function verifyBundle(
 
   // 0.9.0: a chain is created at ONE schema version and never mixes (spec section 9) — the root
   // entry's v must equal the bundle's declared v, and no OTHER entry may carry a different v.
-  if (rootEntry !== undefined && toPlain(rootEntry["v"]) !== bundleV) {
+  if (rootEntry !== undefined && !sameNumber(rootEntry["v"], rawV)) {
     versionOk = false;
     log.add(
       "root_version_mismatch",
-      `root_version_mismatch: root v=${pyRepr(rootEntry["v"] ?? null)} != bundle v=${pyRepr(bundleV)}`,
+      `root_version_mismatch: root v=${reprIntOr(rootEntry["v"])} != bundle v=${reprIntOr(rawV)}`,
       { seq: orNull(rootEntry["seq"]), node: orNull(rootEntry["node"]), entry: rootEntry },
     );
   }
-  const mixedEntries = entries.filter((e) => toPlain(e["v"]) !== bundleV);
-  // An entry without `v` is Python's None in the list, and strings sort by code point, as Python's
-  // `sorted` sorts them, never by locale.
-  const mixed = Array.from(new Set(mixedEntries.map((e) => orNull(e["v"])))).sort((a, b) =>
-    typeof a === "number" && typeof b === "number" ? a - b : compareCodePoints(String(a), String(b)),
-  );
+  const mixedEntries = entries.filter((e) => !sameNumber(e["v"], rawV));
+  // An entry without `v` is Python's None in the list. Numbers come first in numeric order, then
+  // everything else by its repr, compared by code point as Python compares strings, never by locale.
+  const mixed = pySetOf(mixedEntries.map((e) => (intOr(e["v"]) ?? null) as CJson)).sort(compareVersions);
   if (mixed.length > 0) {
     versionOk = false;
     // One aggregate message over every offending entry (unchanged); the twin is positioned on
     // the first of them, which is where a reader looks.
     log.add(
       "mixed_entry_versions",
-      `mixed_entry_versions: entries declare v in [${mixed.map((v) => pyRepr(v)).join(", ")}], bundle v=${pyRepr(bundleV)}`,
+      `mixed_entry_versions: entries declare v in [${mixed.map((v) => pyRepr(v)).join(", ")}], bundle v=${reprIntOr(rawV)}`,
       { seq: orNull(mixedEntries[0]!["seq"]), node: orNull(mixedEntries[0]!["node"]), entry: mixedEntries[0]! },
     );
   }
@@ -2442,7 +2536,7 @@ export function verifyBundle(
         toPlain(ea["seq"]) !== actualSeq ||
         toPlain(ea["head"]) !== actualHead ||
         toPlain(ea["chain_id"]) !== toPlain(bundle.chain_id as CJson | undefined) ||
-        toPlain(ea["v"]) !== bundleV
+        !sameNumber(ea["v"], rawV)
       ) {
         expectedOk = false;
         log.add(

@@ -18,7 +18,8 @@ import { dirname } from "node:path";
 import {
   canonicalBytes,
   canonicalJson,
-  isJsonInteger,
+  intOr,
+  integral,
   parseJson,
   toPlain,
   type CJson,
@@ -250,12 +251,13 @@ export class AuditLog {
     }
     const [ok, err] = AuditLog.verify(entries);
     if (!ok) return [false, err];
-    if (entries.length === 0) return [asNumber(a["seq"]) === -1, null];
+    if (entries.length === 0) return [integral(a["seq"]) === -1, null];
     if (toPlain(a["chain_id"]) !== firstChainId(entries)) {
       return [false, "anchor chain_id does not match the ledger entries"];
     }
     const last = entries[entries.length - 1]!;
-    if (last["hash"] !== toPlain(a["head"]) || asNumber(last["seq"]) !== asNumber(a["seq"])) {
+    // The anchor's seq is read by the seq rule (`integral`): `1.0` is 1, and `true` is not.
+    if (last["hash"] !== toPlain(a["head"]) || integral(last["seq"]) !== integral(a["seq"])) {
       return [false, "anchor head does not match the ledger head (ledger rewritten?)"];
     }
     return [true, null];
@@ -266,13 +268,15 @@ export class AuditLog {
     let prev = GENESIS;
     let expectedSeq = 0;
     for (const e of entries) {
-      // An integer, written as one, and never a boolean: a chain re-hashed around `"seq": 1.0`
-      // or `"seq": true` at index 1 is a seq gap there, as it is to the Python implementation.
-      const seq = isJsonInteger(e["seq"]) ? asNumber(e["seq"]) : undefined;
-      if (seq !== expectedSeq) {
+      // An integral number and never a boolean (`integral`), as the schema's integer type
+      // defines: `1.0` is 1, and RFC 8785 writes it as 1, so it hashes as 1. A chain re-hashed
+      // around `"seq": true` or `"seq": 1.5` at index 1 is a seq gap there, as it is to the Python
+      // implementation.
+      if (integral(e["seq"]) !== expectedSeq) {
         // `seq` is the entry's own value, which a forged ledger chooses: printed by the one rule
-        // (display.ts `shown`) so it cannot end the reader's line and start another.
-        return [false, `seq gap at ${expectedSeq} (got ${shown(e["seq"])})`];
+        // (display.ts `shown`) so it cannot end the reader's line and start another, and an
+        // integral one as its integer.
+        return [false, `seq gap at ${expectedSeq} (got ${shown(intOr(e["seq"]))})`];
       }
       const stored = e["hash"];
       const payload = withoutHash(e);

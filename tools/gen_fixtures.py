@@ -622,8 +622,29 @@ def parity_fixtures() -> None:
     envelope_v_float["envelopes"][0]["v"] = 1.0
 
     ledger = [dict(e) for e in forged["entries"]]
-    ledger_bool = _rehashed([dict(e, seq=True) if i == 1 else dict(e) for i, e in enumerate(ledger)])
-    ledger_float = _rehashed([dict(e, seq=1.0) if i == 1 else dict(e) for i, e in enumerate(ledger)])
+
+    def ledger_with(index, seq):
+        return _rehashed([dict(e, seq=seq) if i == index else dict(e) for i, e in enumerate(ledger)])
+
+    # A seq or v is an integral number that is not a bool, as the schema's integer type defines:
+    # 1.0 and -0.0 are the integers they equal and print as them, 1.5 and True are no integer.
+    subject_nine = copy.deepcopy(forged)
+    subject_nine["envelopes"][0]["subject"]["seq"] = 9.0
+    envelope_v_two = copy.deepcopy(forged)
+    envelope_v_two["envelopes"][0]["v"] = 2.0
+    bundle_v_true = copy.deepcopy(forged)
+    bundle_v_true["v"] = True
+    bundle_v_three = copy.deepcopy(forged)
+    bundle_v_three["v"] = 3.0
+
+    def mixed_versions(entries):
+        # None, False, then 0 (one value with False in a Python set, and the first stays), 1.5 and
+        # a string: listed numbers first in numeric order, then the rest by repr.
+        del entries[0]["v"]
+        entries[1]["v"] = False
+        entries[2]["v"] = 0
+        entries[3]["v"] = 1.5
+        entries[4]["v"] = "x"
 
     files = {
         "forged_allow.bundle.json": forged,
@@ -639,8 +660,16 @@ def parity_fixtures() -> None:
         # A node name carrying line breaks, printed raw, would add a line reading OK.
         "forged_node_newline.bundle.json": _forged_allow(chain_id="parity\nOK\nx"),
         # json.dumps, not the canonical form: JCS writes 1.0 as 1, and the literal is the case.
-        "bool_seq.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_bool),
-        "float_seq.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_float),
+        "bool_seq.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_with(1, True)),
+        "float_seq.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_with(1, 1.0)),
+        "seq_frac.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_with(1, 1.5)),
+        "seq_two.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_with(1, 2.0)),
+        "seq_negzero.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_with(0, -0.0)),
+        "subject_seq_nine.bundle.json": subject_nine,
+        "envelope_v_two.bundle.json": envelope_v_two,
+        "bundle_v_true.bundle.json": bundle_v_true,
+        "bundle_v_three.bundle.json": bundle_v_three,
+        "versions_mixed.bundle.json": _edited(forged, mixed_versions, envelopes=False),
         "keys.json": [row],
         "keys_expired.json": [dict(row, not_after="2000-01-01T00:00:00Z")],
         "keys_unknown_member.json": [dict(row, notAfter="2000-01-01T00:00:00Z")],
@@ -666,6 +695,14 @@ def parity_fixtures() -> None:
         "forged_node_newline_entries": ["verify", "forged_node_newline.bundle.json", *keys, "--entries"],
         "bool_seq_ledger": ["verify", "bool_seq.jsonl", "--entries"],
         "float_seq_ledger": ["verify", "float_seq.jsonl", "--entries"],
+        "seq_frac_ledger": ["verify", "seq_frac.jsonl", "--entries"],
+        "seq_two_ledger": ["verify", "seq_two.jsonl", "--entries"],
+        "seq_negzero_ledger": ["verify", "seq_negzero.jsonl", "--entries"],
+        "subject_seq_nine": ["verify", "subject_seq_nine.bundle.json", *keys, "--entries"],
+        "envelope_v_two": ["verify", "envelope_v_two.bundle.json", *keys, "--entries"],
+        "bundle_v_true": ["verify", "bundle_v_true.bundle.json", *keys, "--entries"],
+        "bundle_v_three": ["verify", "bundle_v_three.bundle.json", *keys, "--entries"],
+        "versions_mixed": ["verify", "versions_mixed.bundle.json", "--entries"],
         "expired_row": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_expired.json", "--entries"],
         "unknown_member_row": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_unknown_member.json"],
         "duplicate_kid": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_duplicate_kid.json"],

@@ -31,13 +31,14 @@
 import { readFileSync } from "node:fs";
 
 import { AuditLog, type LedgerEntry } from "./audit.js";
-import { parseJson, toPlain, type CJson, type Json } from "./canonical.js";
+import { intOr, parseJson, type CJson } from "./canonical.js";
 import { BARE, escaped, integerText, oneLine } from "./display.js";
 import {
   PROCESS_ASSERTED,
   WITNESS_SIGNED,
   integrityBreak,
   parseBundle,
+  stateKey,
   validateWitnessKeys,
   verifyBundle,
   type Bundle,
@@ -136,12 +137,6 @@ function py(value: boolean): string {
   return value ? "True" : "False";
 }
 
-/** A ledger field as a plain JSON value, `null` when the entry does not carry it. */
-function field(e: LedgerEntry, name: string): Json {
-  const plain = toPlain(e[name]);
-  return plain === undefined ? null : plain;
-}
-
 /**
  * Entry index -> the checks that failed on that entry: the `reason` of every failure about it,
  * each once, in the order the verifier reported them.
@@ -184,8 +179,9 @@ function entryValue(value: CJson): string {
 
 /**
  * One `--entries` line: two spaces, then `key=value` tokens separated by single spaces, in a fixed
- * order. `seq` is always printed, as `seq=null` for an entry that has none: an entry without a seq
- * is exactly the entry a reader must see. Any other key with no value is left out.
+ * order. `seq` is always printed, as the integer when it is integral (`1.0` prints 1, as the
+ * verifier reads it), and as `seq=null` for an entry that has none: an entry without a seq is
+ * exactly the entry a reader must see. Any other key with no value is left out.
  *
  * How a line parses: no token contains whitespace; the key is the text before the token's first
  * `=`, and keys never contain one, though a value may (`scope=failed=containment` is the scope
@@ -193,7 +189,7 @@ function entryValue(value: CJson): string {
  * printed as it is.
  */
 function entryLine(e: LedgerEntry, rest: readonly (readonly [string, CJson | undefined])[]): string {
-  const tokens = [`seq=${entryValue(e["seq"] ?? null)}`];
+  const tokens = [`seq=${entryValue((intOr(e["seq"]) ?? null) as CJson)}`];
   const pairs: (readonly [string, CJson | undefined])[] = [
     ["event", e["event"]],
     ["node", e["node"]],
@@ -219,9 +215,9 @@ function bundleEntryLines(entries: readonly LedgerEntry[], rep: VerifyReport): s
   const { results, witnesses } = rep.envelopes;
   return entries.map((e, i) => {
     const kid = Object.hasOwn(witnesses, String(i)) ? witnesses[String(i)]! : null;
-    // `results` is keyed the way `states` is: a covered entry's key is its own seq, an integer, or
-    // its index when it has none, and the result there is its envelope's.
-    const key = "seq" in e ? String(field(e, "seq")) : String(i);
+    // `results` is keyed the way `states` is (`stateKey`), and for a covered entry the result filed
+    // there is its own envelope's.
+    const key = stateKey(e, i);
     return entryLine(e, [
       ["state", kid === null ? PROCESS_ASSERTED : WITNESS_SIGNED],
       ["observed", kid !== null && Object.hasOwn(results, key) ? results[key]! : null],

@@ -5,8 +5,9 @@
  * exit code the Python CLI gave for the same arguments on the same files, run from inside that
  * directory so every path it prints is relative. The cases cover what a reader of one CLI must be
  * able to trust the other on: `--entries` attributing a failure to an entry whose seq is missing,
- * null, a boolean, a string or written `1.0`; a seq written `1.0` in a ledger and in an envelope
- * subject, which Python reads as a float and refuses; an envelope whose `v` is `1.0`; two entries
+ * null, a boolean or a string; a seq or `v` written `1.0`, `2.0`, `3.0`, `9.0` or `-0.0`, which
+ * both read as the integer it equals and print as one, and one written `1.5` or `true`, which
+ * neither reads as an integer; versions of every type, listed in one order; two entries
  * sharing a seq with the witness's signature on the later copy, which alone reads witness-signed;
  * an envelope naming seq 1 that binds an entry whose seq is `true`, which no envelope covers; a
  * trust row past its `not_after`; a row carrying a member it does not define (`notAfter`); a kid
@@ -40,6 +41,14 @@ test("the parity set covers every case the release gate names", () => {
     "bool_seq_ledger",
     "float_seq",
     "float_seq_ledger",
+    "seq_frac_ledger",
+    "seq_two_ledger",
+    "seq_negzero_ledger",
+    "subject_seq_nine",
+    "envelope_v_two",
+    "bundle_v_true",
+    "bundle_v_three",
+    "versions_mixed",
     "subject_seq_float",
     "envelope_v_float",
     "string_seq",
