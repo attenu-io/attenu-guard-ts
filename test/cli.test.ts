@@ -29,7 +29,7 @@ import {
 } from "../src/evidence.js";
 import { Guard } from "../src/guard.js";
 import { Ed25519Signer, HS256TestSigner } from "../src/wire.js";
-import { META, REPO_ROOT, fixturePath, fixtureText } from "./helpers.js";
+import { META, REPO_ROOT, fixtureJson, fixturePath, fixtureText } from "./helpers.js";
 
 const BIN = resolve(REPO_ROOT, "bin", "attenu-guard.js");
 
@@ -1021,6 +1021,101 @@ test("an entry carrying a number past 2^53 is a hash mismatch at that entry, and
       assert.equal(plain.stderr, "", literal);
       assert.equal(plain.status, 2, literal);
       assert.equal(plain.stdout, "TAMPERED — hash mismatch at seq 3\n", literal);
+    }
+  });
+});
+
+// ---- a value of the wrong type is a finding, never an exception -----------------------------------
+
+test("an allow whose scope is not a string is the containment finding at that entry, never a throw", () => {
+  // Against a wildcard the scope reached `startsWith` and threw out of the verifier, and the CLI
+  // stopped with a stack trace; against a plain scope it already failed containment. It is that
+  // finding either way, with the strings the Python implementation prints for the same bundle.
+  const root = Guard.issue("a", new Authority({ scopes: ["crm.*"] }), { chainId: "c" });
+  assert.ok(root.check("crm.read").allowed);
+  const clean = exportBundle(root.auditLog().entries, ANCHOR) as unknown as Record<string, unknown>;
+  const cases: [string, CJson | undefined][] = [
+    ["5", 5],
+    ["None", null],
+    ["True", true],
+    ["1.5", 1.5],
+    ["['crm.read']", ["crm.read"]],
+    ["{'a': 1}", { a: 1 }],
+    ["None", undefined],
+  ];
+  inTempDir((dir) => {
+    const file = join(dir, "bundle.json");
+    for (const [printed, scope] of cases) {
+      const bundle = JSON.parse(JSON.stringify(clean)) as Record<string, unknown> & { entries: LedgerEntry[] };
+      if (scope === undefined) delete bundle.entries[1]!["scope"];
+      else bundle.entries[1]!["scope"] = scope;
+      rehash(bundle.entries);
+      delete bundle["anchor"];
+      const line = `containment: allow of ${printed} on c:n0 outside its authority ['crm.*']`;
+      const report = verifyBundle(bundle as unknown as Bundle, null);
+      assert.deepEqual(report.failures, [line], printed);
+      assert.deepEqual(report.failure_entries, [1], printed);
+      writeFileSync(file, JSON.stringify(bundle));
+      const { stdout, status, stderr } = run(["verify", file, "--entries"]);
+      assert.equal(stderr, "", printed);
+      assert.equal(status, 2, printed);
+      const lines = stdout.split("\n");
+      assert.ok(lines.includes(`  - ${line}`), `${printed}:\n${stdout}`);
+      const allow = lines.find((l) => l.startsWith("  seq=1 event=allow node=c:n0"));
+      assert.ok(allow?.endsWith(" failed=containment"), `${printed}:\n${stdout}`);
+    }
+  });
+});
+
+test("an anchor sig that is not a string is not hex, and a null one reads as absent, under a key", () => {
+  // `bytes.fromhex` raised a TypeError on such a sig in the Python implementation; this build
+  // already reported it, and the two now print the same line for the same anchor.
+  const entries = withForgedAllow(custodyRun());
+  const anchor = (exportBundle(entries, ANCHOR) as unknown as { anchor: Record<string, CJson> }).anchor;
+  const absent = { ...anchor };
+  delete absent["sig"];
+  assert.deepEqual(AuditLog.verifyAnchor(entries, absent, ANCHOR), [false, "anchor signature invalid"]);
+  const cases: [CJson, string][] = [
+    [null, "anchor signature invalid"],
+    ["", "anchor signature invalid"],
+    [5, "anchor signature not hex"],
+    [true, "anchor signature not hex"],
+    [["ab"], "anchor signature not hex"],
+    [{ a: 1 }, "anchor signature not hex"],
+  ];
+  for (const [sig, reason] of cases) {
+    assert.deepEqual(AuditLog.verifyAnchor(entries, { ...anchor, sig }, ANCHOR), [false, reason], JSON.stringify(sig));
+  }
+});
+
+test("an allow whose context is not an object is read, never a throw", () => {
+  // The Python implementation raises on these (a TypeError or ValueError in `permits`), a
+  // difference it defers. This build reads a context that is not an object as no context, as it
+  // reads an absent one, and a context member of the wrong type fails the ceiling it is checked
+  // against: a verdict either way, never an exception.
+  const seed = (fixtureJson("vectors/bundles/bundle_vectors_v1.json") as { cases: { name: string; bundle: Bundle }[] })
+    .cases.find((c) => c.name === "valid_bundle_v2")!.bundle;
+  const cases: [CJson, boolean][] = [
+    [[1], true],
+    [5, true],
+    ["x", true],
+    [true, true],
+    [{ rows: "many" }, false],
+  ];
+  inTempDir((dir) => {
+    const file = join(dir, "bundle.json");
+    for (const [context, ok] of cases) {
+      const bundle = JSON.parse(JSON.stringify(seed)) as Record<string, unknown> & { entries: LedgerEntry[] };
+      assert.equal(bundle.entries[2]!["event"], "allow");
+      bundle.entries[2]!["context"] = context;
+      rehash(bundle.entries);
+      delete bundle["anchor"];
+      const label = JSON.stringify(context);
+      assert.equal(verifyBundle(bundle as unknown as Bundle, null).ok, ok, label);
+      writeFileSync(file, JSON.stringify(bundle));
+      const { status, stderr } = run(["verify", file, "--entries"]);
+      assert.equal(stderr, "", label);
+      assert.equal(status, ok ? 0 : 2, label);
     }
   });
 });

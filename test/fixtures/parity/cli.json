@@ -35,6 +35,42 @@
   "exit": 2,
   "stdout": "integrity=False monotonicity=True containment=False anchor=FAILED nodes=2 actions_checked=2\n  - integrity(anchor): anchor signature invalid\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\n"
  },
+ "anchor_sig_int": {
+  "args": [
+   "verify",
+   "anchor_sig_int.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--hs256-key",
+   "73616d706c652d6b6579"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=FAILED nodes=2 actions_checked=2\n  - integrity(anchor): anchor signature not hex\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\n"
+ },
+ "anchor_sig_list": {
+  "args": [
+   "verify",
+   "anchor_sig_list.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--hs256-key",
+   "73616d706c652d6b6579"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=FAILED nodes=2 actions_checked=2\n  - integrity(anchor): anchor signature not hex\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\n"
+ },
+ "anchor_sig_null": {
+  "args": [
+   "verify",
+   "anchor_sig_null.bundle.json",
+   "--witness-keys",
+   "keys.json",
+   "--hs256-key",
+   "73616d706c652d6b6579"
+  ],
+  "exit": 2,
+  "stdout": "integrity=False monotonicity=True containment=False anchor=FAILED nodes=2 actions_checked=2\n  - integrity(anchor): anchor signature invalid\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\n"
+ },
  "anchor_v_huge": {
   "args": [
    "verify",
@@ -235,6 +271,60 @@
   ],
   "exit": 2,
   "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on \"parity\\nOK\\nx:n1\" outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=\"parity\\nOK\\nx:n0\" state=process-asserted\n  seq=1 event=spawn node=\"parity\\nOK\\nx:n1\" state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=\"parity\\nOK\\nx:n1\" scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=\"parity\\nOK\\nx:n1\" scope=web.search state=process-asserted\n  seq=4 event=allow node=\"parity\\nOK\\nx:n1\" scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
+ },
+ "scope_bool": {
+  "args": [
+   "verify",
+   "scope_bool.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=1 actions_checked=1\n  - containment: allow of True on c:n0 outside its authority ['crm.*']\nFAILED\nentries:\n  seq=0 event=root node=c:n0 state=process-asserted\n  seq=1 event=allow node=c:n0 scope=true state=process-asserted failed=containment\n"
+ },
+ "scope_float": {
+  "args": [
+   "verify",
+   "scope_float.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=1 actions_checked=1\n  - containment: allow of 1.5 on c:n0 outside its authority ['crm.*']\nFAILED\nentries:\n  seq=0 event=root node=c:n0 state=process-asserted\n  seq=1 event=allow node=c:n0 scope=1.5 state=process-asserted failed=containment\n"
+ },
+ "scope_int": {
+  "args": [
+   "verify",
+   "scope_int.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=1 actions_checked=1\n  - containment: allow of 5 on c:n0 outside its authority ['crm.*']\nFAILED\nentries:\n  seq=0 event=root node=c:n0 state=process-asserted\n  seq=1 event=allow node=c:n0 scope=5 state=process-asserted failed=containment\n"
+ },
+ "scope_list": {
+  "args": [
+   "verify",
+   "scope_list.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=1 actions_checked=1\n  - containment: allow of ['crm.read'] on c:n0 outside its authority ['crm.*']\nFAILED\nentries:\n  seq=0 event=root node=c:n0 state=process-asserted\n  seq=1 event=allow node=c:n0 scope=[\"crm.read\"] state=process-asserted failed=containment\n"
+ },
+ "scope_null": {
+  "args": [
+   "verify",
+   "scope_null.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=1 actions_checked=1\n  - containment: allow of None on c:n0 outside its authority ['crm.*']\nFAILED\nentries:\n  seq=0 event=root node=c:n0 state=process-asserted\n  seq=1 event=allow node=c:n0 state=process-asserted failed=containment\n"
+ },
+ "scope_object": {
+  "args": [
+   "verify",
+   "scope_object.bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=1 actions_checked=1\n  - containment: allow of {'a': 1} on c:n0 outside its authority ['crm.*']\nFAILED\nentries:\n  seq=0 event=root node=c:n0 state=process-asserted\n  seq=1 event=allow node=c:n0 scope={\"a\":1} state=process-asserted failed=containment\n"
  },
  "seq_frac_ledger": {
   "args": [

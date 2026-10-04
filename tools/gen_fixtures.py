@@ -568,6 +568,13 @@ def _signed_by_hand(entry: dict, seq) -> dict:
     return envelope
 
 
+def _wildcard_allow():
+    """A root holding the wildcard crm.* and allowed crm.read: node c:n0, the allow at seq 1."""
+    g = Guard.issue("a", Authority(scopes={"crm.*"}), chain_id="c")
+    g.check("crm.read")
+    return evidence.export_bundle(g.audit_log(), HS256TestSigner(HS256_SECRET, kid=HS256_KID))
+
+
 def _python_cli(args: list, cwd: Path) -> dict:
     """What the PYTHON CLI prints for `args`, run from `cwd` so every path it prints is the
     relative one it was given, and its exit code."""
@@ -697,6 +704,21 @@ def parity_fixtures() -> None:
         "keys_unknown_member.json": [dict(row, notAfter="2000-01-01T00:00:00Z")],
         "keys_duplicate_kid.json": [row, dict(row)],
     }
+    # A value of the wrong type is the existing finding, never a crash. An allow scope that is not
+    # a string, against a wildcard, is the containment failure at that allow; an anchor sig that is
+    # not a string is not hex, and a null one reads as an absent one.
+    wildcard = _wildcard_allow()
+    scope_values = {"int": 5, "null": None, "bool": True, "float": 1.5, "list": ["crm.read"],
+                    "object": {"a": 1}}
+    for label, value in scope_values.items():
+        def set_scope(entries, value=value):
+            entries[1]["scope"] = value
+        files[f"scope_{label}.bundle.json"] = _edited(wildcard, set_scope)
+    sig_values = {"null": None, "int": 5, "list": ["ab"]}
+    for label, value in sig_values.items():
+        anchored = copy.deepcopy(forged)
+        anchored["anchor"]["sig"] = value
+        files[f"anchor_sig_{label}.bundle.json"] = anchored
     for name, payload in files.items():
         write(f"parity/{name}", payload)
 
@@ -739,6 +761,11 @@ def parity_fixtures() -> None:
         "unknown_member_row": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_unknown_member.json"],
         "duplicate_kid": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_duplicate_kid.json"],
     }
+    for label in scope_values:
+        runs[f"scope_{label}"] = ["verify", f"scope_{label}.bundle.json", "--entries"]
+    for label in sig_values:
+        runs[f"anchor_sig_{label}"] = ["verify", f"anchor_sig_{label}.bundle.json", *keys, "--hs256-key",
+                                       HS256_SECRET.hex()]
     write("parity/cli.json", {name: _python_cli(args, OUT / "parity") for name, args in runs.items()})
 
 

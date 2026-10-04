@@ -1,0 +1,47 @@
+{
+ "c14n": "JCS",
+ "chain_id": "c",
+ "entries": [
+  {
+   "agent": "a",
+   "authority": {
+    "constraints": [],
+    "scopes": [
+     "crm.*"
+    ],
+    "ttl": null
+   },
+   "c14n": "JCS",
+   "chain_id": "c",
+   "event": "root",
+   "hash": "0e32d4a8f19e64102279a159bfa92eb7934bcd44c4d7590b603a1b8169b6dcf4",
+   "node": "c:n0",
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 1,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "c",
+   "context": {},
+   "event": "allow",
+   "hash": "226375a582c6b5274a1e2c72eb5e8aa140a9af88119e60a274e46bd2b83b8326",
+   "node": "c:n0",
+   "prev_hash": "0e32d4a8f19e64102279a159bfa92eb7934bcd44c4d7590b603a1b8169b6dcf4",
+   "scope": [
+    "crm.read"
+   ],
+   "seq": 1,
+   "tool": null,
+   "ts": 2,
+   "v": 1
+  }
+ ],
+ "note": "offline-verifiable: attenu_guard.evidence.verify_bundle(bundle, signer)",
+ "redaction": {
+  "ok": true,
+  "violations": []
+ },
+ "v": 1
+}

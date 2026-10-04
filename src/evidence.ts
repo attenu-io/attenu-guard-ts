@@ -2653,7 +2653,10 @@ export function verifyBundle(
       });
       continue;
     }
-    if (!a.permits(scope, ctx).allowed) {
+    // A scope that is not a string is no scope the node can hold. Against a wildcard it threw
+    // (`startsWith` on a number or null) out of the verifier; it is this finding either way, as
+    // in the Python implementation.
+    if (typeof scope !== "string" || !a.permits(scope, ctx).allowed) {
       contained = false;
       log.add(
         "containment",
