@@ -744,7 +744,9 @@ export const ENVELOPE_ALG = "EdDSA";
 /**
  * A verifying envelope's state. It says where the signature came from and NOTHING about
  * authority — the witness is whoever holds the key `witness.kid` names, which nothing in the
- * envelope makes the delegation parent.
+ * envelope makes the delegation parent. The signature covers the entry's hash and chain position
+ * plus what the witness-key holder observed; it does not attest that the action was permitted.
+ * Monotonicity and containment answer that, from the ledger.
  */
 export const WITNESS_SIGNED = "witness-signed";
 /**
@@ -776,11 +778,19 @@ export interface Envelope {
   sig: string;
 }
 
-/** One trusted witness key, in the shape the vector file carries. */
+/**
+ * One trusted witness key, in the shape the vector file carries.
+ *
+ * `not_after` is optional: an RFC 3339 date-time in UTC, written with `Z`, such as
+ * `2026-10-05T00:00:00Z`. A row whose `not_after` is at or before the verification time is left
+ * out of the trust set, so an envelope naming its kid fails `envelope_unknown_witness`, and the
+ * message says the key expired and when. A row without it is trusted as before.
+ */
 export interface WitnessKey {
   kid: string;
   alg: string;
   public_key_hex: string;
+  not_after?: string;
 }
 
 /**
@@ -927,25 +937,141 @@ function witnessPublicKey(kid: string, value: unknown): Buffer {
  */
 function trustedWitnesses(
   witnessKeys: readonly WitnessKey[] | Record<string, Buffer | string> | null | undefined,
-): Map<string, [string, Buffer]> {
+  now: Instant,
+): TrustSet {
   const trusted = new Map<string, [string, Buffer]>();
-  if (witnessKeys === null || witnessKeys === undefined) return trusted;
+  const expired = new Map<string, string>();
+  if (witnessKeys === null || witnessKeys === undefined) return { trusted, expired };
   const rows: [unknown, unknown][] = Array.isArray(witnessKeys)
     ? witnessKeys.map((k) => [isRecordLike(k) ? k["kid"] : undefined, k])
     : Object.entries(witnessKeys);
   for (const [kid, value] of rows) {
     if (typeof kid !== "string") throw new Error("witness key kid must be a string");
     let key: unknown = value;
+    let notAfter: string | null = null;
+    let until: Instant | null = null;
     if (isRecordLike(value)) {
       const alg = value["alg"];
       if (alg !== ENVELOPE_ALG) {
         throw new Error(`witness key '${kid}': alg must be '${ENVELOPE_ALG}', got ${pyRepr(alg as Json)}`);
       }
+      // Present means checked: `null` is not "no expiry", it is a row that says nothing usable.
+      if (value["not_after"] !== undefined) {
+        until = rfc3339Utc(value["not_after"]);
+        if (until === null) {
+          throw new Error(
+            `witness key '${kid}': not_after must be an RFC 3339 UTC date-time such as ` +
+              `'2026-10-05T00:00:00Z', got ${pyRepr(value["not_after"] as Json)}`,
+          );
+        }
+        notAfter = value["not_after"] as string;
+      }
       key = value["public_key_hex"];
     }
-    trusted.set(kid, [ENVELOPE_ALG, witnessPublicKey(kid, key)]);
+    const publicKey = witnessPublicKey(kid, key);
+    if (until !== null && atOrBefore(until, now)) {
+      // Validated in full, then left out. An expired row neither adds its kid nor removes one
+      // that another row trusts; it is remembered so the failure can say the key expired, and
+      // when, instead of reading as a key nobody ever configured.
+      expired.set(kid, notAfter!);
+      continue;
+    }
+    trusted.set(kid, [ENVELOPE_ALG, publicKey]);
   }
-  return trusted;
+  return { trusted, expired };
+}
+
+/**
+ * The trust set at the verification time: the rows still valid, and the kids whose rows had
+ * expired by then.
+ */
+interface TrustSet {
+  /** kid -> `[alg, raw public key]`, for every row still valid at the verification time. */
+  trusted: Map<string, [string, Buffer]>;
+  /**
+   * kid -> the `not_after` of an expired row naming it, exactly as the row wrote it. When several
+   * rows for one kid have expired, the last one is named.
+   */
+  expired: Map<string, string>;
+}
+
+/**
+ * RFC 3339 `date-time` in UTC: `YYYY-MM-DDTHH:MM:SS`, an optional fraction, and `Z`. RFC 3339
+ * allows `t` and `z` in lower case, so they are accepted too. A numeric offset, even `+00:00`, is
+ * not: a trust-set row says UTC in the one spelling that cannot be misread as local time. ASCII
+ * digits only. The Python implementation accepts exactly this grammar, so a row one of them
+ * refuses, both refuse.
+ */
+const RFC3339_UTC = /^([0-9]{4})-([0-9]{2})-([0-9]{2})[Tt]([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]+))?[Zz]$/;
+
+/**
+ * A point in time: whole seconds since the epoch, and the fraction's digits, at most six. The
+ * fraction is kept to the microsecond and the digits past it are dropped, as Python's `datetime`
+ * keeps it, so both implementations compare the same two instants.
+ */
+interface Instant {
+  seconds: number;
+  fraction: string;
+}
+
+/**
+ * `value` as an instant, or `null` when it is not an RFC 3339 UTC date-time. An out-of-range field
+ * (month 13, February 30, hour 24, second 60) is `null`: there is no leap second here, as there is
+ * none in Python's `datetime`.
+ */
+function rfc3339Utc(value: unknown): Instant | null {
+  const m = typeof value === "string" ? RFC3339_UTC.exec(value) : null;
+  if (m !== null) {
+    const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number) as [
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+    ];
+    const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+    const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+    if (year >= 1 && days !== undefined && day >= 1 && day <= days && hour <= 23 && minute <= 59 && second <= 59) {
+      // `Date.UTC` reads a year below 100 as 19xx; `setUTCFullYear` does not.
+      const at = new Date(0);
+      at.setUTCFullYear(year, month - 1, day);
+      at.setUTCHours(hour, minute, second, 0);
+      return { seconds: at.getTime() / 1000, fraction: (m[7] ?? "").slice(0, 6) };
+    }
+  }
+  return null;
+}
+
+/**
+ * The verification time: `now` when given — a `Date`, or a string in the `not_after` grammar —
+ * and the current time otherwise. A number is refused rather than guessed at: a JavaScript epoch
+ * counts milliseconds and a Python one seconds.
+ */
+function verificationTime(now: Date | string | null | undefined): Instant {
+  if (typeof now === "string") {
+    const parsed = rfc3339Utc(now);
+    if (parsed === null) {
+      throw new Error(
+        `now must be a Date or an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z', got ${pyRepr(now)}`,
+      );
+    }
+    return parsed;
+  }
+  const at = now ?? new Date();
+  if (!(at instanceof Date) || Number.isNaN(at.getTime())) {
+    throw new Error("now must be a valid Date or an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z'");
+  }
+  const ms = at.getTime();
+  const seconds = Math.floor(ms / 1000);
+  return { seconds, fraction: String(ms - seconds * 1000).padStart(3, "0") };
+}
+
+/** `a` is at or before `b`: whole seconds first, then the fraction digits, padded to one length. */
+function atOrBefore(a: Instant, b: Instant): boolean {
+  if (a.seconds !== b.seconds) return a.seconds < b.seconds;
+  const width = Math.max(a.fraction.length, b.fraction.length);
+  return a.fraction.padEnd(width, "0") <= b.fraction.padEnd(width, "0");
 }
 
 /** A plain object (not an array, not null, not a Buffer). */
@@ -998,6 +1124,8 @@ export interface EnvelopeSummary {
   states: Record<string, EnvelopeState>;
   /** The `observed.result` of each witness-signed entry. */
   results: Record<string, Json>;
+  /** The `witness.kid` of the envelope that verified for each entry, filled exactly where `results` is. */
+  witnesses: Record<string, string>;
   /** The report line for each entry: `witness-signed (matched)`, or `process-asserted`. */
   lines: Record<string, string>;
   failures: string[];
@@ -1011,6 +1139,12 @@ export interface VerifyEnvelopesOptions {
    * null). Only `envelope_non_canonical` needs them, and only where a deployment kept them.
    */
   envelopeBytes?: readonly (Buffer | string | null)[] | null;
+  /**
+   * The verification time a trust-set row's `not_after` is compared with: a `Date`, or a string in
+   * the `not_after` grammar. The current time when absent. A row whose `not_after` is at or before
+   * it is left out of the trust set.
+   */
+  now?: Date | string | null;
 }
 
 /**
@@ -1030,12 +1164,13 @@ export interface VerifyEnvelopesOptions {
 function scoreEnvelopes(
   entries: readonly LedgerEntry[],
   envelopes: readonly Envelope[],
-  trusted: Map<string, [string, Buffer]>,
+  trust: TrustSet,
   rawBytes: readonly (Buffer | string | null)[] | null,
 ): [EnvelopeSummary, FailureLog] {
   const fail = new FailureLog();
   const states: Record<string, EnvelopeState> = {};
   const results: Record<string, Json> = {};
+  const witnesses: Record<string, string> = {};
   entries.forEach((e, i) => {
     states[String(orNull(e["seq"]) ?? i)] = PROCESS_ASSERTED;
   });
@@ -1056,10 +1191,11 @@ function scoreEnvelopes(
 
   envelopes.forEach((envelope, index) => {
     const raw = rawBytes !== null && index < rawBytes.length ? rawBytes[index] ?? null : null;
-    const covered = scoreEnvelope(envelope, index, bySeq, recomputed, trusted, raw, fail, claims);
+    const covered = scoreEnvelope(envelope, index, bySeq, recomputed, trust, raw, fail, claims);
     if (covered === null) return;
     states[String(covered.seq)] = WITNESS_SIGNED;
     results[String(covered.seq)] = covered.result;
+    witnesses[String(covered.seq)] = covered.kid;
   });
 
   // The first envelope's result stands in `results` — it is what that witness said, and the
@@ -1082,6 +1218,7 @@ function scoreEnvelopes(
       .sort((a, b) => a - b),
     states,
     results,
+    witnesses,
     lines,
     failures: [...fail.messages],
   };
@@ -1112,11 +1249,11 @@ function scoreEnvelope(
   index: number,
   bySeq: Map<Json, LedgerEntry>,
   recomputed: Map<Json, string | null>,
-  trusted: Map<string, [string, Buffer]>,
+  trust: TrustSet,
   raw: Buffer | string | null,
   fail: FailureLog,
   claims: Map<string, number>,
-): { seq: Json; node: Json; result: Json } | null {
+): { seq: Json; node: Json; result: Json; kid: string } | null {
   const isRecord = (v: unknown): v is Record<string, CJson> =>
     v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof RawNumber);
 
@@ -1316,12 +1453,17 @@ function scoreEnvelope(
         "defines Ed25519 and no other algorithm",
     );
   }
-  const known = trusted.get(kid);
+  const known = trust.trusted.get(kid);
   if (known === undefined) {
+    // A kid whose rows have all expired is not in the trust set, so it is the same failure as any
+    // other untrusted kid. The message keeps that wording first and then says why, because "not
+    // trusted" and "trusted until a date that has passed" call for different fixes.
+    const lapsed = trust.expired.get(kid);
     return report(
       "envelope_unknown_witness",
       `witness kid=${pyRepr(kid)} alg=${pyRepr(alg)} is not in the trusted witness keys ` +
-        `(${reprList(sortedStrings(trusted.keys()))})`,
+        `(${reprList(sortedStrings(trust.trusted.keys()))})` +
+        (lapsed === undefined ? "" : `: the key expired at not_after=${pyRepr(lapsed)}`),
     );
   }
 
@@ -1353,7 +1495,7 @@ function scoreEnvelope(
     return report("envelope_bad_signature", `the signature does not verify under the key kid=${pyRepr(kid)} names`);
   }
   if (nonCanonical) return null;
-  return { seq, node: orNull(entry["node"]), result: toPlain(envelope["observed"]["result"]) as Json };
+  return { seq, node: orNull(entry["node"]), result: toPlain(envelope["observed"]["result"]) as Json, kid };
 }
 
 /**
@@ -1369,7 +1511,7 @@ export function verifyEnvelopes(
   const [summary, fail] = scoreEnvelopes(
     bundle.entries ?? [],
     bundle.envelopes ?? [],
-    trustedWitnesses(options.witnessKeys ?? null),
+    trustedWitnesses(options.witnessKeys ?? null, verificationTime(options.now)),
     options.envelopeBytes ?? null,
   );
   return { ok: fail.length === 0, ...summary, failure_details: fail.details };
@@ -1954,7 +2096,7 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
  * consistently re-hashed ledger fails against the signed anchor, not here, and that failure is
  * chain-level.
  */
-function integrityPosition(entries: readonly LedgerEntry[]): [Json, Json] {
+export function integrityPosition(entries: readonly LedgerEntry[]): [Json, Json] {
   let prev: Json = GENESIS;
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i]!;
@@ -2046,6 +2188,13 @@ export interface VerifyBundleOptions {
    * `envelope_non_canonical` needs them, and only where a deployment kept them.
    */
   envelopeBytes?: readonly (Buffer | string | null)[] | null;
+  /**
+   * The verification time a trust-set row's `not_after` is compared with: a `Date`, or a string in
+   * the `not_after` grammar. The current time when absent. A row whose `not_after` is at or before
+   * it is left out of the trust set, so an envelope naming that kid fails
+   * `envelope_unknown_witness`.
+   */
+  now?: Date | string | null;
 }
 
 export function verifyBundle(
@@ -2313,7 +2462,7 @@ export function verifyBundle(
   const [envelopeSummary, envelopeFailures] = scoreEnvelopes(
     entries,
     bundle.envelopes ?? [],
-    trustedWitnesses(options.witnessKeys ?? null),
+    trustedWitnesses(options.witnessKeys ?? null, verificationTime(options.now)),
     options.envelopeBytes ?? null,
   );
   if (bundle.envelopes === undefined) {
