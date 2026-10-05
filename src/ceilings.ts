@@ -133,6 +133,33 @@ function refusal(kind: string | null, against: string): string {
 }
 
 /**
+ * The error for a constraint member of the wrong type, `<member> of constraint <key> is <kind>, not
+ * <expected>`, with the key as Python's repr prints it: the Python implementation's text, where it
+ * raises ValueError. A member the constraint does not carry is `absent`.
+ *
+ * A bound of the wrong type is malformed (attenu-ops#110), on every path: the draft makes "max" a
+ * number and "prefix" a string, an egress rank outside none < internal < any ranked above "any" and
+ * admitted every request, and a `field` or `applies_to` that is not a string named a different
+ * context field in each implementation. A token carrying one is refused as malformed, and a bundle
+ * reports the authority unreadable.
+ */
+function malformed(key: unknown, member: string, value: unknown, expected: string, shownAs?: string): TypeError {
+  const kind = value === undefined ? "absent" : (shownAs ?? jsonKind(value));
+  return new TypeError(`${member} of constraint ${pyRepr(key as CJson)} is ${kind}, not ${expected}`);
+}
+
+/** A `max` is a JSON number. */
+function checkMax(key: string, value: unknown): void {
+  if (value === undefined || jsonKind(value) !== "a number") throw malformed(key, "max", value, "a number");
+}
+
+/** A `prefix`, `field` or `applies_to` is a string; `field` and `applies_to` may be null, unset. */
+function checkString(key: unknown, member: string, value: unknown, optional = false): void {
+  if (optional && (value === null || value === undefined)) return;
+  if (typeof value !== "string") throw malformed(key, member, value, "a string");
+}
+
+/**
  * The request-context field a ceiling reads. Prefers an explicit `ctxField`,
  * then the caller-keyed `field`, then the ceiling's own `key`.
  */
@@ -265,6 +292,7 @@ export class RowLimit implements Ceiling {
   readonly key = "max_rows";
   readonly ctxField = "rows";
   constructor(readonly maxRows: number) {
+    checkMax("max_rows", maxRows);
     validateSafeNumber("max_rows", maxRows);
   }
 
@@ -309,6 +337,7 @@ export class SpendCap implements Ceiling {
   readonly key = "max_spend";
   readonly ctxField = "spend";
   constructor(readonly maxSpend: number) {
+    checkMax("max_spend", maxSpend);
     validateSafeNumber("max_spend", maxSpend);
   }
 
@@ -368,8 +397,10 @@ export class CallLimit implements Ceiling {
     readonly maxCalls: number,
     readonly appliesTo: string | null = null,
   ) {
-    validateSafeNumber("max_calls", maxCalls);
+    checkString("max_calls", "applies_to", appliesTo, true);
     this.key = appliesTo ? `max_calls[${appliesTo}]` : "max_calls";
+    checkMax(this.key, maxCalls);
+    validateSafeNumber("max_calls", maxCalls);
     this.ctxField = appliesTo ? `calls[${appliesTo}]` : "calls";
   }
 
@@ -426,7 +457,13 @@ export class CallLimit implements Ceiling {
 export class EgressRank implements Ceiling {
   readonly key = "egress";
   readonly ctxField = "egress";
-  constructor(readonly level: string) {}
+  constructor(readonly level: string) {
+    // A rank outside the vocabulary ranked above "any", so the ceiling admitted every request.
+    if (typeof level !== "string" || !(EGRESS_ORDER as readonly string[]).includes(level)) {
+      throw malformed("egress", "rank", level, "'none', 'internal' or 'any'",
+        typeof level === "string" ? pyRepr(level) : undefined);
+    }
+  }
 
   permits(ctx: Context): Decision {
     const val = ownValue(ctx, "egress");
@@ -484,6 +521,7 @@ export class Allow implements Ceiling {
     readonly field: string | null = null,
   ) {
     this.oneOf = new Set(memberList(key, "one_of", oneOf));
+    checkString(key, "field", field, true);
   }
 
   private ctxKey(): string {
@@ -548,6 +586,7 @@ export class Deny implements Ceiling {
     readonly field: string | null = null,
   ) {
     this.notOneOf = new Set(memberList(key, "not_one_of", notOneOf));
+    checkString(key, "field", field, true);
   }
 
   private ctxKey(): string {
@@ -610,7 +649,10 @@ export class Prefix implements Ceiling {
     readonly key: string,
     readonly prefix: string,
     readonly field: string | null = null,
-  ) {}
+  ) {
+    checkString(key, "prefix", prefix);
+    checkString(key, "field", field, true);
+  }
 
   private ctxKey(): string {
     return this.field ?? this.key;

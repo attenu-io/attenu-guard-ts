@@ -384,3 +384,48 @@ test("Guard.check, a verified chain and the bundle verifier refuse a quantity of
     ], JSON.stringify(context));
   }
 });
+
+test("a bound of the wrong type is malformed, from the constructor, the wire, a token and a bundle", () => {
+  // Each was accepted: `max: true` read as 1, an unknown rank ranked above "any" and admitted every
+  // request, a string `max` or a numeric `prefix` was coerced, and a numeric `field` read ctx["5"].
+  // Same text as the Python implementation, which raises ValueError.
+  const cases: [() => unknown, string][] = [
+    [() => new RowLimit("5" as any), "max of constraint 'max_rows' is a string, not a number"],
+    [() => new RowLimit(true as any), "max of constraint 'max_rows' is a boolean, not a number"],
+    [() => new SpendCap(null as any), "max of constraint 'max_spend' is null, not a number"],
+    [() => new CallLimit([5] as any), "max of constraint 'max_calls' is an array, not a number"],
+    [() => new CallLimit("3" as any, "fs.write"), "max of constraint 'max_calls[fs.write]' is a string, not a number"],
+    [() => ceilingFromWire({ key: "max_rows" }), "max of constraint 'max_rows' is absent, not a number"],
+    [() => ceilingFromWire({ key: "max_spend", max: { n: 5 } }), "max of constraint 'max_spend' is an object, not a number"],
+    [() => new Prefix("path", 5 as any), "prefix of constraint 'path' is a number, not a string"],
+    [() => ceilingFromWire({ key: "path", type: "prefix" }), "prefix of constraint 'path' is absent, not a string"],
+    [() => new EgressRank("everywhere"), "rank of constraint 'egress' is 'everywhere', not 'none', 'internal' or 'any'"],
+    [() => new EgressRank("NONE"), "rank of constraint 'egress' is 'NONE', not 'none', 'internal' or 'any'"],
+    [() => ceilingFromWire({ key: "egress", rank: 5 }), "rank of constraint 'egress' is a number, not 'none', 'internal' or 'any'"],
+    [() => ceilingFromWire({ key: "egress" }), "rank of constraint 'egress' is absent, not 'none', 'internal' or 'any'"],
+    [() => new Allow("region", ["us"], 5 as any), "field of constraint 'region' is a number, not a string"],
+    [() => new Deny("tool", ["rm"], true as any), "field of constraint 'tool' is a boolean, not a string"],
+    [() => new Prefix("path", "/tmp/", ["p"] as any), "field of constraint 'path' is an array, not a string"],
+    [() => ceilingFromWire({ key: "region", type: "allow", one_of: ["us"], field: {} }),
+      "field of constraint 'region' is an object, not a string"],
+    [() => new CallLimit(3, 5 as any), "applies_to of constraint 'max_calls' is a number, not a string"],
+    [() => ceilingFromWire({ key: "max_calls[x]", type: "max_calls", max: 3, applies_to: true }),
+      "applies_to of constraint 'max_calls' is a boolean, not a string"],
+    [() => Guard.issue("root", new Authority({ scopes: ["crm.read"], ceilings: [new RowLimit("5" as any)] })),
+      "max of constraint 'max_rows' is a string, not a number"],
+  ];
+  for (const [build, message] of cases) assert.throws(build, { name: "TypeError", message });
+  // null is absent, as before: the context field is the key, and the limit is unscoped.
+  assert.equal((ceilingFromWire({ key: "region", type: "allow", one_of: ["us"], field: null }) as Allow).field, null);
+  assert.equal(new CallLimit(3, null).key, "max_calls");
+  for (const level of ["none", "internal", "any"]) assert.equal(new EgressRank(level).level, level);
+  assert.throws(() => load([rootToken({ key: "egress", rank: "everywhere" })], hs256), (err: unknown) => {
+    assert.ok(err instanceof WireError);
+    assert.equal(err.reason, WireReasonCode.MALFORMED);
+    assert.ok(err.message.endsWith("rank of constraint 'egress' is 'everywhere', not 'none', 'internal' or 'any'"), err.message);
+    return true;
+  });
+  assert.equal(unreadableBundle({ key: "max_rows", max: true }).failures[0],
+    "root typed:n0: unreadable authority (max of constraint 'max_rows' is a boolean, not a number)");
+});
+
