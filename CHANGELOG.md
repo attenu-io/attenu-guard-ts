@@ -6,6 +6,10 @@ Versions follow semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **A deny-list let through a request value it could not compare.** `not_one_of: ["rm"]` permitted `tool: ["rm"]`, and any other array or object, in every release from 0.1.0 through 0.13.0: measured on the 0.1.0, 0.1.1, 0.5.0, 0.6.0, 0.7.0, 0.9.0, 0.12.0 and 0.13.0 packages, and the `Allow` and `Deny` checks are the same at every tag in between. A Set compares an array or an object by identity, so no request value ever equals a member: an allow-list refused one as a non-member, and a deny-list waved it through. Both lists now refuse a request value that is not a string, a number, a boolean or null, as `ceiling_exceeded` with the message `an array cannot be compared with not_one_of members; refused` (or `an object`, or `a value that is not JSON`; `one_of` for an allow-list). The rule is in `permits`, so it holds in `Guard.check`, in `VerifiedChain.permits` after `load()`, and in `verifyBundle`'s containment check. The Python implementation's change for attenu-ops#110 has the same rule, reason and message
+- **`Allow` and `Deny` read a context field named like an `Object.prototype` member from the prototype.** On a plain object `ctx["constructor"]` is Object's constructor, so `Allow("constructor", …)` refused a context that did not hold that field, where the Python implementation reads the field as absent and permits. Both now read only the context's own fields, so an absent field asserts nothing, whatever its name
+
 ## [0.13.0] - 2026-10-05
 
 ### Added

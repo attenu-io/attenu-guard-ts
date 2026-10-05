@@ -159,6 +159,44 @@ export function isMetered(ceiling: Ceiling): boolean {
   return Boolean(ceiling.metered) || String(ceiling.key).startsWith("max_");
 }
 
+/**
+ * What a refusal calls a request value that an `Allow` or a `Deny` cannot compare with its
+ * members, or `null` for a JSON scalar: a string, a number or a boolean. (null never gets here: it
+ * asserts nothing.)
+ *
+ * No member is an array, an object or a value outside JSON, so no such value can equal one. An
+ * allow-list refuses it as a non-member. A deny-list must refuse it too: waving `["rm"]` through
+ * because it is not the string "rm" would fail open. The Python implementation uses the same words.
+ */
+function notAScalar(value: unknown): string | null {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return null;
+  if (Array.isArray(value)) return "an array";
+  if (value !== null && typeof value === "object") return "an object";
+  return "a value that is not JSON";
+}
+
+/**
+ * Why an `Allow` or a `Deny` refused `value`. `kind` is `notAScalar(value)`: a value the list could
+ * compare carries no message, as before; one it could not compare says so.
+ */
+function outside(key: string, listName: string, members: Iterable<Json>, value: Json, kind: string | null): Reason {
+  return new Reason(ReasonCode.CEILING_EXCEEDED, {
+    constraint: key,
+    limit: sortByStr(members),
+    requested: value,
+    message: kind === null ? "" : `${kind} cannot be compared with ${listName} members; refused`,
+  });
+}
+
+/**
+ * The context's own value for `field`, or `undefined`. A plain object inherits `constructor`,
+ * `toString` and the rest from Object.prototype, and a field named like one of them is absent unless
+ * the context holds it, as `ctx.get(field)` reads it in the Python implementation.
+ */
+function ownValue(ctx: Context, field: string): Json | undefined {
+  return Object.prototype.hasOwnProperty.call(ctx, field) ? ctx[field] : undefined;
+}
+
 function sortByStr(values: Iterable<Json>): Json[] {
   return Array.from(values).sort((a, b) => compareCodePoints(strOf(a), strOf(b)));
 }
@@ -377,7 +415,11 @@ export class EgressRank implements Ceiling {
 // these carry an explicit "type" on the wire.
 // =========================================================================
 
-/** Membership allow-list: the context value MUST be one of `oneOf`. */
+/**
+ * Membership allow-list: the context value MUST be one of `oneOf`. A member is its JSON type plus
+ * its value, as a Set holds it: `[1]` admits 1 and refuses `true` and `"1"`. A context value that
+ * is not a JSON scalar is refused (`notAScalar`).
+ */
 export class Allow implements Ceiling {
   readonly oneOf: ReadonlySet<Json>;
   constructor(
@@ -393,15 +435,11 @@ export class Allow implements Ceiling {
   }
 
   permits(ctx: Context): Decision {
-    const val = ctx[this.ctxKey()];
-    if (val === undefined || val === null || this.oneOf.has(val)) return Decision.allow();
-    return Decision.deny(
-      new Reason(ReasonCode.CEILING_EXCEEDED, {
-        constraint: this.key,
-        limit: sortByStr(this.oneOf),
-        requested: val,
-      }),
-    );
+    const val = ownValue(ctx, this.ctxKey());
+    if (val === undefined || val === null) return Decision.allow();
+    const kind = notAScalar(val);
+    if (kind === null && this.oneOf.has(val)) return Decision.allow();
+    return Decision.deny(outside(this.key, "one_of", this.oneOf, val, kind));
   }
 
   describe(): string {
@@ -432,7 +470,12 @@ export class Allow implements Ceiling {
   }
 }
 
-/** Membership deny-list: the context value MUST NOT be one of `notOneOf`. */
+/**
+ * Membership deny-list: the context value MUST NOT be one of `notOneOf`. A member is its JSON type
+ * plus its value, as a Set holds it: `[1]` refuses 1 and not `true` or `"1"`. A context value that
+ * is not a JSON scalar is refused as well (`notAScalar`): a deny-list never waves through a value it
+ * cannot compare.
+ */
 export class Deny implements Ceiling {
   readonly notOneOf: ReadonlySet<Json>;
   constructor(
@@ -448,15 +491,11 @@ export class Deny implements Ceiling {
   }
 
   permits(ctx: Context): Decision {
-    const val = ctx[this.ctxKey()];
-    if (val === undefined || val === null || !this.notOneOf.has(val)) return Decision.allow();
-    return Decision.deny(
-      new Reason(ReasonCode.CEILING_EXCEEDED, {
-        constraint: this.key,
-        limit: sortByStr(this.notOneOf),
-        requested: val,
-      }),
-    );
+    const val = ownValue(ctx, this.ctxKey());
+    if (val === undefined || val === null) return Decision.allow();
+    const kind = notAScalar(val);
+    if (kind === null && !this.notOneOf.has(val)) return Decision.allow();
+    return Decision.deny(outside(this.key, "not_one_of", this.notOneOf, val, kind));
   }
 
   describe(): string {
