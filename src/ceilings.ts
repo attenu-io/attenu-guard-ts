@@ -101,10 +101,14 @@ export function ctxFieldOf(ceiling: Ceiling): string {
   return ceiling.key;
 }
 
-/** Uniform human-readable rendering of any ceiling. Never parsed back. */
+/**
+ * Uniform human-readable rendering of any ceiling. Never parsed back. A ceiling without its own
+ * `describe`, such as one this build does not define, prints as the Python implementation prints
+ * it: its key as the wire carried it, `=`, and its wire form as Python prints a dict.
+ */
 export function describe(ceiling: Ceiling): string {
   if (typeof ceiling.describe === "function") return ceiling.describe();
-  return `${ceiling.key}=${JSON.stringify(ceiling.toWire())}`;
+  return `${pyStr(wireKeyOf(ceiling))}=${pyRepr(ceiling.toWire())}`;
 }
 
 /**
@@ -143,9 +147,7 @@ export function describeInFinding(ceiling: Ceiling): string {
   if (kind === Allow) return `${shown(ceiling.key)} in [${members((ceiling as Allow).oneOf)}]`;
   if (kind === Deny) return `${shown(ceiling.key)} not in [${members((ceiling as Deny).notOneOf)}]`;
   if (kind === Prefix) return `${shown(ceiling.key)} startswith ${shown((ceiling as Prefix).prefix)}`;
-  const key = wireKeyOf(ceiling);
-  const text =
-    typeof ceiling.describe === "function" ? ceiling.describe() : `${pyStr(key)}=${pyRepr(ceiling.toWire())}`;
+  const text = describe(ceiling);
   return /^[ -~]*$/.test(text) ? text : escaped(text);
 }
 
@@ -672,10 +674,13 @@ export class UnknownCeiling implements Ceiling {
   }
 
   permits(_ctx: Context): Decision {
+    // In the Python implementation's words, and with the key as the wire carried it (null, a
+    // number), so a deny entry is the same bytes from both implementations.
+    const key = wireKeyOf(this);
     return Decision.deny(
       new Reason(ReasonCode.UNKNOWN_CONSTRAINT, {
-        constraint: this.key,
-        message: `unrecognised constraint type for key=${JSON.stringify(this.key)}; fail-closed`,
+        constraint: key as string | null,
+        message: `unrecognised constraint type for key=${pyRepr(key)}; fail-closed`,
       }),
     );
   }

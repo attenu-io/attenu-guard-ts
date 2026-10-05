@@ -14,7 +14,7 @@ import test from "node:test";
 import { AuditLog } from "../src/audit.js";
 import { Authority } from "../src/authority.js";
 import { canonicalBytes, canonicalJson, parseJson, type Json } from "../src/canonical.js";
-import { Allow, Deny, ceilingFromWire } from "../src/ceilings.js";
+import { Allow, Deny, ceilingFromWire, describe } from "../src/ceilings.js";
 import { exportBundle, verifyBundle } from "../src/evidence.js";
 import { Guard } from "../src/guard.js";
 import { ReasonCode } from "../src/reasons.js";
@@ -281,4 +281,34 @@ test("a chain or a bundle compares unknown constraints as JSON", () => {
     "monotonicity: typed:n1 not ⊆ parent typed:n0 (ceiling k={'key': 'k', 'type': 'x-custom', 'v': [1], " +
       "'w': {'a': 1, 'b': 2}} looser than parent k={'key': 'k', 'type': 'x-custom', 'v': [True], 'w': {'a': 1, 'b': 2}})",
   ]);
+});
+
+test("an unknown constraint describes itself and denies in the Python implementation's words", () => {
+  // The deny entry a Guard writes carries this reason, so the two implementations must write the
+  // same bytes for it: the key as Python's repr prints it, the wire object as Python prints a dict,
+  // and the key as the wire carried it (null, a number) in `constraint`.
+  const cases: [Record<string, Json>, string, string, Json][] = [
+    [{ key: "tier", type: "x-custom", v: [true] }, "tier={'key': 'tier', 'type': 'x-custom', 'v': [True]}",
+      "unrecognised constraint type for key='tier'; fail-closed", "tier"],
+    [{ type: "x-custom", v: 1 }, "None={'type': 'x-custom', 'v': 1}",
+      "unrecognised constraint type for key=None; fail-closed", null],
+    [{ key: 5, type: "x-custom" }, "5={'key': 5, 'type': 'x-custom'}",
+      "unrecognised constraint type for key=5; fail-closed", 5],
+  ];
+  for (const [wire, text, message, constraint] of cases) {
+    const c = ceilingFromWire(wire);
+    assert.equal(describe(c), text);
+    const reason = c.permits({}).reasons[0]!;
+    assert.equal(reason.code, ReasonCode.UNKNOWN_CONSTRAINT);
+    assert.equal(reason.message, message);
+    assert.equal(reason.constraint, constraint);
+  }
+  const authority = Authority.fromWire({ scopes: ["crm.read"], constraints: [cases[0]![0]], ttl: 60 });
+  assert.equal(authority.describe(), "scopes=[crm.read] ceilings=[tier={'key': 'tier', 'type': 'x-custom', 'v': [True]}] ttl=60");
+  const guard = Guard.issue("root", authority);
+  guard.check("crm.read", { context: {} });
+  assert.deepEqual(guard.auditLog().entries.at(-1)!["reasons"], [{
+    code: "unknown_constraint", constraint: "tier", limit: null, requested: null,
+    message: "unrecognised constraint type for key='tier'; fail-closed",
+  }]);
 });

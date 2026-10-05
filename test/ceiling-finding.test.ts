@@ -19,9 +19,10 @@ test("describe() is unchanged outside a finding", () => {
     new Authority({ scopes: ["docs.write"], ceilings: [new Allow("region", ["S\u00e3o Paulo"])] }).describe(),
     "scopes=[docs.write] ceilings=[region in [S\u00e3o Paulo]] ttl=null",
   );
+  // A ceiling this build does not define prints as the Python implementation prints it (attenu-ops#110).
   assert.equal(
     describe(ceilingFromWire({ key: "quota", type: "x-unknown", max: 1 })),
-    'quota={"key":"quota","type":"x-unknown","max":1}',
+    "quota={'key': 'quota', 'type': 'x-unknown', 'max': 1}",
   );
 });
 
