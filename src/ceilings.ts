@@ -91,6 +91,47 @@ function egressRankOf(value: unknown): number {
   return i === -1 ? EGRESS_ORDER.length : i;
 }
 
+/** The JSON kinds a ceiling compares, as `jsonKind` names them. */
+const NUMBER = ["a number"];
+const STRING = ["a string"];
+const SCALAR = ["a string", "a number", "a boolean"];
+
+/**
+ * `value`'s JSON type as a refusal names it: null, a boolean, a number, a string, an array or an
+ * object, or "a value that is not JSON" for anything else passed in-process (a bigint). The Python
+ * implementation names the same values the same way.
+ */
+function jsonKind(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return "a boolean";
+  if (typeof value === "number") return "a number";
+  if (typeof value === "string") return "a string";
+  if (Array.isArray(value)) return "an array";
+  if (typeof value === "object") return "an object";
+  return "a value that is not JSON";
+}
+
+/**
+ * `jsonKind(value)` when a ceiling that compares `accepted` cannot compare `value`, or `null`.
+ *
+ * Every built-in ceiling refuses such a request value rather than coercing it (attenu-ops#110):
+ * `"50"`, `[50]` and `true` passed a row cap through `<=`, `["/tmp/x"]` passed the prefix "/tmp/" as
+ * the text "/tmp/x", and `true` passed the prefix "t" as "true".
+ */
+function wrongKind(value: unknown, accepted: readonly string[]): string | null {
+  const kind = jsonKind(value);
+  return accepted.includes(kind) ? null : kind;
+}
+
+/**
+ * A denial's message: none when the value had the right type, as before; for one of the wrong type,
+ * `<kind> cannot be compared with <against>; refused`, one wording per ceiling kind, and the Python
+ * implementation's too.
+ */
+function refusal(kind: string | null, against: string): string {
+  return kind === null ? "" : `${kind} cannot be compared with ${against}; refused`;
+}
+
 /**
  * The request-context field a ceiling reads. Prefers an explicit `ctxField`,
  * then the caller-keyed `field`, then the ceiling's own `key`.
@@ -194,35 +235,6 @@ function memberList(key: string, listName: string, values: unknown): Iterable<Js
 }
 
 /**
- * What a refusal calls a request value that an `Allow` or a `Deny` cannot compare with its
- * members, or `null` for a JSON scalar: a string, a number or a boolean. (null never gets here: it
- * asserts nothing.)
- *
- * No member is an array, an object or a value outside JSON, so no such value can equal one. An
- * allow-list refuses it as a non-member. A deny-list must refuse it too: waving `["rm"]` through
- * because it is not the string "rm" would fail open. The Python implementation uses the same words.
- */
-function notAScalar(value: unknown): string | null {
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return null;
-  if (Array.isArray(value)) return "an array";
-  if (value !== null && typeof value === "object") return "an object";
-  return "a value that is not JSON";
-}
-
-/**
- * Why an `Allow` or a `Deny` refused `value`. `kind` is `notAScalar(value)`: a value the list could
- * compare carries no message, as before; one it could not compare says so.
- */
-function outside(key: string, listName: string, members: Iterable<Json>, value: Json, kind: string | null): Reason {
-  return new Reason(ReasonCode.CEILING_EXCEEDED, {
-    constraint: key,
-    limit: sortByStr(members),
-    requested: value,
-    message: kind === null ? "" : `${kind} cannot be compared with ${listName} members; refused`,
-  });
-}
-
-/**
  * The context's own value for `field`, or `undefined`. A plain object inherits `constructor`,
  * `toString` and the rest from Object.prototype, and a field named like one of them is absent unless
  * the context holds it, as `ctx.get(field)` reads it in the Python implementation.
@@ -257,13 +269,16 @@ export class RowLimit implements Ceiling {
   }
 
   permits(ctx: Context): Decision {
-    const n = ctx["rows"];
-    if (n === undefined || n === null || (n as number) <= this.maxRows) return Decision.allow();
+    const n = ownValue(ctx, "rows");
+    if (n === undefined || n === null) return Decision.allow();
+    const kind = wrongKind(n, NUMBER);
+    if (kind === null && (n as number) <= this.maxRows) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
         limit: this.maxRows,
         requested: n,
+        message: refusal(kind, "a maximum"),
       }),
     );
   }
@@ -298,13 +313,16 @@ export class SpendCap implements Ceiling {
   }
 
   permits(ctx: Context): Decision {
-    const n = ctx["spend"];
-    if (n === undefined || n === null || (n as number) <= this.maxSpend) return Decision.allow();
+    const n = ownValue(ctx, "spend");
+    if (n === undefined || n === null) return Decision.allow();
+    const kind = wrongKind(n, NUMBER);
+    if (kind === null && (n as number) <= this.maxSpend) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
         limit: this.maxSpend,
         requested: n,
+        message: refusal(kind, "a maximum"),
       }),
     );
   }
@@ -367,14 +385,17 @@ export class CallLimit implements Ceiling {
   }
 
   permits(ctx: Context): Decision {
-    if (!this.appliesToScope(ctx["_scope"] as string | undefined)) return Decision.allow();
-    const n = ctx[this.ctxField];
-    if (n === undefined || n === null || (n as number) <= this.maxCalls) return Decision.allow();
+    if (!this.appliesToScope(ownValue(ctx, "_scope") as string | undefined)) return Decision.allow();
+    const n = ownValue(ctx, this.ctxField);
+    if (n === undefined || n === null) return Decision.allow();
+    const kind = wrongKind(n, NUMBER);
+    if (kind === null && (n as number) <= this.maxCalls) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
         limit: this.maxCalls,
         requested: n,
+        message: refusal(kind, "a maximum"),
       }),
     );
   }
@@ -408,15 +429,16 @@ export class EgressRank implements Ceiling {
   constructor(readonly level: string) {}
 
   permits(ctx: Context): Decision {
-    const val = ctx["egress"];
-    if (val === undefined || val === null || egressRankOf(val) <= egressRankOf(this.level)) {
-      return Decision.allow();
-    }
+    const val = ownValue(ctx, "egress");
+    if (val === undefined || val === null) return Decision.allow();
+    const kind = wrongKind(val, STRING);
+    if (kind === null && egressRankOf(val) <= egressRankOf(this.level)) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
         limit: this.level,
         requested: val,
+        message: refusal(kind, "an egress rank"),
       }),
     );
   }
@@ -452,7 +474,7 @@ export class EgressRank implements Ceiling {
 /**
  * Membership allow-list: the context value MUST be one of `oneOf`. A member is its JSON type plus
  * its value, as a Set holds it: `[1]` admits 1 and refuses `true` and `"1"`. A context value that
- * is not a JSON scalar is refused (`notAScalar`).
+ * is not a JSON scalar is refused (`wrongKind`).
  */
 export class Allow implements Ceiling {
   readonly oneOf: ReadonlySet<Json>;
@@ -471,9 +493,16 @@ export class Allow implements Ceiling {
   permits(ctx: Context): Decision {
     const val = ownValue(ctx, this.ctxKey());
     if (val === undefined || val === null) return Decision.allow();
-    const kind = notAScalar(val);
+    const kind = wrongKind(val, SCALAR);
     if (kind === null && this.oneOf.has(val)) return Decision.allow();
-    return Decision.deny(outside(this.key, "one_of", this.oneOf, val, kind));
+    return Decision.deny(
+      new Reason(ReasonCode.CEILING_EXCEEDED, {
+        constraint: this.key,
+        limit: sortByStr(this.oneOf),
+        requested: val,
+        message: refusal(kind, "one_of members"),
+      }),
+    );
   }
 
   describe(): string {
@@ -508,8 +537,8 @@ export class Allow implements Ceiling {
 /**
  * Membership deny-list: the context value MUST NOT be one of `notOneOf`. A member is its JSON type
  * plus its value, as a Set holds it: `[1]` refuses 1 and not `true` or `"1"`. A context value that
- * is not a JSON scalar is refused as well (`notAScalar`): a deny-list never waves through a value it
- * cannot compare.
+ * is not a JSON scalar is refused as well (`wrongKind`): a deny-list never waves through a value it
+ * cannot compare, since waving `["rm"]` through because it is not the string "rm" would fail open.
  */
 export class Deny implements Ceiling {
   readonly notOneOf: ReadonlySet<Json>;
@@ -528,9 +557,16 @@ export class Deny implements Ceiling {
   permits(ctx: Context): Decision {
     const val = ownValue(ctx, this.ctxKey());
     if (val === undefined || val === null) return Decision.allow();
-    const kind = notAScalar(val);
+    const kind = wrongKind(val, SCALAR);
     if (kind === null && !this.notOneOf.has(val)) return Decision.allow();
-    return Decision.deny(outside(this.key, "not_one_of", this.notOneOf, val, kind));
+    return Decision.deny(
+      new Reason(ReasonCode.CEILING_EXCEEDED, {
+        constraint: this.key,
+        limit: sortByStr(this.notOneOf),
+        requested: val,
+        message: refusal(kind, "not_one_of members"),
+      }),
+    );
   }
 
   describe(): string {
@@ -581,15 +617,16 @@ export class Prefix implements Ceiling {
   }
 
   permits(ctx: Context): Decision {
-    const val = ctx[this.ctxKey()];
-    if (val === undefined || val === null || String(val).startsWith(this.prefix)) {
-      return Decision.allow();
-    }
+    const val = ownValue(ctx, this.ctxKey());
+    if (val === undefined || val === null) return Decision.allow();
+    const kind = wrongKind(val, STRING);
+    if (kind === null && (val as string).startsWith(this.prefix)) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
         limit: this.prefix,
         requested: val,
+        message: refusal(kind, "a prefix"),
       }),
     );
   }

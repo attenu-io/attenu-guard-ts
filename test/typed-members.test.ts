@@ -14,7 +14,7 @@ import test from "node:test";
 import { AuditLog } from "../src/audit.js";
 import { Authority } from "../src/authority.js";
 import { canonicalBytes, canonicalJson, parseJson, type Json } from "../src/canonical.js";
-import { Allow, Deny, ceilingFromWire, describe } from "../src/ceilings.js";
+import { Allow, CallLimit, Deny, EgressRank, Prefix, RowLimit, SpendCap, ceilingFromWire, describe, type Ceiling } from "../src/ceilings.js";
 import { exportBundle, verifyBundle } from "../src/evidence.js";
 import { Guard } from "../src/guard.js";
 import { ReasonCode } from "../src/reasons.js";
@@ -311,4 +311,76 @@ test("an unknown constraint describes itself and denies in the Python implementa
     code: "unknown_constraint", constraint: "tier", limit: null, requested: null,
     message: "unrecognised constraint type for key='tier'; fail-closed",
   }]);
+});
+
+test("every ceiling refuses a request value of the wrong JSON type, never coercing it", () => {
+  // `"50"`, `[50]` and `true` passed a row cap by coercion, `["/tmp/x"]` passed the prefix "/tmp/"
+  // as the text "/tmp/x", and `true` passed the prefix "t" as "true". Same words as the Python
+  // implementation, one message per ceiling kind.
+  const wrong: [string, unknown][] = [
+    ["a string", "50"], ["a boolean", true], ["a number", 50], ["an array", [50]], ["an object", { n: 50 }],
+    ["a value that is not JSON", 50n],
+  ];
+  const kinds: [Ceiling, string, string, string, Record<string, Json>][] = [
+    [new RowLimit(100), "rows", "a number", "a maximum", {}],
+    [new SpendCap(2.5), "spend", "a number", "a maximum", {}],
+    [new CallLimit(3), "calls", "a number", "a maximum", {}],
+    [new CallLimit(3, "fs.write"), "calls[fs.write]", "a number", "a maximum", { _scope: "fs.write" }],
+    [new Prefix("path", "50"), "path", "a string", "a prefix", {}],
+    [new EgressRank("any"), "egress", "a string", "an egress rank", {}],
+  ];
+  for (const [ceiling, field, accepted, against, extra] of kinds) {
+    for (const [kind, value] of wrong) {
+      if (kind === accepted) continue;
+      const decision = ceiling.permits({ [field]: value as Json, ...extra });
+      assert.equal(decision.allowed, false, `${ceiling.key} ${kind}`);
+      assert.equal(decision.reasons.length, 1);
+      const reason = decision.reasons[0]!;
+      assert.equal(reason.code, ReasonCode.CEILING_EXCEEDED);
+      assert.equal(reason.constraint, ceiling.key);
+      assert.equal(reason.requested, value);
+      assert.equal(reason.message, `${kind} cannot be compared with ${against}; refused`);
+    }
+  }
+  assert.equal(new Prefix("flag", "t").permits({ flag: true }).allowed, false);
+});
+
+test("a value of the right type compares as before, and null or an absent field asserts nothing", () => {
+  assert.equal(new RowLimit(100).permits({ rows: 50 }).allowed, true);
+  assert.equal(new RowLimit(100).permits({ rows: 500 }).reasons[0]!.message, "");
+  assert.equal(new Prefix("path", "/tmp/").permits({ path: "/tmp/x" }).allowed, true);
+  assert.equal(new EgressRank("internal").permits({ egress: "any" }).reasons[0]!.message, "");
+  for (const [ceiling, field] of [
+    [new RowLimit(1), "rows"], [new SpendCap(1), "spend"], [new CallLimit(1), "calls"],
+    [new EgressRank("none"), "egress"], [new Prefix("path", "/tmp/"), "path"],
+  ] as [Ceiling, string][]) {
+    assert.equal(ceiling.permits({ [field]: null }).allowed, true, ceiling.key);
+    assert.equal(ceiling.permits({}).allowed, true, ceiling.key);
+  }
+  // A field named like an Object.prototype member is absent unless the context holds it.
+  assert.equal(new Prefix("constructor", "c").permits({}).allowed, true);
+  assert.equal(new Prefix("toString", "f").permits({}).allowed, true);
+});
+
+test("Guard.check, a verified chain and the bundle verifier refuse a quantity of the wrong type", () => {
+  const guard = Guard.issue("root", new Authority({ scopes: ["crm.read"], ceilings: [new RowLimit(100)] }));
+  assert.equal(guard.check("crm.read", { context: { rows: "50" } }).allowed, false);
+  assert.equal((guard.auditLog().entries.at(-1)!["reasons"] as any)[0].message,
+    "a string cannot be compared with a maximum; refused");
+  const chain = load([rootToken({ key: "max_rows", max: 100 })], hs256);
+  assert.equal(chain.permits("crm.read", { rows: 50 }).allowed, true);
+  assert.equal(chain.permits("crm.read", { rows: true }).reasons[0]!.message,
+    "a boolean cannot be compared with a maximum; refused");
+  for (const [ceiling, context] of [
+    [new RowLimit(100), { rows: "50" }], [new RowLimit(100), { rows: true }],
+    [new Prefix("path", "/tmp/"), { path: ["/tmp/x"] }], [new Prefix("flag", "t"), { flag: true }],
+  ] as [Ceiling, Record<string, Json>][]) {
+    const g = Guard.issue("root", new Authority({ scopes: ["docs.write"], ceilings: [ceiling] }), { chainId: "typed" });
+    const root = g.auditLog().entries[0]!;
+    g.auditLog().append("allow", 1, { chain_id: root["chain_id"]!, node: root["node"]!, scope: "docs.write", tool: null, context });
+    const report = verifyBundle(exportBundle(g.auditLog(), hs256), hs256);
+    assert.deepEqual(report.failures, [
+      "containment: allow of 'docs.write' on typed:n0 outside its authority ['docs.write']",
+    ], JSON.stringify(context));
+  }
 });
