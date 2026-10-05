@@ -15,7 +15,7 @@
  * silently dropped.
  */
 
-import { MAX_SAFE_INTEGER, compareCodePoints, pyNumber, toPlain, type CJson, type Json } from "./canonical.js";
+import { MAX_SAFE_INTEGER, canonicalJson, compareCodePoints, pyNumber, toPlain, type CJson, type Json } from "./canonical.js";
 import { escaped, pyRepr, pyStr, shown, shownText } from "./display.js";
 import { Decision, Reason, ReasonCode } from "./reasons.js";
 
@@ -157,6 +157,38 @@ export function describeInFinding(ceiling: Ceiling): string {
  */
 export function isMetered(ceiling: Ceiling): boolean {
   return Boolean(ceiling.metered) || String(ceiling.key).startsWith("max_");
+}
+
+/**
+ * What a refusal calls a `one_of` / `not_one_of` that is not a list of members, or `null` for one
+ * that is: a JSON array, or in-process any other iterable of members (a Set).
+ *
+ * The draft defines both as an array. null used to become the empty list, a string its
+ * characters, and an object threw a TypeError in its own words. Each is malformed now, as in the
+ * Python implementation: a token carrying one is refused as malformed, and a bundle reports the
+ * authority unreadable.
+ */
+function notAnArray(values: unknown): string | null {
+  if (values === null) return "null";
+  if (typeof values === "boolean") return "a boolean";
+  if (typeof values === "number") return "a number";
+  if (typeof values === "string") return "a string";
+  if (Array.isArray(values)) return null;
+  if (values instanceof Map) return "an object";
+  if (typeof values === "object" && typeof (values as Iterable<Json>)[Symbol.iterator] === "function") return null;
+  if (typeof values === "object") return "an object";
+  return "a value that is not an array";
+}
+
+/**
+ * `values` as the members of an `Allow` or a `Deny`. Throws a TypeError naming the list and the
+ * key when `values` is not a list of members (`notAnArray`); the Python implementation raises
+ * ValueError with the same text.
+ */
+function memberList(key: string, listName: string, values: unknown): Iterable<Json> {
+  const kind = notAnArray(values);
+  if (kind !== null) throw new TypeError(`${listName} of constraint ${pyRepr(key)} is ${kind}, not an array`);
+  return values as Iterable<Json>;
 }
 
 /**
@@ -427,7 +459,7 @@ export class Allow implements Ceiling {
     oneOf: Iterable<Json>,
     readonly field: string | null = null,
   ) {
-    this.oneOf = new Set(oneOf);
+    this.oneOf = new Set(memberList(key, "one_of", oneOf));
   }
 
   private ctxKey(): string {
@@ -462,9 +494,10 @@ export class Allow implements Ceiling {
   }
 
   static fromWire(d: Record<string, Json>): Allow {
+    // Absent is the empty list; anything present but not an array is refused by the constructor.
     return new Allow(
       d["key"] as string,
-      (d["one_of"] as Json[]) ?? [],
+      d["one_of"] === undefined ? [] : (d["one_of"] as Json[]),
       (d["field"] as string | undefined) ?? null,
     );
   }
@@ -483,7 +516,7 @@ export class Deny implements Ceiling {
     notOneOf: Iterable<Json>,
     readonly field: string | null = null,
   ) {
-    this.notOneOf = new Set(notOneOf);
+    this.notOneOf = new Set(memberList(key, "not_one_of", notOneOf));
   }
 
   private ctxKey(): string {
@@ -524,9 +557,10 @@ export class Deny implements Ceiling {
   }
 
   static fromWire(d: Record<string, Json>): Deny {
+    // Absent is the empty list; anything present but not an array is refused by the constructor.
     return new Deny(
       d["key"] as string,
-      (d["not_one_of"] as Json[]) ?? [],
+      d["not_one_of"] === undefined ? [] : (d["not_one_of"] as Json[]),
       (d["field"] as string | undefined) ?? null,
     );
   }
@@ -622,8 +656,11 @@ export function registerCeiling(key: string, cls: CeilingClass): void {
  * `permits` always denies. `narrow` stays an unknown ceiling, so it can never
  * resolve to something more permissive than "deny everything". `subsumes` is
  * true only against an identical unknown ceiling — just enough reflexivity for
- * `isNarrowerThan(self)`. `toWire` preserves the original bytes losslessly, so
- * a chain that merely forwards constraints can still do so.
+ * `isNarrowerThan(self)`. Identical means the same RFC 8785 bytes, which is
+ * equality as JSON: `true` is not 1, `1.0` is 1, and key order is no difference
+ * at any depth; a value RFC 8785 cannot write is identical to nothing. `toWire`
+ * preserves the original bytes losslessly, so a chain that merely forwards
+ * constraints can still do so.
  */
 export class UnknownCeiling implements Ceiling {
   readonly key: string;
@@ -648,10 +685,14 @@ export class UnknownCeiling implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return (
-      other instanceof UnknownCeiling &&
-      JSON.stringify(canonicalPairs(other.raw)) === JSON.stringify(canonicalPairs(this.raw))
-    );
+    // Compared as RFC 8785 bytes, as the Python implementation compares them. JSON text with only
+    // the top-level keys sorted told `{"v":{"a":1,"b":2}}` from `{"v":{"b":2,"a":1}}` (attenu-ops#110).
+    if (!(other instanceof UnknownCeiling)) return false;
+    try {
+      return canonicalJson(other.raw) === canonicalJson(this.raw);
+    } catch {
+      return false;
+    }
   }
 
   toWire(): Record<string, Json> {
@@ -661,12 +702,6 @@ export class UnknownCeiling implements Ceiling {
   static fromWire(d: Record<string, Json>): UnknownCeiling {
     return new UnknownCeiling(d["key"] ?? null, { ...d });
   }
-}
-
-function canonicalPairs(d: Record<string, Json>): [string, Json][] {
-  return Object.keys(d)
-    .sort(compareCodePoints)
-    .map((k) => [k, d[k]!] as [string, Json]);
 }
 
 /**
