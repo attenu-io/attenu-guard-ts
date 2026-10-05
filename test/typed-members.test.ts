@@ -19,6 +19,7 @@ import { exportBundle, verifyBundle } from "../src/evidence.js";
 import { Guard } from "../src/guard.js";
 import { ReasonCode } from "../src/reasons.js";
 import { HS256TestSigner, WireError, WireReasonCode, b64urlEncode, load } from "../src/wire.js";
+import { pyRepr } from "../src/display.js";
 
 const hs256 = new HS256TestSigner(Buffer.from("typed-members"), "typed");
 
@@ -198,11 +199,16 @@ test("a one_of that is not an array is refused, by the constructor and from the 
   );
 });
 
-test("an array or a Set is still a list of members, and an absent one_of an empty one", () => {
+test("an array or a Set is still a list of members, and an absent one_of is malformed", () => {
   for (const given of [["us", "eu"], new Set(["us", "eu"])]) {
     assert.deepEqual(new Allow("region", given).toWire()["one_of"], ["eu", "us"]);
   }
-  assert.deepEqual(ceilingFromWire({ key: "region", type: "allow" }).toWire()["one_of"], []);
+  // An absent deny-list used to read as an empty one, which bounds nothing.
+  assert.throws(() => ceilingFromWire({ key: "region", type: "allow" }),
+    { name: "TypeError", message: "one_of of constraint 'region' is absent, not an array" });
+  assert.throws(() => ceilingFromWire({ key: "tool", type: "deny" }),
+    { name: "TypeError", message: "not_one_of of constraint 'tool' is absent, not an array" });
+  assert.deepEqual(ceilingFromWire({ key: "region", type: "allow", one_of: [] }).toWire()["one_of"], []);
 });
 
 test("a token whose one_of is not an array is malformed", () => {
@@ -285,15 +291,13 @@ test("a chain or a bundle compares unknown constraints as JSON", () => {
 
 test("an unknown constraint describes itself and denies in the Python implementation's words", () => {
   // The deny entry a Guard writes carries this reason, so the two implementations must write the
-  // same bytes for it: the key as Python's repr prints it, the wire object as Python prints a dict,
-  // and the key as the wire carried it (null, a number) in `constraint`.
+  // same bytes for it: the key as Python's repr prints it, the wire object as Python prints a dict.
+  // A key that is not a string no longer loads ("a key that is not a string is malformed").
   const cases: [Record<string, Json>, string, string, Json][] = [
     [{ key: "tier", type: "x-custom", v: [true] }, "tier={'key': 'tier', 'type': 'x-custom', 'v': [True]}",
       "unrecognised constraint type for key='tier'; fail-closed", "tier"],
-    [{ type: "x-custom", v: 1 }, "None={'type': 'x-custom', 'v': 1}",
-      "unrecognised constraint type for key=None; fail-closed", null],
-    [{ key: 5, type: "x-custom" }, "5={'key': 5, 'type': 'x-custom'}",
-      "unrecognised constraint type for key=5; fail-closed", 5],
+    [{ key: "t\nOK", type: "x-custom" }, "t\nOK={'key': 't\\nOK', 'type': 'x-custom'}",
+      "unrecognised constraint type for key='t\\nOK'; fail-closed", "t\nOK"],
   ];
   for (const [wire, text, message, constraint] of cases) {
     const c = ceilingFromWire(wire);
@@ -452,3 +456,37 @@ test("a caller's _scope can never move a call to another meter", () => {
     "containment: allow of 'docs.write' on typed:n0 outside its authority ['docs.write']",
   ]);
 });
+
+test("a key that is not a string is malformed on every constraint type", () => {
+  // A number, null or a boolean key read String(key) here and a field no JSON context carries in
+  // the Python implementation; an absent key loaded here and read the field "undefined".
+  const cases: [Record<string, Json>, string][] = [
+    [{ type: "allow", one_of: ["us"] }, "absent"], [{ key: 5, type: "allow", one_of: ["us"] }, "a number"],
+    [{ key: null, type: "deny", not_one_of: ["rm"] }, "null"], [{ key: true, type: "prefix", prefix: "/" }, "a boolean"],
+    [{ key: ["k"], type: "x-custom" }, "an array"], [{ key: { a: 1 }, type: "x-custom" }, "an object"],
+    [{ type: "x-custom", v: 1 }, "absent"], [{ max: 5 }, "absent"],
+  ];
+  for (const [wire, kind] of cases) {
+    assert.throws(() => ceilingFromWire(wire), { name: "TypeError", message: `key of a constraint is ${kind}, not a string` });
+  }
+  assert.throws(() => new Allow(5 as any, ["us"]), { name: "TypeError", message: "key of a constraint is a number, not a string" });
+  assert.throws(() => new Deny(null as any, ["rm"]), { name: "TypeError", message: "key of a constraint is null, not a string" });
+  assert.throws(() => new Prefix(true as any, "/"), { name: "TypeError", message: "key of a constraint is a boolean, not a string" });
+  assert.throws(() => load([rootToken({ key: 5, type: "deny", not_one_of: ["rm"] })], hs256), (err: unknown) => {
+    assert.ok(err instanceof WireError);
+    assert.equal(err.reason, WireReasonCode.MALFORMED);
+    assert.equal(err.message, "invalid authorization_details: key of a constraint is a number, not a string");
+    return true;
+  });
+});
+
+test("an applies_to that is not a scope is malformed", () => {
+  for (const value of ["*", "crm", "CRM.READ", "", "crm.", ".crm.read", "crm.*.read", "crm read"]) {
+    const message = `applies_to of constraint 'max_calls' is ${pyRepr(value)}, not a scope`;
+    assert.throws(() => new CallLimit(3, value), { name: "TypeError", message });
+    assert.throws(() => ceilingFromWire({ key: `max_calls[${value}]`, type: "max_calls", max: 3, applies_to: value }),
+      { name: "TypeError", message });
+  }
+  for (const value of ["crm.read", "crm.*", "a.b-c.d_e"]) assert.equal(new CallLimit(3, value).key, `max_calls[${value}]`);
+});
+

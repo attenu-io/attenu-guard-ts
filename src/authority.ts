@@ -23,6 +23,7 @@
 import { compareCodePoints, sortedStrings, toPlain, type CJson, type Json } from "./canonical.js";
 import { pyRepr, pyStrRepr } from "./display.js";
 import {
+  SCOPE_RE,
   ceilingFromWire,
   describe as describeCeiling,
   type Ceiling,
@@ -146,8 +147,6 @@ export interface AuthorityWire {
   // `canonicalJson`, `Authority.fromWire`, or a ledger field.
   [key: string]: CJson;
 }
-
-const SCOPE_RE = /^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*\.(?:[a-z][a-z0-9_-]*|\*)$/;
 
 function validateScope(scope: unknown): asserts scope is string {
   if (typeof scope !== "string" || !SCOPE_RE.test(scope)) {

@@ -37,6 +37,13 @@ function validateSafeNumber(key: string, value: number): void {
   }
 }
 
+/**
+ * The scope grammar the draft defines: lowercase dot-separated segments, `*` only as the whole last
+ * segment. `Authority` validates its scopes against it, and a scoped `CallLimit`'s `appliesTo`
+ * follows it too.
+ */
+export const SCOPE_RE = /^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*\.(?:[a-z][a-z0-9_-]*|\*)$/;
+
 /** A request context: the quantities and attributes a call declares. */
 export type Context = Record<string, Json>;
 
@@ -148,6 +155,19 @@ function malformed(key: unknown, member: string, value: unknown, expected: strin
   return new TypeError(`${member} of constraint ${pyRepr(key as CJson)} is ${kind}, not ${expected}`);
 }
 
+/**
+ * A constraint's key is a string: it names the dimension ceilings pair by and, unless `field` says
+ * otherwise, the context field the ceiling reads. A number, null or a boolean key was read as
+ * String(key) here, so 5 and "5" were one dimension, and an absent key loaded and read the field
+ * "undefined"; the Python implementation read a field no JSON context carries. Every constraint is
+ * refused without one, an unknown type included, in the Python implementation's words.
+ */
+function checkKey(key: unknown): void {
+  if (typeof key !== "string") {
+    throw new TypeError(`key of a constraint is ${key === undefined ? "absent" : jsonKind(key)}, not a string`);
+  }
+}
+
 /** A `max` is a JSON number. */
 function checkMax(key: string, value: unknown): void {
   if (value === undefined || jsonKind(value) !== "a number") throw malformed(key, "max", value, "a number");
@@ -234,11 +254,13 @@ export function isMetered(ceiling: Ceiling): boolean {
  * that is: a JSON array, or in-process any other iterable of members (a Set).
  *
  * The draft defines both as an array. null used to become the empty list, a string its
- * characters, and an object threw a TypeError in its own words. Each is malformed now, as in the
- * Python implementation: a token carrying one is refused as malformed, and a bundle reports the
- * authority unreadable.
+ * characters, and an object threw a TypeError in its own words; an absent list read as an empty
+ * one, so an absent deny-list bounded nothing. Each is malformed now, as in the Python
+ * implementation: a token carrying one is refused as malformed, and a bundle reports the authority
+ * unreadable.
  */
 function notAnArray(values: unknown): string | null {
+  if (values === undefined) return "absent";
   if (values === null) return "null";
   if (typeof values === "boolean") return "a boolean";
   if (typeof values === "number") return "a number";
@@ -398,6 +420,11 @@ export class CallLimit implements Ceiling {
     readonly appliesTo: string | null = null,
   ) {
     checkString("max_calls", "applies_to", appliesTo, true);
+    // A pattern no scope matches ("*", "crm", "CRM.READ") applied to no call, so the limit bounded
+    // nothing. It follows the scope grammar: an exact scope, or a terminal `.*` wildcard.
+    if (appliesTo !== null && appliesTo !== undefined && !SCOPE_RE.test(appliesTo)) {
+      throw malformed("max_calls", "applies_to", appliesTo, "a scope", pyRepr(appliesTo));
+    }
     this.key = appliesTo ? `max_calls[${appliesTo}]` : "max_calls";
     checkMax(this.key, maxCalls);
     validateSafeNumber("max_calls", maxCalls);
@@ -520,6 +547,7 @@ export class Allow implements Ceiling {
     oneOf: Iterable<Json>,
     readonly field: string | null = null,
   ) {
+    checkKey(key);
     this.oneOf = new Set(memberList(key, "one_of", oneOf));
     checkString(key, "field", field, true);
   }
@@ -563,12 +591,8 @@ export class Allow implements Ceiling {
   }
 
   static fromWire(d: Record<string, Json>): Allow {
-    // Absent is the empty list; anything present but not an array is refused by the constructor.
-    return new Allow(
-      d["key"] as string,
-      d["one_of"] === undefined ? [] : (d["one_of"] as Json[]),
-      (d["field"] as string | undefined) ?? null,
-    );
+    // Anything but an array, an absent one_of included, is refused by the constructor.
+    return new Allow(d["key"] as string, d["one_of"] as Json[], (d["field"] as string | undefined) ?? null);
   }
 }
 
@@ -585,6 +609,7 @@ export class Deny implements Ceiling {
     notOneOf: Iterable<Json>,
     readonly field: string | null = null,
   ) {
+    checkKey(key);
     this.notOneOf = new Set(memberList(key, "not_one_of", notOneOf));
     checkString(key, "field", field, true);
   }
@@ -634,12 +659,8 @@ export class Deny implements Ceiling {
   }
 
   static fromWire(d: Record<string, Json>): Deny {
-    // Absent is the empty list; anything present but not an array is refused by the constructor.
-    return new Deny(
-      d["key"] as string,
-      d["not_one_of"] === undefined ? [] : (d["not_one_of"] as Json[]),
-      (d["field"] as string | undefined) ?? null,
-    );
+    // Anything but an array, an absent not_one_of included, is refused by the constructor.
+    return new Deny(d["key"] as string, d["not_one_of"] as Json[], (d["field"] as string | undefined) ?? null);
   }
 }
 
@@ -650,6 +671,7 @@ export class Prefix implements Ceiling {
     readonly prefix: string,
     readonly field: string | null = null,
   ) {
+    checkKey(key);
     checkString(key, "prefix", prefix);
     checkString(key, "field", field, true);
   }
@@ -795,6 +817,7 @@ export class UnknownCeiling implements Ceiling {
  */
 export function ceilingFromWire(wire: CJson): Ceiling {
   const d = toPlain<Record<string, Json>>(wire);
+  checkKey(d["key"]);
   const discriminator = d["type"] ?? d["key"];
   const cls = typeof discriminator === "string" ? REGISTRY.get(discriminator) : undefined;
   if (cls === undefined) return UnknownCeiling.fromWire(d);
