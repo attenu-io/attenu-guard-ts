@@ -15,7 +15,9 @@
  * silently dropped.
  */
 
-import { MAX_SAFE_INTEGER, compareCodePoints, pyNumber, toPlain, type CJson, type Json } from "./canonical.js";
+import {
+  MAX_SAFE_INTEGER, RawNumber, canonicalJson, compareCodePoints, pyNumber, toPlain, type CJson, type Json,
+} from "./canonical.js";
 import { escaped, pyRepr, pyStr, shown, shownText } from "./display.js";
 import { Decision, Reason, ReasonCode } from "./reasons.js";
 
@@ -36,6 +38,13 @@ function validateSafeNumber(key: string, value: number): void {
     );
   }
 }
+
+/**
+ * The scope grammar the draft defines: lowercase dot-separated segments, `*` only as the whole last
+ * segment. `Authority` validates its scopes against it, and a scoped `CallLimit`'s `appliesTo`
+ * follows it too.
+ */
+export const SCOPE_RE = /^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*\.(?:[a-z][a-z0-9_-]*|\*)$/;
 
 /** A request context: the quantities and attributes a call declares. */
 export type Context = Record<string, Json>;
@@ -91,6 +100,93 @@ function egressRankOf(value: unknown): number {
   return i === -1 ? EGRESS_ORDER.length : i;
 }
 
+/** The JSON kinds a ceiling compares, as `jsonKind` names them. */
+const NUMBER = ["a number"];
+const STRING = ["a string"];
+const SCALAR = ["a string", "a number", "a boolean"];
+
+/**
+ * `value`'s JSON type as a refusal names it: null, a boolean, a number, a string, an array or an
+ * object, or "a value that is not JSON" for anything else passed in-process (a bigint). A number
+ * this library's `parseJson` read, a `RawNumber`, is a number. The Python implementation names the
+ * same values the same way.
+ */
+function jsonKind(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return "a boolean";
+  if (typeof value === "number" || value instanceof RawNumber) return "a number";
+  if (typeof value === "string") return "a string";
+  if (Array.isArray(value)) return "an array";
+  if (typeof value === "object") return "an object";
+  return "a value that is not JSON";
+}
+
+/** `value`, or the number it holds when `parseJson` read it as a `RawNumber`. */
+function plain(value: unknown): unknown {
+  return value instanceof RawNumber ? value.value : value;
+}
+
+/**
+ * `jsonKind(value)` when a ceiling that compares `accepted` cannot compare `value`, or `null`.
+ *
+ * Every built-in ceiling refuses such a request value rather than coercing it (attenu-ops#110):
+ * `"50"`, `[50]` and `true` passed a row cap through `<=`, `["/tmp/x"]` passed the prefix "/tmp/" as
+ * the text "/tmp/x", and `true` passed the prefix "t" as "true".
+ */
+function wrongKind(value: unknown, accepted: readonly string[]): string | null {
+  const kind = jsonKind(value);
+  return accepted.includes(kind) ? null : kind;
+}
+
+/**
+ * A denial's message: none when the value had the right type, as before; for one of the wrong type,
+ * `<kind> cannot be compared with <against>; refused`, one wording per ceiling kind, and the Python
+ * implementation's too.
+ */
+function refusal(kind: string | null, against: string): string {
+  return kind === null ? "" : `${kind} cannot be compared with ${against}; refused`;
+}
+
+/**
+ * The error for a constraint member of the wrong type, `<member> of constraint <key> is <kind>, not
+ * <expected>`, with the key as Python's repr prints it: the Python implementation's text, where it
+ * raises ValueError. A member the constraint does not carry is `absent`.
+ *
+ * A bound of the wrong type is malformed (attenu-ops#110), on every path: the draft makes "max" a
+ * number and "prefix" a string, an egress rank outside none < internal < any ranked above "any" and
+ * admitted every request, and a `field` or `applies_to` that is not a string named a different
+ * context field in each implementation. A token carrying one is refused as malformed, and a bundle
+ * reports the authority unreadable.
+ */
+function malformed(key: unknown, member: string, value: unknown, expected: string, shownAs?: string): TypeError {
+  const kind = value === undefined ? "absent" : (shownAs ?? jsonKind(value));
+  return new TypeError(`${member} of constraint ${pyRepr(key as CJson)} is ${kind}, not ${expected}`);
+}
+
+/**
+ * A constraint's key is a string: it names the dimension ceilings pair by and, unless `field` says
+ * otherwise, the context field the ceiling reads. A number, null or a boolean key was read as
+ * String(key) here, so 5 and "5" were one dimension, and an absent key loaded and read the field
+ * "undefined"; the Python implementation read a field no JSON context carries. Every constraint is
+ * refused without one, an unknown type included, in the Python implementation's words.
+ */
+function checkKey(key: unknown): void {
+  if (typeof key !== "string") {
+    throw new TypeError(`key of a constraint is ${key === undefined ? "absent" : jsonKind(key)}, not a string`);
+  }
+}
+
+/** A `max` is a JSON number. */
+function checkMax(key: string, value: unknown): void {
+  if (value === undefined || jsonKind(value) !== "a number") throw malformed(key, "max", value, "a number");
+}
+
+/** A `prefix`, `field` or `applies_to` is a string; `field` and `applies_to` may be null, unset. */
+function checkString(key: unknown, member: string, value: unknown, optional = false): void {
+  if (optional && (value === null || value === undefined)) return;
+  if (typeof value !== "string") throw malformed(key, member, value, "a string");
+}
+
 /**
  * The request-context field a ceiling reads. Prefers an explicit `ctxField`,
  * then the caller-keyed `field`, then the ceiling's own `key`.
@@ -101,10 +197,23 @@ export function ctxFieldOf(ceiling: Ceiling): string {
   return ceiling.key;
 }
 
-/** Uniform human-readable rendering of any ceiling. Never parsed back. */
+/**
+ * Python's `type(a) is type(b)`: whether two ceilings are of one class. Ceilings pair by key, and
+ * two of different classes under one key are not comparable: neither narrows the other, so an
+ * authority holding one is not narrower than an authority holding the other (attenu-ops#110).
+ */
+export function sameType(a: Ceiling, b: Ceiling): boolean {
+  return Object.getPrototypeOf(a) === Object.getPrototypeOf(b);
+}
+
+/**
+ * Uniform human-readable rendering of any ceiling. Never parsed back. A ceiling without its own
+ * `describe`, such as one this build does not define, prints as the Python implementation prints
+ * it: its key as the wire carried it, `=`, and its wire form as Python prints a dict.
+ */
 export function describe(ceiling: Ceiling): string {
   if (typeof ceiling.describe === "function") return ceiling.describe();
-  return `${ceiling.key}=${JSON.stringify(ceiling.toWire())}`;
+  return `${pyStr(wireKeyOf(ceiling))}=${pyRepr(ceiling.toWire())}`;
 }
 
 /**
@@ -121,17 +230,23 @@ export function wireKeyOf(ceiling: Ceiling): CJson {
  * printed through `shown` (display.ts), so the finding stays on one line.
  *
  * `describe` itself is left alone, so dashboards and `Authority.describe()` print a region called
- * "São Paulo" as it is, and for values in the bare set the two agree character for character. A
- * ceiling this build does not define prints the Python implementation's description of it — its key,
- * `=`, and the wire object as Python prints a dict — as it is when that is printable ASCII, spaces
- * included, and as escaped JSON otherwise. Same text as the Python implementation's finding.
+ * "São Paulo" as it is, and for values in the bare set the two agree character for character, except
+ * that an allow-list's or a deny-list's string members are printed in their escaped JSON form, quoted,
+ * so the string "1" and the number 1 read differently. A ceiling this build does not define prints the
+ * Python implementation's description of it — its key, `=`, and the wire object as Python prints a
+ * dict — as it is when that is printable ASCII, spaces included, and as escaped JSON otherwise. Same
+ * text as the Python implementation's finding.
  */
 export function describeInFinding(ceiling: Ceiling): string {
   // A bound the wire supplied: a number prints as `describe` prints it; anything else is shown.
   const bound = (v: unknown): string => (typeof v === "number" ? pyNumber(v) : shown(v as CJson));
-  const members = (values: Iterable<Json>): string =>
-    sortByStr(values)
-      .map((v) => shownText(strOf(v), v))
+  // The typed members in wire order, as `describe` lists them, except that a string member is printed
+  // in its escaped JSON form, quoted, so a finding tells the string "1" from the number 1
+  // (attenu-ops#110). That form is ASCII, the Python implementation's on every Python version; its
+  // repr printed a printable non-ASCII character as it is. Every other member's text is bare.
+  const members = (values: ReadonlySet<Json>): string =>
+    inWireOrder(values)
+      .map((v) => (typeof v === "string" ? escaped(v) : shownText(strOf(v), v)))
       .join(", ");
   // By exact class, as the Python implementation matches by exact type: a subclass of a built-in
   // describes itself, and is printed the way any other ceiling this build does not define is.
@@ -143,9 +258,7 @@ export function describeInFinding(ceiling: Ceiling): string {
   if (kind === Allow) return `${shown(ceiling.key)} in [${members((ceiling as Allow).oneOf)}]`;
   if (kind === Deny) return `${shown(ceiling.key)} not in [${members((ceiling as Deny).notOneOf)}]`;
   if (kind === Prefix) return `${shown(ceiling.key)} startswith ${shown((ceiling as Prefix).prefix)}`;
-  const key = wireKeyOf(ceiling);
-  const text =
-    typeof ceiling.describe === "function" ? ceiling.describe() : `${pyStr(key)}=${pyRepr(ceiling.toWire())}`;
+  const text = describe(ceiling);
   return /^[ -~]*$/.test(text) ? text : escaped(text);
 }
 
@@ -159,8 +272,140 @@ export function isMetered(ceiling: Ceiling): boolean {
   return Boolean(ceiling.metered) || String(ceiling.key).startsWith("max_");
 }
 
+/**
+ * What a refusal calls a `one_of` / `not_one_of` that is not a list of members, or `null` for one
+ * that is: a JSON array, or in-process any other iterable of members (a Set).
+ *
+ * The draft defines both as an array. null used to become the empty list, a string its
+ * characters, and an object threw a TypeError in its own words; an absent list read as an empty
+ * one, so an absent deny-list bounded nothing. Each is malformed now, as in the Python
+ * implementation: a token carrying one is refused as malformed, and a bundle reports the authority
+ * unreadable.
+ */
+function notAnArray(values: unknown): string | null {
+  if (values === undefined) return "absent";
+  if (values === null) return "null";
+  if (typeof values === "boolean") return "a boolean";
+  if (typeof values === "number") return "a number";
+  if (typeof values === "string") return "a string";
+  if (Array.isArray(values)) return null;
+  if (values instanceof Map) return "an object";
+  if (typeof values === "object" && typeof (values as Iterable<Json>)[Symbol.iterator] === "function") return null;
+  if (typeof values === "object") return "an object";
+  return "a value that is not an array";
+}
+
+/**
+ * `values` as the members of an `Allow` or a `Deny`, a number `parseJson` read as the number it
+ * holds. Throws a TypeError naming the list and the key when `values` is not a list of members
+ * (`notAnArray`); the Python implementation raises ValueError with the same text.
+ */
+function memberList(key: string, listName: string, values: unknown): Json[] {
+  const kind = notAnArray(values);
+  if (kind !== null) throw new TypeError(`${listName} of constraint ${pyRepr(key)} is ${kind}, not an array`);
+  return Array.from(values as Iterable<unknown>, (v) => plain(v) as Json);
+}
+
+/**
+ * The context's own value for `field`, or `undefined`. A plain object inherits `constructor`,
+ * `toString` and the rest from Object.prototype, and a field named like one of them is absent unless
+ * the context holds it, as `ctx.get(field)` reads it in the Python implementation.
+ */
+export function ownValue(ctx: Context, field: string): Json | undefined {
+  return Object.prototype.hasOwnProperty.call(ctx, field) ? ctx[field] : undefined;
+}
+
+/**
+ * Where two members print alike ("1" and 1), JSON type decides their order: null, boolean, number,
+ * string, then anything else.
+ */
+function kindRank(value: Json): number {
+  if (value === null) return 0;
+  if (typeof value === "boolean") return 1;
+  if (typeof value === "number") return 2;
+  if (typeof value === "string") return 3;
+  return 4;
+}
+
+/**
+ * `values` as the wire form, a denial's `limit` and `describe()` list them: sorted by `strOf`, then
+ * by JSON type (`kindRank`). That is a total order on distinct members, so an equal member set
+ * re-emits the same bytes whatever order it arrived in, in both implementations; ties used to keep
+ * their arrival order.
+ */
 function sortByStr(values: Iterable<Json>): Json[] {
-  return Array.from(values).sort((a, b) => compareCodePoints(strOf(a), strOf(b)));
+  return Array.from(values).sort((a, b) => compareCodePoints(strOf(a), strOf(b)) || kindRank(a) - kindRank(b));
+}
+
+/**
+ * The members of an `Allow` or a `Deny`: a set that cannot change once built, as the Python
+ * implementation's member set has no mutators. `add`, `delete` and `clear` throw a TypeError, and the
+ * members live in a private Set no Set method can reach, so the wire order computed once
+ * (`inWireOrder`) cannot go stale: a plain Set a caller could still add to let `permits()` decide by
+ * members the wire did not list (attenu-ops#110).
+ */
+class Members implements ReadonlySet<Json> {
+  readonly #values: Set<Json>;
+
+  constructor(values: Iterable<Json>) {
+    this.#values = new Set(values);
+  }
+
+  get size(): number {
+    return this.#values.size;
+  }
+
+  has(value: Json): boolean {
+    return this.#values.has(value);
+  }
+
+  forEach(callback: (value: Json, key: Json, set: ReadonlySet<Json>) => void, thisArg?: unknown): void {
+    this.#values.forEach((value) => callback.call(thisArg, value, value, this));
+  }
+
+  entries() {
+    return this.#values.entries();
+  }
+
+  keys() {
+    return this.#values.keys();
+  }
+
+  values() {
+    return this.#values.values();
+  }
+
+  [Symbol.iterator]() {
+    return this.#values.values();
+  }
+
+  add(_value: Json): never {
+    throw new TypeError("the members of an allow-list or a deny-list are read-only");
+  }
+
+  delete(_value: Json): never {
+    throw new TypeError("the members of an allow-list or a deny-list are read-only");
+  }
+
+  clear(): never {
+    throw new TypeError("the members of an allow-list or a deny-list are read-only");
+  }
+}
+
+/**
+ * The wire order (`sortByStr`) of an `Allow`'s or a `Deny`'s members, computed once per member set: a
+ * denial, `toWire()` and `describe()` each sorted the whole set again. The members cannot change
+ * (`Members`); each caller gets its own copy of the order.
+ */
+const wireOrders = new WeakMap<ReadonlySet<Json>, readonly Json[]>();
+
+function inWireOrder(members: ReadonlySet<Json>): Json[] {
+  let order = wireOrders.get(members);
+  if (order === undefined) {
+    order = sortByStr(members);
+    wireOrders.set(members, order);
+  }
+  return [...order];
 }
 
 function strOf(value: Json): string {
@@ -180,18 +425,24 @@ function strOf(value: Json): string {
 export class RowLimit implements Ceiling {
   readonly key = "max_rows";
   readonly ctxField = "rows";
-  constructor(readonly maxRows: number) {
-    validateSafeNumber("max_rows", maxRows);
+  readonly maxRows: number;
+  constructor(maxRows: number) {
+    checkMax("max_rows", maxRows);
+    this.maxRows = plain(maxRows) as number;
+    validateSafeNumber("max_rows", this.maxRows);
   }
 
   permits(ctx: Context): Decision {
-    const n = ctx["rows"];
-    if (n === undefined || n === null || (n as number) <= this.maxRows) return Decision.allow();
+    const n = ownValue(ctx, "rows");
+    if (n === undefined || n === null) return Decision.allow();
+    const kind = wrongKind(n, NUMBER);
+    if (kind === null && (plain(n) as number) <= this.maxRows) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
         limit: this.maxRows,
         requested: n,
+        message: refusal(kind, "a maximum"),
       }),
     );
   }
@@ -205,7 +456,7 @@ export class RowLimit implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return this.maxRows >= (other as RowLimit).maxRows;
+    return sameType(this, other) && this.maxRows >= (other as RowLimit).maxRows;
   }
 
   toWire(): Record<string, Json> {
@@ -221,18 +472,24 @@ export class RowLimit implements Ceiling {
 export class SpendCap implements Ceiling {
   readonly key = "max_spend";
   readonly ctxField = "spend";
-  constructor(readonly maxSpend: number) {
-    validateSafeNumber("max_spend", maxSpend);
+  readonly maxSpend: number;
+  constructor(maxSpend: number) {
+    checkMax("max_spend", maxSpend);
+    this.maxSpend = plain(maxSpend) as number;
+    validateSafeNumber("max_spend", this.maxSpend);
   }
 
   permits(ctx: Context): Decision {
-    const n = ctx["spend"];
-    if (n === undefined || n === null || (n as number) <= this.maxSpend) return Decision.allow();
+    const n = ownValue(ctx, "spend");
+    if (n === undefined || n === null) return Decision.allow();
+    const kind = wrongKind(n, NUMBER);
+    if (kind === null && (plain(n) as number) <= this.maxSpend) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
         limit: this.maxSpend,
         requested: n,
+        message: refusal(kind, "a maximum"),
       }),
     );
   }
@@ -246,7 +503,7 @@ export class SpendCap implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return this.maxSpend >= (other as SpendCap).maxSpend;
+    return sameType(this, other) && this.maxSpend >= (other as SpendCap).maxSpend;
   }
 
   toWire(): Record<string, Json> {
@@ -273,13 +530,22 @@ export class SpendCap implements Ceiling {
 export class CallLimit implements Ceiling {
   readonly key: string;
   readonly ctxField: string;
+  readonly maxCalls: number;
 
   constructor(
-    readonly maxCalls: number,
+    maxCalls: number,
     readonly appliesTo: string | null = null,
   ) {
-    validateSafeNumber("max_calls", maxCalls);
+    checkString("max_calls", "applies_to", appliesTo, true);
+    // A pattern no scope matches ("*", "crm", "CRM.READ") applied to no call, so the limit bounded
+    // nothing. It follows the scope grammar: an exact scope, or a terminal `.*` wildcard.
+    if (appliesTo !== null && appliesTo !== undefined && !SCOPE_RE.test(appliesTo)) {
+      throw malformed("max_calls", "applies_to", appliesTo, "a scope", pyRepr(appliesTo));
+    }
     this.key = appliesTo ? `max_calls[${appliesTo}]` : "max_calls";
+    checkMax(this.key, maxCalls);
+    this.maxCalls = plain(maxCalls) as number;
+    validateSafeNumber("max_calls", this.maxCalls);
     this.ctxField = appliesTo ? `calls[${appliesTo}]` : "calls";
   }
 
@@ -295,14 +561,17 @@ export class CallLimit implements Ceiling {
   }
 
   permits(ctx: Context): Decision {
-    if (!this.appliesToScope(ctx["_scope"] as string | undefined)) return Decision.allow();
-    const n = ctx[this.ctxField];
-    if (n === undefined || n === null || (n as number) <= this.maxCalls) return Decision.allow();
+    if (!this.appliesToScope(ownValue(ctx, "_scope") as string | undefined)) return Decision.allow();
+    const n = ownValue(ctx, this.ctxField);
+    if (n === undefined || n === null) return Decision.allow();
+    const kind = wrongKind(n, NUMBER);
+    if (kind === null && (plain(n) as number) <= this.maxCalls) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
         limit: this.maxCalls,
         requested: n,
+        message: refusal(kind, "a maximum"),
       }),
     );
   }
@@ -316,7 +585,7 @@ export class CallLimit implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return this.maxCalls >= (other as CallLimit).maxCalls;
+    return sameType(this, other) && this.maxCalls >= (other as CallLimit).maxCalls;
   }
 
   toWire(): Record<string, Json> {
@@ -333,18 +602,25 @@ export class CallLimit implements Ceiling {
 export class EgressRank implements Ceiling {
   readonly key = "egress";
   readonly ctxField = "egress";
-  constructor(readonly level: string) {}
+  constructor(readonly level: string) {
+    // A rank outside the vocabulary ranked above "any", so the ceiling admitted every request.
+    if (typeof level !== "string" || !(EGRESS_ORDER as readonly string[]).includes(level)) {
+      throw malformed("egress", "rank", level, "'none', 'internal' or 'any'",
+        typeof level === "string" ? pyRepr(level) : undefined);
+    }
+  }
 
   permits(ctx: Context): Decision {
-    const val = ctx["egress"];
-    if (val === undefined || val === null || egressRankOf(val) <= egressRankOf(this.level)) {
-      return Decision.allow();
-    }
+    const val = ownValue(ctx, "egress");
+    if (val === undefined || val === null) return Decision.allow();
+    const kind = wrongKind(val, STRING);
+    if (kind === null && egressRankOf(val) <= egressRankOf(this.level)) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
         limit: this.level,
         requested: val,
+        message: refusal(kind, "an egress rank"),
       }),
     );
   }
@@ -359,7 +635,7 @@ export class EgressRank implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return egressRankOf(this.level) >= egressRankOf((other as EgressRank).level);
+    return sameType(this, other) && egressRankOf(this.level) >= egressRankOf((other as EgressRank).level);
   }
 
   toWire(): Record<string, Json> {
@@ -377,7 +653,11 @@ export class EgressRank implements Ceiling {
 // these carry an explicit "type" on the wire.
 // =========================================================================
 
-/** Membership allow-list: the context value MUST be one of `oneOf`. */
+/**
+ * Membership allow-list: the context value MUST be one of `oneOf`. A member is its JSON type plus
+ * its value, as a Set holds it: `[1]` admits 1 and refuses `true` and `"1"`. A context value that
+ * is not a JSON scalar is refused (`wrongKind`).
+ */
 export class Allow implements Ceiling {
   readonly oneOf: ReadonlySet<Json>;
   constructor(
@@ -385,7 +665,9 @@ export class Allow implements Ceiling {
     oneOf: Iterable<Json>,
     readonly field: string | null = null,
   ) {
-    this.oneOf = new Set(oneOf);
+    checkKey(key);
+    this.oneOf = new Members(memberList(key, "one_of", oneOf));
+    checkString(key, "field", field, true);
   }
 
   private ctxKey(): string {
@@ -393,19 +675,22 @@ export class Allow implements Ceiling {
   }
 
   permits(ctx: Context): Decision {
-    const val = ctx[this.ctxKey()];
-    if (val === undefined || val === null || this.oneOf.has(val)) return Decision.allow();
+    const val = ownValue(ctx, this.ctxKey());
+    if (val === undefined || val === null) return Decision.allow();
+    const kind = wrongKind(val, SCALAR);
+    if (kind === null && this.oneOf.has(plain(val) as Json)) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
-        limit: sortByStr(this.oneOf),
+        limit: inWireOrder(this.oneOf),
         requested: val,
+        message: refusal(kind, "one_of members"),
       }),
     );
   }
 
   describe(): string {
-    return `${this.key} in [${sortByStr(this.oneOf).map(strOf).join(", ")}]`;
+    return `${this.key} in [${inWireOrder(this.oneOf).map(strOf).join(", ")}]`;
   }
 
   narrow(other: Ceiling): Allow {
@@ -414,25 +699,27 @@ export class Allow implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return Array.from((other as Allow).oneOf).every((v) => this.oneOf.has(v));
+    return sameType(this, other) && Array.from((other as Allow).oneOf).every((v) => this.oneOf.has(v));
   }
 
   toWire(): Record<string, Json> {
-    const d: Record<string, Json> = { key: this.key, type: "allow", one_of: sortByStr(this.oneOf) };
+    const d: Record<string, Json> = { key: this.key, type: "allow", one_of: inWireOrder(this.oneOf) };
     if (this.field !== null && this.field !== this.key) d["field"] = this.field;
     return d;
   }
 
   static fromWire(d: Record<string, Json>): Allow {
-    return new Allow(
-      d["key"] as string,
-      (d["one_of"] as Json[]) ?? [],
-      (d["field"] as string | undefined) ?? null,
-    );
+    // Anything but an array, an absent one_of included, is refused by the constructor.
+    return new Allow(d["key"] as string, d["one_of"] as Json[], (d["field"] as string | undefined) ?? null);
   }
 }
 
-/** Membership deny-list: the context value MUST NOT be one of `notOneOf`. */
+/**
+ * Membership deny-list: the context value MUST NOT be one of `notOneOf`. A member is its JSON type
+ * plus its value, as a Set holds it: `[1]` refuses 1 and not `true` or `"1"`. A context value that
+ * is not a JSON scalar is refused as well (`wrongKind`): a deny-list never waves through a value it
+ * cannot compare, since waving `["rm"]` through because it is not the string "rm" would fail open.
+ */
 export class Deny implements Ceiling {
   readonly notOneOf: ReadonlySet<Json>;
   constructor(
@@ -440,7 +727,9 @@ export class Deny implements Ceiling {
     notOneOf: Iterable<Json>,
     readonly field: string | null = null,
   ) {
-    this.notOneOf = new Set(notOneOf);
+    checkKey(key);
+    this.notOneOf = new Members(memberList(key, "not_one_of", notOneOf));
+    checkString(key, "field", field, true);
   }
 
   private ctxKey(): string {
@@ -448,19 +737,22 @@ export class Deny implements Ceiling {
   }
 
   permits(ctx: Context): Decision {
-    const val = ctx[this.ctxKey()];
-    if (val === undefined || val === null || !this.notOneOf.has(val)) return Decision.allow();
+    const val = ownValue(ctx, this.ctxKey());
+    if (val === undefined || val === null) return Decision.allow();
+    const kind = wrongKind(val, SCALAR);
+    if (kind === null && !this.notOneOf.has(plain(val) as Json)) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
-        limit: sortByStr(this.notOneOf),
+        limit: inWireOrder(this.notOneOf),
         requested: val,
+        message: refusal(kind, "not_one_of members"),
       }),
     );
   }
 
   describe(): string {
-    return `${this.key} not in [${sortByStr(this.notOneOf).map(strOf).join(", ")}]`;
+    return `${this.key} not in [${inWireOrder(this.notOneOf).map(strOf).join(", ")}]`;
   }
 
   narrow(other: Ceiling): Deny {
@@ -471,25 +763,22 @@ export class Deny implements Ceiling {
   subsumes(other: Ceiling): boolean {
     // `this` admits a superset of `other`'s admitted set iff it forbids a
     // subset of what `other` forbids.
-    return Array.from(this.notOneOf).every((v) => (other as Deny).notOneOf.has(v));
+    return sameType(this, other) && Array.from(this.notOneOf).every((v) => (other as Deny).notOneOf.has(v));
   }
 
   toWire(): Record<string, Json> {
     const d: Record<string, Json> = {
       key: this.key,
       type: "deny",
-      not_one_of: sortByStr(this.notOneOf),
+      not_one_of: inWireOrder(this.notOneOf),
     };
     if (this.field !== null && this.field !== this.key) d["field"] = this.field;
     return d;
   }
 
   static fromWire(d: Record<string, Json>): Deny {
-    return new Deny(
-      d["key"] as string,
-      (d["not_one_of"] as Json[]) ?? [],
-      (d["field"] as string | undefined) ?? null,
-    );
+    // Anything but an array, an absent not_one_of included, is refused by the constructor.
+    return new Deny(d["key"] as string, d["not_one_of"] as Json[], (d["field"] as string | undefined) ?? null);
   }
 }
 
@@ -499,22 +788,27 @@ export class Prefix implements Ceiling {
     readonly key: string,
     readonly prefix: string,
     readonly field: string | null = null,
-  ) {}
+  ) {
+    checkKey(key);
+    checkString(key, "prefix", prefix);
+    checkString(key, "field", field, true);
+  }
 
   private ctxKey(): string {
     return this.field ?? this.key;
   }
 
   permits(ctx: Context): Decision {
-    const val = ctx[this.ctxKey()];
-    if (val === undefined || val === null || String(val).startsWith(this.prefix)) {
-      return Decision.allow();
-    }
+    const val = ownValue(ctx, this.ctxKey());
+    if (val === undefined || val === null) return Decision.allow();
+    const kind = wrongKind(val, STRING);
+    if (kind === null && (val as string).startsWith(this.prefix)) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
         limit: this.prefix,
         requested: val,
+        message: refusal(kind, "a prefix"),
       }),
     );
   }
@@ -538,7 +832,7 @@ export class Prefix implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return (other as Prefix).prefix.startsWith(this.prefix);
+    return sameType(this, other) && (other as Prefix).prefix.startsWith(this.prefix);
   }
 
   toWire(): Record<string, Json> {
@@ -581,10 +875,15 @@ export function registerCeiling(key: string, cls: CeilingClass): void {
  * Fail-closed placeholder for a wire constraint this build does not recognise.
  *
  * `permits` always denies. `narrow` stays an unknown ceiling, so it can never
- * resolve to something more permissive than "deny everything". `subsumes` is
+ * resolve to something more permissive than "deny everything"; `Authority.meet`
+ * keeps a parent's against a request of any other type, so the child inherits
+ * it. `subsumes` is
  * true only against an identical unknown ceiling — just enough reflexivity for
- * `isNarrowerThan(self)`. `toWire` preserves the original bytes losslessly, so
- * a chain that merely forwards constraints can still do so.
+ * `isNarrowerThan(self)`. Identical means the same RFC 8785 bytes, which is
+ * equality as JSON: `true` is not 1, `1.0` is 1, and key order is no difference
+ * at any depth; a value RFC 8785 cannot write is identical to nothing. `toWire`
+ * preserves the original bytes losslessly, so a chain that merely forwards
+ * constraints can still do so.
  */
 export class UnknownCeiling implements Ceiling {
   readonly key: string;
@@ -596,10 +895,13 @@ export class UnknownCeiling implements Ceiling {
   }
 
   permits(_ctx: Context): Decision {
+    // In the Python implementation's words, and with the key as the wire carried it (null, a
+    // number), so a deny entry is the same bytes from both implementations.
+    const key = wireKeyOf(this);
     return Decision.deny(
       new Reason(ReasonCode.UNKNOWN_CONSTRAINT, {
-        constraint: this.key,
-        message: `unrecognised constraint type for key=${JSON.stringify(this.key)}; fail-closed`,
+        constraint: key as string | null,
+        message: `unrecognised constraint type for key=${pyRepr(key)}; fail-closed`,
       }),
     );
   }
@@ -609,10 +911,14 @@ export class UnknownCeiling implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return (
-      other instanceof UnknownCeiling &&
-      JSON.stringify(canonicalPairs(other.raw)) === JSON.stringify(canonicalPairs(this.raw))
-    );
+    // Compared as RFC 8785 bytes, as the Python implementation compares them. JSON text with only
+    // the top-level keys sorted told `{"v":{"a":1,"b":2}}` from `{"v":{"b":2,"a":1}}` (attenu-ops#110).
+    if (!(other instanceof UnknownCeiling)) return false;
+    try {
+      return canonicalJson(other.raw) === canonicalJson(this.raw);
+    } catch {
+      return false;
+    }
   }
 
   toWire(): Record<string, Json> {
@@ -624,20 +930,27 @@ export class UnknownCeiling implements Ceiling {
   }
 }
 
-function canonicalPairs(d: Record<string, Json>): [string, Json][] {
-  return Object.keys(d)
-    .sort(compareCodePoints)
-    .map((k) => [k, d[k]!] as [string, Json]);
-}
-
 /**
  * Reconstruct a Ceiling from its wire form. Routes on "type" when present (it
  * disambiguates the generic ceilings), else on "key". An unrecognised
  * discriminator fails closed via `UnknownCeiling`.
+ *
+ * A constraint is a JSON object with a string `key`, and a `type` that, when present, is a string;
+ * anything else is malformed (attenu-ops#110), in the Python implementation's words too: `a
+ * constraint is a string, not an object`, `type of constraint 'max_rows' is null, not a string`.
+ * A constraint that is not an object loaded as an unknown constraint here, null aside, and a null
+ * `type` was read as absent, so the constraint was routed by its key: `{"key": "allow", "type":
+ * null, ...}` loaded as an allow-list, where the Python implementation loaded an unknown constraint.
  */
 export function ceilingFromWire(wire: CJson): Ceiling {
   const d = toPlain<Record<string, Json>>(wire);
-  const discriminator = d["type"] ?? d["key"];
+  if (d === null || typeof d !== "object" || Array.isArray(d)) {
+    throw new TypeError(`a constraint is ${jsonKind(d)}, not an object`);
+  }
+  checkKey(d["key"]);
+  const type = d["type"];
+  if (type !== undefined && typeof type !== "string") throw malformed(d["key"], "type", type, "a string");
+  const discriminator = type ?? d["key"];
   const cls = typeof discriminator === "string" ? REGISTRY.get(discriminator) : undefined;
   if (cls === undefined) return UnknownCeiling.fromWire(d);
   return cls.fromWire(d);

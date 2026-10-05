@@ -499,8 +499,12 @@ function authorityFromPayload(payload: Record<string, Json>): Authority {
     return Authority.fromWire(wire as CJson);
   } catch (e) {
     // A malformed constraint shape, and anything else the ceiling registry
-    // refuses to build: the token is unusable, so fail closed.
-    throw new WireError(WireReasonCode.MALFORMED, `invalid authorization_details: ${String(e)}`);
+    // refuses to build: the token is unusable, so fail closed. The error's own text, as the Python
+    // implementation prints it: `String(e)` put "TypeError: " in front.
+    throw new WireError(
+      WireReasonCode.MALFORMED,
+      `invalid authorization_details: ${e instanceof Error ? e.message : String(e)}`,
+    );
   }
 }
 

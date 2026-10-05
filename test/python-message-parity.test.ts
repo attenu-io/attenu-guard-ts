@@ -50,12 +50,16 @@ const PYTHON: Record<string, string[]> = {
     "containment: allow on unknown node vectors:n0"
   ],
   "constraint_dimension_rewritten": [
-    "spawn vectors:n1: unreadable granted (constraint {'key': 'max_calls', 'max': 5, 'applies_to': 'fs.write\\x85\\x1b[2K'} names dimension 'max_calls' but this build reads it as 'max_calls[fs.write\\x85\\x1b[2K]'; refusing rather than silently changing which dimension is bounded)",
+    "spawn vectors:n1: unreadable granted (constraint {'key': 'max_calls\\x85\\x1b[2K', 'type': 'max_calls', 'max': 5, 'applies_to': 'fs.write'} names dimension 'max_calls\\x85\\x1b[2K' but this build reads it as 'max_calls[fs.write]'; refusing rather than silently changing which dimension is bounded)",
+    "containment: allow on unknown node vectors:n1"
+  ],
+  "applies_to_not_a_scope": [
+    "spawn vectors:n1: unreadable granted (applies_to of constraint 'max_calls' is 'fs.write\\x85\\x1b[2K', not a scope)",
     "containment: allow on unknown node vectors:n1"
   ],
   "unknown_ceiling_null_key": [
-    "monotonicity: vectors:n1 not \u2286 parent vectors:n0 (ceiling None unbounded, parent holds None={'key': None, 'type': 'zzz'})",
-    "containment: allow of 'mail.send' on vectors:n0 outside its authority ['crm.*', 'mail.send']"
+    "root vectors:n0: unreadable authority (key of a constraint is null, not a string)",
+    "containment: allow on unknown node vectors:n0"
   ]
 };
 
@@ -117,8 +121,8 @@ const CASES: [string, Bundle, WitnessKey[] | null][] = [
     mutated(VALID_V2, (es) => void ((authorityOf(es[0]!, "authority")["scopes"] as string[])[0] = "crm.\u2028x")),
     null,
   ],
-  // A ceiling this build does not define, with a null key: Python names the key as the wire
-  // carried it, `None`, where this build's text key is empty.
+  // A ceiling this build does not define, with a null key. It loaded in both implementations and
+  // printed as `None`; a key that is not a string is malformed now, in both.
   [
     "unknown_ceiling_null_key",
     mutated(VALID_V2, (es) => {
@@ -129,6 +133,19 @@ const CASES: [string, Bundle, WitnessKey[] | null][] = [
   ],
   [
     "constraint_dimension_rewritten",
+    mutated(VALID_V2, (es) =>
+      void (authorityOf(es[1]!, "granted")["constraints"] as unknown[]).push({
+        key: "max_calls\u0085\u001b[2K",
+        type: "max_calls",
+        max: 5,
+        applies_to: "fs.write",
+      }),
+    ),
+    null,
+  ],
+  // An applies_to that is not a scope is malformed; the value prints through repr, escaped.
+  [
+    "applies_to_not_a_scope",
     mutated(VALID_V2, (es) =>
       void (authorityOf(es[1]!, "granted")["constraints"] as unknown[]).push({
         key: "max_calls",

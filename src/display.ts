@@ -71,14 +71,15 @@ function hex(n: number, width: number): string {
 
 /**
  * Python-style `repr` for the value types a finding message carries. A number that kept its
- * literal prints as Python prints what `json` reads from it (`1` an int, `1.0` a float); a number
- * that has lost its literal prints as JavaScript prints it, as this module always has.
+ * literal prints as Python prints what `json` reads from it (`1` an int, `1.0` a float). A number
+ * that has lost its literal prints as an integer when it is integral, and otherwise as Python's
+ * repr of the float, `1e-05` where JavaScript writes 0.00001.
  */
 export function pyRepr(value: CJson): string {
   if (value === null) return "None";
   if (typeof value === "boolean") return value ? "True" : "False";
   if (value instanceof RawNumber) return integerText(value) ?? pyFloat(value.value);
-  if (typeof value === "number") return String(value);
+  if (typeof value === "number") return Number.isInteger(value) ? String(value) : pyFloat(value);
   if (typeof value === "string") return pyStrRepr(value);
   // Containers reach here only on hostile input — a member that is a list or an object where the
   // contract wants a scalar. Rendered the way Python's repr renders them.

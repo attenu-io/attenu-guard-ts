@@ -64,7 +64,7 @@ import type { Json } from "./canonical.js";
 import { Authority, AuthorityError } from "./authority.js";
 import { AuditLog, CommittedAuditError, type LedgerEntry, type Sink } from "./audit.js";
 import { Chain, MonotonicClock, type Clock, type Node } from "./chain.js";
-import { ctxFieldOf, isMetered, type Ceiling, type Context } from "./ceilings.js";
+import { ctxFieldOf, isMetered, ownValue, type Ceiling, type Context } from "./ceilings.js";
 import {
   BODY_STATES,
   BodyState,
@@ -473,9 +473,13 @@ export class Guard {
     // CEILING, not "is the context empty?" — a partial context that mentions
     // egress but forgets rows would otherwise let the row ceiling go
     // unevaluated, which is the exact slip a per-tool context function makes.
+    // A field counts as declared only when the context holds it as its own property: `in` found
+    // `constructor` on every plain object. A null quantity asserts nothing, so it is undeclared too
+    // (attenu-ops#110): counting it as declared let `{rows: null}` through, since every ceiling reads
+    // null as absent.
     if (this.strict && metered) {
       const missing = auth.ceilings
-        .filter((c) => isMetered(c) && !(ctxFieldOf(c) in context))
+        .filter((c) => isMetered(c) && (ownValue(context, ctxFieldOf(c)) ?? null) === null)
         .map((c) => c.key);
       if (missing.length > 0) {
         const held = auth.ceilings.filter(isMetered).map((c) => c.key);
@@ -557,7 +561,7 @@ export class Guard {
     const filled: Ceiling[] = [];
     for (const c of this.callLimits()) {
       const field = c.ctxField ?? "calls";
-      if (field in ctx) continue; // an explicit count wins
+      if ((ownValue(ctx, field) ?? null) !== null) continue; // an explicit count wins; null is no count
       const applies = c.appliesToScope ? c.appliesToScope(scope) : true;
       ctx[field] = this.chain.callsSoFar(this.node.nodeId, c.meterKey ?? "*") + (applies ? 1 : 0);
       if (applies) filled.push(c);
