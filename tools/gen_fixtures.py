@@ -40,6 +40,13 @@ What lands in `test/fixtures/`:
                            (attenu_guard.vectors.load_bundle_vectors); an older release simply
                            leaves the committed copy alone, so CI's fixture-drift check stays
                            green until the pin is bumped to a release that has them.
+  parity/                  CLI parity cases for `verify --entries`, trust-row `not_after` and
+                           whole-row reading, and strict seq: the inputs, and in cli.json the
+                           stdout and exit code the PYTHON CLI gives for each, run from inside
+                           that directory so every path it prints is relative. The TypeScript
+                           CLI must print the same bytes. Written only when the installed
+                           attenu-guard has that verifier (`failure_entries` in a report); an
+                           older release leaves the committed copies alone, as above.
 """
 from __future__ import annotations
 
@@ -480,6 +487,368 @@ def envelope_vectors() -> str | None:
     return read().decode("utf-8")
 
 
+# --------------------------------------------- CLI parity: --entries, not_after, strict seq
+
+#: The parity witness's Ed25519 seed and kid. Fixed, so every run signs the same bytes; it signs
+#: nothing but these test files and is published here on purpose.
+PARITY_SEED = bytes(range(32))
+PARITY_KID = "witness-parity"
+PARITY_GENESIS = "0" * 64
+
+
+def parity_supported() -> bool:
+    """True when the installed attenu-guard has the verifier these cases pin: per-entry failure
+    attribution (`failure_entries` in a report), `--entries`, `not_after` and whole trust rows.
+    An older release leaves the committed copies alone, as `bundle_vectors` does, so CI's
+    fixture-drift check stays green until the pin names a release that has them."""
+    try:
+        report = evidence.verify_bundle({"v": 1, "c14n": "JCS", "entries": []}, None)
+    except Exception:  # noqa: BLE001 - any failure here means the verifier is not the one pinned
+        return False
+    return "failure_entries" in report
+
+
+def _rehashed(entries: list) -> list:
+    """Re-hash a ledger from genesis, as a forger who edited an entry would."""
+    prev = PARITY_GENESIS
+    for e in entries:
+        e["prev_hash"] = prev
+        e.pop("hash", None)
+        e["hash"] = _hash(prev, e)
+        prev = e["hash"]
+    return entries
+
+
+def _forged_allow(chain_id: str = "parity"):
+    """The separated-custody run's boundary case: a supervisor delegates docs.write, the child is
+    allowed docs.write and denied web.search, and the process then appends an allow of web.search
+    in chain order. The witness signs the spawn, the honest allow and the forged one. The node ids
+    are `<chain_id>:n0` and `<chain_id>:n1`."""
+    sup = Guard.issue("supervisor", Authority(scopes={"web.search", "docs.write"}),
+                      task="research and write a brief", chain_id=chain_id)
+    child = sup.delegate("brief-writer", Authority(scopes={"docs.write"}), task="write the brief")
+    child.check("docs.write")
+    child.check("web.search")
+    ledger = sup.audit_log()
+    honest = ledger.entries[2]
+    ledger.append("allow", 5, chain_id=honest["chain_id"], node=honest["node"], scope="web.search",
+                  tool=None, context={})
+    entries = ledger.entries
+    envelopes = [evidence.sign_envelope(entries, seq, PARITY_SEED, kid=PARITY_KID,
+                                        result="indeterminate", at="2026-09-30T07:43:46Z",
+                                        method="signs what it receives in chain order")
+                 for seq in (1, 2, 4)]
+    return evidence.export_bundle(ledger, HS256TestSigner(HS256_SECRET, kid=HS256_KID),
+                                  envelopes=envelopes)
+
+
+def _edited(bundle: dict, edit, *, envelopes=True) -> dict:
+    """`bundle` with `edit` applied to its entries, re-hashed, its anchor dropped."""
+    b = copy.deepcopy(bundle)
+    edit(b["entries"])
+    _rehashed(b["entries"])
+    del b["anchor"]
+    if not envelopes:
+        b["envelopes"] = []
+    return b
+
+
+def _signed_by_hand(entry: dict, seq) -> dict:
+    """An envelope naming `seq` whose subject binds `entry`, signed by the parity witness. Built by
+    hand because `sign_envelope` resolves `seq` the way a verifier does, and so refuses to bind an
+    entry that `seq` does not name, which is the forger's envelope this builds."""
+    envelope = {"v": evidence.ENVELOPE_VERSION, "typ": evidence.ENVELOPE_TYP,
+                "subject": {"chain_id": entry["chain_id"], "node": entry["node"], "seq": seq,
+                            "entry_hash": entry["hash"], "event": entry["event"]},
+                "observed": {"result": "matched", "at": "2026-10-05T00:00:00Z",
+                             "method": "signed by hand"},
+                "witness": {"kid": PARITY_KID, "alg": evidence.ENVELOPE_ALG}}
+    signer = Ed25519Signer.from_private_bytes(PARITY_SEED, kid=PARITY_KID)
+    envelope["sig"] = signer.sign(evidence.envelope_signing_input(envelope)).hex()
+    return envelope
+
+
+def _chain_bundle(depth: int, revoke: bool = False) -> dict:
+    """root t:n0 -> t:n1 (-> t:n2), each holding crm.read, and an allow by the deepest; with
+    `revoke`, the root then revokes the deepest node, which writes a kill."""
+    root = Guard.issue("root", Authority({"crm.read"}, [], ttl=600), chain_id="t")
+    guard = root
+    for i in range(depth - 1):
+        guard = guard.delegate(f"agent{i}", Authority({"crm.read"}, [], ttl=600), task="t")
+    guard.check("crm.read")
+    if revoke:
+        root.revoke(guard.node_id)
+    return evidence.export_bundle(root.audit_log(), HS256TestSigner(HS256_SECRET, kid=HS256_KID))
+
+
+def _wildcard_allow():
+    """A root holding the wildcard crm.* and allowed crm.read: node c:n0, the allow at seq 1."""
+    g = Guard.issue("a", Authority(scopes={"crm.*"}), chain_id="c")
+    g.check("crm.read")
+    return evidence.export_bundle(g.audit_log(), HS256TestSigner(HS256_SECRET, kid=HS256_KID))
+
+
+def _python_cli(args: list, cwd: Path) -> dict:
+    """What the PYTHON CLI prints for `args`, run from `cwd` so every path it prints is the
+    relative one it was given, and its exit code."""
+    import contextlib
+    import io
+    import os
+
+    from attenu_guard import cli
+
+    out = io.StringIO()
+    here = os.getcwd()
+    os.chdir(cwd)
+    try:
+        with contextlib.redirect_stdout(out):
+            code = cli.main(list(args))
+    finally:
+        os.chdir(here)
+    return {"args": list(args), "stdout": out.getvalue(), "exit": code}
+
+
+def parity_fixtures() -> None:
+    forged = _forged_allow()
+    public_hex = Ed25519Signer.from_private_bytes(PARITY_SEED, kid=PARITY_KID).public_bytes_raw().hex()
+    row = {"kid": PARITY_KID, "alg": "EdDSA", "public_key_hex": public_hex}
+
+    def set_seq(index, value):
+        def edit(entries):
+            entries[index]["seq"] = value
+        return edit
+
+    def drop_seq(index):
+        def edit(entries):
+            entries[index].pop("seq")
+        return edit
+
+    # The forged allow given seq 3, the real deny's. A subject naming seq 3 resolves to the later
+    # copy and the witness signs that one; read by seq, the deny above it read witness-signed too.
+    duplicate = _edited(forged, set_seq(4, 3))
+    duplicate["envelopes"] = [evidence.sign_envelope(duplicate["entries"], seq, PARITY_SEED,
+                                                     kid=PARITY_KID, result="indeterminate",
+                                                     at="2026-09-30T07:43:46Z",
+                                                     method="signs what it receives in chain order")
+                              for seq in (1, 2, 3)]
+    # An envelope naming seq 1 that binds the very entry carrying "seq": true, signed by the
+    # trusted witness. True == 1 in Python, and the lookup took that entry for seq 1.
+    bool_signed = _edited(forged, set_seq(1, True))
+    bool_signed["envelopes"] = [_signed_by_hand(bool_signed["entries"][1], 1)]
+
+    subject_float = copy.deepcopy(forged)
+    subject_float["envelopes"][0]["subject"]["seq"] = 1.0
+    envelope_v_float = copy.deepcopy(forged)
+    envelope_v_float["envelopes"][0]["v"] = 1.0
+
+    ledger = [dict(e) for e in forged["entries"]]
+
+    def ledger_with(index, seq):
+        return _rehashed([dict(e, seq=seq) if i == index else dict(e) for i, e in enumerate(ledger)])
+
+    # A seq or v is an integral number that is not a bool, as the schema's integer type defines:
+    # 1.0 and -0.0 are the integers they equal and print as them, 1.5 and True are no integer.
+    subject_nine = copy.deepcopy(forged)
+    subject_nine["envelopes"][0]["subject"]["seq"] = 9.0
+    envelope_v_two = copy.deepcopy(forged)
+    envelope_v_two["envelopes"][0]["v"] = 2.0
+    bundle_v_true = copy.deepcopy(forged)
+    bundle_v_true["v"] = True
+    bundle_v_three = copy.deepcopy(forged)
+    bundle_v_three["v"] = 3.0
+    # An anchor whose seq or v is a number past 2**53 - 1: no signing input can be rebuilt from it,
+    # and under --hs256-key the signature does not verify. Written as floats; Python raises on the
+    # integer form.
+    anchor_seq_huge = copy.deepcopy(forged)
+    anchor_seq_huge["anchor"]["seq"] = 1e300
+    anchor_v_huge = copy.deepcopy(forged)
+    anchor_v_huge["anchor"]["v"] = 9007199254740993.0
+    # The integer form, which no canonicalizer writes: an anchor carrying one is a signature that
+    # does not verify, whatever its sig holds, and an entry carrying one is a hash mismatch there.
+    # The entry is not re-hashed, since no hash exists for it.
+    anchor_seq_int_huge = copy.deepcopy(forged)
+    anchor_seq_int_huge["anchor"]["seq"] = 2 ** 53 + 1
+    anchor_int_huge_badsig = copy.deepcopy(anchor_seq_int_huge)
+    anchor_int_huge_badsig["anchor"]["sig"] = "zz"
+    entry_int_huge = copy.deepcopy(forged)
+    entry_int_huge["entries"][3]["ts"] = 2 ** 53 + 1
+
+    def mixed_versions(entries):
+        # None, False, then 0 (one value with False in a Python set, and the first stays), 1.5 and
+        # a string: listed numbers first in numeric order, then the rest by repr.
+        del entries[0]["v"]
+        entries[1]["v"] = False
+        entries[2]["v"] = 0
+        entries[3]["v"] = 1.5
+        entries[4]["v"] = "x"
+
+    files = {
+        "forged_allow.bundle.json": forged,
+        "bool_seq.bundle.json": _edited(forged, set_seq(1, True), envelopes=False),
+        "float_seq.bundle.json": _edited(forged, set_seq(1, 1.0)),
+        "string_seq.bundle.json": _edited(forged, set_seq(4, "4")),
+        "seq_removed.bundle.json": _edited(forged, drop_seq(4)),
+        "seq_null.bundle.json": _edited(forged, set_seq(4, None)),
+        "duplicate_seq_later_signed.bundle.json": duplicate,
+        "bool_seq_signed.bundle.json": bool_signed,
+        "subject_seq_float.bundle.json": subject_float,
+        "envelope_v_float.bundle.json": envelope_v_float,
+        # A node name carrying line breaks, printed raw, would add a line reading OK.
+        "forged_node_newline.bundle.json": _forged_allow(chain_id="parity\nOK\nx"),
+        # json.dumps, not the canonical form: JCS writes 1.0 as 1, and the literal is the case.
+        "bool_seq.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_with(1, True)),
+        "float_seq.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_with(1, 1.0)),
+        "seq_frac.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_with(1, 1.5)),
+        "seq_two.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_with(1, 2.0)),
+        "seq_negzero.jsonl": "".join(json.dumps(e) + "\n" for e in ledger_with(0, -0.0)),
+        "subject_seq_nine.bundle.json": subject_nine,
+        "envelope_v_two.bundle.json": envelope_v_two,
+        "bundle_v_true.bundle.json": bundle_v_true,
+        "bundle_v_three.bundle.json": bundle_v_three,
+        "anchor_seq_huge.bundle.json": anchor_seq_huge,
+        "anchor_v_huge.bundle.json": anchor_v_huge,
+        "anchor_seq_int_huge.bundle.json": anchor_seq_int_huge,
+        "anchor_int_huge_badsig.bundle.json": anchor_int_huge_badsig,
+        "entry_int_huge.bundle.json": entry_int_huge,
+        "entry_int_huge.jsonl": "".join(json.dumps(e) + "\n" for e in entry_int_huge["entries"]),
+        "versions_mixed.bundle.json": _edited(forged, mixed_versions, envelopes=False),
+        "keys.json": [row],
+        "keys_expired.json": [dict(row, not_after="2000-01-01T00:00:00Z")],
+        "keys_unknown_member.json": [dict(row, notAfter="2000-01-01T00:00:00Z")],
+        "keys_duplicate_kid.json": [row, dict(row)],
+    }
+    # A value of the wrong type is the existing finding, never a crash. An allow scope that is not
+    # a string, against a wildcard, is the containment failure at that allow; an anchor sig that is
+    # not a string is not hex, and a null one reads as an absent one.
+    wildcard = _wildcard_allow()
+    scope_values = {"int": 5, "null": None, "bool": True, "float": 1.5, "list": ["crm.read"],
+                    "object": {"a": 1}}
+    for label, value in scope_values.items():
+        def set_scope(entries, value=value):
+            entries[1]["scope"] = value
+        files[f"scope_{label}.bundle.json"] = _edited(wildcard, set_scope)
+    sig_values = {"null": None, "int": 5, "list": ["ab"]}
+    for label, value in sig_values.items():
+        anchored = copy.deepcopy(forged)
+        anchored["anchor"]["sig"] = value
+        files[f"anchor_sig_{label}.bundle.json"] = anchored
+    # The delegation structure read in ledger order: a widened child whatever its parent says, a
+    # cycle, a node defined twice, a spawn from and an allow on a revoked node, an allow before its
+    # node is defined, and nodes that are not strings. None of these may verify OK.
+    def widen(index, parent):
+        def edit(entries):
+            entries[index]["granted"]["scopes"] = sorted(set(entries[index]["granted"]["scopes"]) | {"admin.delete"})
+            if parent == "DELETE":
+                entries[index].pop("parent")
+            else:
+                entries[index]["parent"] = parent
+        return edit
+
+    def cycle(entries):
+        widened = dict(entries[1]["granted"], scopes=["admin.delete", "crm.read"])
+        entries[1]["parent"], entries[1]["granted"], entries[2]["granted"] = "t:n2", widened, dict(widened)
+        entries[3]["scope"] = "admin.delete"
+
+    def defined_twice(entries):
+        again = dict(entries[1], seq=len(entries), granted=dict(entries[1]["granted"], scopes=["admin.delete", "crm.read"]))
+        reroot = dict(entries[1], node="t:n0", seq=len(entries) + 1)
+        entries += [again, reroot]
+
+    def spawn_after_kill(entries):
+        entries.append(dict(entries[1], node="t:n2", parent="t:n1", seq=len(entries)))
+
+    def allow_after_kill(entries):
+        entries.append(dict(next(e for e in entries if e["event"] == "allow"), seq=len(entries)))
+
+    def allow_before_node(entries):
+        entries[1], entries[2] = entries[2], entries[1]
+        for i, e in enumerate(entries):
+            e["seq"] = i
+
+    def set_node(index, value):
+        def edit(entries):
+            if value == "DELETE":
+                entries[index].pop("node")
+            else:
+                entries[index]["node"] = value
+        return edit
+
+    deny_at = next(i for i, e in enumerate(forged["entries"]) if e["event"] == "deny")
+    structure = {
+        "widened_orphan": _edited(forged, widen(1, "DELETE"), envelopes=False),
+        "widened_parent_list": _edited(forged, widen(1, ["parity:n0"]), envelopes=False),
+        "widened_parent_self": _edited(forged, widen(1, "parity:n1"), envelopes=False),
+        "widened_cycle": _edited(_chain_bundle(3), cycle),
+        "node_defined_twice": _edited(_chain_bundle(2), defined_twice),
+        "spawn_after_kill": _edited(_chain_bundle(2, revoke=True), spawn_after_kill),
+        "allow_after_kill": _edited(_chain_bundle(2, revoke=True), allow_after_kill),
+        "allow_before_node": _edited(_chain_bundle(2), allow_before_node),
+        "root_node_list": _edited(forged, set_node(0, [1]), envelopes=False),
+        "root_node_absent": _edited(forged, set_node(0, "DELETE"), envelopes=False),
+        "deny_node_int": _edited(forged, set_node(deny_at, 5), envelopes=False),
+    }
+    for label, bundle in structure.items():
+        files[f"{label}.bundle.json"] = bundle
+    ungated_guard = Guard.issue("a", Authority({"crm.read"}, [], ttl=600), chain_id="t")
+    ungated_guard.check("crm.read")
+    ungated_guard.record_passthrough("shell.exec")
+    ungated_guard.record_passthrough("admin.delete")
+    files["ungated.bundle.json"] = evidence.export_bundle(ungated_guard.audit_log(),
+                                                          HS256TestSigner(HS256_SECRET, kid=HS256_KID))
+    for name, payload in files.items():
+        write(f"parity/{name}", payload)
+
+    keys = ["--witness-keys", "keys.json"]
+    runs = {
+        "forged_allow": ["verify", "forged_allow.bundle.json", *keys, "--entries"],
+        "bool_seq": ["verify", "bool_seq.bundle.json", "--entries"],
+        "float_seq": ["verify", "float_seq.bundle.json", *keys, "--entries"],
+        "string_seq": ["verify", "string_seq.bundle.json", *keys, "--entries"],
+        "seq_removed": ["verify", "seq_removed.bundle.json", *keys, "--entries"],
+        "seq_null": ["verify", "seq_null.bundle.json", *keys, "--entries"],
+        "duplicate_seq_later_signed": ["verify", "duplicate_seq_later_signed.bundle.json", *keys,
+                                       "--entries"],
+        "bool_seq_signed": ["verify", "bool_seq_signed.bundle.json", *keys, "--entries"],
+        "subject_seq_float": ["verify", "subject_seq_float.bundle.json", *keys, "--entries"],
+        "envelope_v_float": ["verify", "envelope_v_float.bundle.json", *keys, "--entries"],
+        "forged_node_newline": ["verify", "forged_node_newline.bundle.json", *keys],
+        "forged_node_newline_entries": ["verify", "forged_node_newline.bundle.json", *keys, "--entries"],
+        "bool_seq_ledger": ["verify", "bool_seq.jsonl", "--entries"],
+        "float_seq_ledger": ["verify", "float_seq.jsonl", "--entries"],
+        "seq_frac_ledger": ["verify", "seq_frac.jsonl", "--entries"],
+        "seq_two_ledger": ["verify", "seq_two.jsonl", "--entries"],
+        "seq_negzero_ledger": ["verify", "seq_negzero.jsonl", "--entries"],
+        "subject_seq_nine": ["verify", "subject_seq_nine.bundle.json", *keys, "--entries"],
+        "envelope_v_two": ["verify", "envelope_v_two.bundle.json", *keys, "--entries"],
+        "bundle_v_true": ["verify", "bundle_v_true.bundle.json", *keys, "--entries"],
+        "bundle_v_three": ["verify", "bundle_v_three.bundle.json", *keys, "--entries"],
+        "versions_mixed": ["verify", "versions_mixed.bundle.json", "--entries"],
+        "anchor_seq_huge": ["verify", "anchor_seq_huge.bundle.json", *keys, "--hs256-key", HS256_SECRET.hex()],
+        "anchor_v_huge": ["verify", "anchor_v_huge.bundle.json", *keys, "--hs256-key", HS256_SECRET.hex()],
+        "anchor_seq_int_huge": ["verify", "anchor_seq_int_huge.bundle.json", *keys, "--hs256-key",
+                                HS256_SECRET.hex()],
+        "anchor_int_huge_badsig": ["verify", "anchor_int_huge_badsig.bundle.json", *keys, "--hs256-key",
+                                   HS256_SECRET.hex()],
+        "entry_int_huge": ["verify", "entry_int_huge.bundle.json", *keys, "--entries"],
+        "entry_int_huge_keyed": ["verify", "entry_int_huge.bundle.json", *keys, "--hs256-key",
+                                 HS256_SECRET.hex()],
+        "entry_int_huge_ledger": ["verify", "entry_int_huge.jsonl", "--entries"],
+        "expired_row": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_expired.json", "--entries"],
+        "unknown_member_row": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_unknown_member.json"],
+        "duplicate_kid": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_duplicate_kid.json"],
+    }
+    for label in scope_values:
+        runs[f"scope_{label}"] = ["verify", f"scope_{label}.bundle.json", "--entries"]
+    for label in sig_values:
+        runs[f"anchor_sig_{label}"] = ["verify", f"anchor_sig_{label}.bundle.json", *keys, "--hs256-key",
+                                       HS256_SECRET.hex()]
+    for label in structure:
+        runs[label] = ["verify", f"{label}.bundle.json", "--entries"]
+    runs["ungated"] = ["verify", "ungated.bundle.json", "--hs256-key", HS256_SECRET.hex()]
+    runs["ungated_entries"] = ["verify", "ungated.bundle.json", "--hs256-key", HS256_SECRET.hex(), "--entries"]
+    write("parity/cli.json", {name: _python_cli(args, OUT / "parity") for name, args in runs.items()})
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     print(f"writing fixtures to {OUT.relative_to(ROOT)}/")
@@ -555,6 +924,11 @@ def main() -> None:
         write("vectors/envelopes/envelope_vectors_v1.json", envelopes)
     else:
         print("  (installed attenu-guard has no envelope vectors; committed copy left as is)")
+
+    if parity_supported():
+        parity_fixtures()
+    else:
+        print("  (installed attenu-guard predates the --entries verifier; parity/ left as is)")
 
     ok, reason = AuditLog.verify(entries)
     write(

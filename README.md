@@ -206,6 +206,33 @@ the per-entry state, the result and the report line — `witness-signed
 (matched)`, and so on — for every entry, so a reader sees which hops were
 covered before reading which one failed.
 
+`witness-signed` says which key signed, not that the action was allowed. A witness
+signature covers the entry's hash and chain position, plus what the witness-key
+holder observed. It does not attest that the action was permitted. Monotonicity
+and containment answer that, from the ledger: a witness can sign an allow that
+containment rejects, and then the bundle fails. `attenu-guard verify FILE
+--entries` prints one line per entry with its state and the checks that failed
+on it, so the signature and the failure are read side by side. A failure is
+matched to its entry by index, so an entry whose seq is missing or forged still
+shows it. Each line is `key=value` tokens split by single spaces: the key is the
+text before the first `=`, a value never contains a space, and a value that
+starts with `"` is a JSON string.
+
+A trust-set row may carry `not_after`, an RFC 3339 date-time in UTC written with
+`Z`, such as `2026-10-05T00:00:00Z`. A row whose `not_after` is at or before the
+verification time is not trusted, so an envelope naming its kid fails
+`envelope_unknown_witness`, and the message says when the key expired. The
+verification time is `now` in `verifyBundle`'s options, and the current time
+when it is not given. A row is read whole: a member other than `kid`, `alg`,
+`public_key_hex` and `not_after`, or a second row for one kid, is refused. A
+trust file the CLI cannot use is one line naming the file and, for a bad row,
+the kid, with exit code 2.
+
+No value from a bundle can add a line to `attenu-guard verify` output. A value
+printed without quotes prints as it is only when it is printable ASCII with no
+space, `"` or `\`, and as escaped JSON otherwise; a quoted value is escaped the
+way Python's `repr` escapes it. Clean bundles print as they always have.
+
 One entry, at most one envelope. A second envelope naming a `subject.seq` an
 earlier one in the same array already named is `envelope_duplicate_subject` at
 the covered entry, and that entry reports `process-asserted`: two observations

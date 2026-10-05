@@ -52,6 +52,50 @@ function isIntegerLiteralText(raw: string): boolean {
 }
 
 /**
+ * `value` as the integer it is, or `null` when it is not one.
+ *
+ * The rule for every `seq` and `v` this package reads off a ledger, a bundle or an envelope: an
+ * integral number, as the schema's `integer` type defines it (JSON Schema 2020-12,
+ * `schema/agent-audit.schema.json` in the Python distribution). `1.0` is 1 and `-0` is 0, and
+ * RFC 8785 writes both as the integer, so they hash alike. A boolean is not a number here, and
+ * neither is a string, null, or a number that is fractional or not finite. The same rule as the
+ * Python implementation's `audit._integral`.
+ */
+export function integral(value: CJson | undefined): number | null {
+  const n = value instanceof RawNumber ? value.value : value;
+  if (typeof n !== "number" || !Number.isInteger(n)) return null;
+  return n === 0 ? 0 : n;
+}
+
+/**
+ * `value` as a message prints it: the integer when it is integral (`integral`) and inside the
+ * I-JSON safe range, so `1.0` reads 1, and the value unchanged otherwise. Past ±(2^53 - 1) a number
+ * is not exact across implementations, and it keeps the literal it was written with. The same rule
+ * as the Python implementation's `audit._int_or`.
+ */
+export function intOr(value: CJson | undefined): CJson | undefined {
+  const n = integral(value);
+  return n === null || Math.abs(n) > MAX_SAFE_INTEGER ? value : n;
+}
+
+/**
+ * True when `value` holds, anywhere, an integer past ±(2^53 - 1): a number written as an integer
+ * literal that far out, or such an integer with no literal. Those are the numbers the Python
+ * implementation's canonicalizer refuses; a float written past that range is not one of them.
+ */
+export function holdsUnsafeInteger(value: CJson | undefined): boolean {
+  if (value instanceof RawNumber) {
+    if (!isIntegerLiteralText(value.raw)) return false;
+    const n = BigInt(value.raw);
+    return (n < 0n ? -n : n) > MAX_SAFE_INTEGER_BIGINT;
+  }
+  if (typeof value === "number") return Number.isInteger(value) && !Number.isSafeInteger(value);
+  if (Array.isArray(value)) return value.some((item) => holdsUnsafeInteger(item));
+  if (value !== null && typeof value === "object") return Object.values(value).some((item) => holdsUnsafeInteger(item));
+  return false;
+}
+
+/**
  * Check a parsed number's ORIGINAL source text, before the double it parsed
  * into (which may already have silently rounded two different literals to the
  * same value) is used for anything.

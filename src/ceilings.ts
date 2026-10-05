@@ -16,6 +16,7 @@
  */
 
 import { MAX_SAFE_INTEGER, compareCodePoints, pyNumber, toPlain, type CJson, type Json } from "./canonical.js";
+import { escaped, pyRepr, pyStr, shown, shownText } from "./display.js";
 import { Decision, Reason, ReasonCode } from "./reasons.js";
 
 /**
@@ -104,6 +105,48 @@ export function ctxFieldOf(ceiling: Ceiling): string {
 export function describe(ceiling: Ceiling): string {
   if (typeof ceiling.describe === "function") return ceiling.describe();
   return `${ceiling.key}=${JSON.stringify(ceiling.toWire())}`;
+}
+
+/**
+ * A ceiling's key as the wire carried it, which is what a finding names. A ceiling this build does
+ * not define keeps whatever its key was, null included, where its `key` property is text: the
+ * Python implementation prints a null key as `None`.
+ */
+export function wireKeyOf(ceiling: Ceiling): CJson {
+  return ceiling instanceof UnknownCeiling ? (ceiling.raw["key"] ?? null) : ceiling.key;
+}
+
+/**
+ * A ceiling as a verifier finding prints it: `describe`'s text, with every value the bundle supplied
+ * printed through `shown` (display.ts), so the finding stays on one line.
+ *
+ * `describe` itself is left alone, so dashboards and `Authority.describe()` print a region called
+ * "São Paulo" as it is, and for values in the bare set the two agree character for character. A
+ * ceiling this build does not define prints the Python implementation's description of it — its key,
+ * `=`, and the wire object as Python prints a dict — as it is when that is printable ASCII, spaces
+ * included, and as escaped JSON otherwise. Same text as the Python implementation's finding.
+ */
+export function describeInFinding(ceiling: Ceiling): string {
+  // A bound the wire supplied: a number prints as `describe` prints it; anything else is shown.
+  const bound = (v: unknown): string => (typeof v === "number" ? pyNumber(v) : shown(v as CJson));
+  const members = (values: Iterable<Json>): string =>
+    sortByStr(values)
+      .map((v) => shownText(strOf(v), v))
+      .join(", ");
+  // By exact class, as the Python implementation matches by exact type: a subclass of a built-in
+  // describes itself, and is printed the way any other ceiling this build does not define is.
+  const kind = (ceiling as object).constructor;
+  if (kind === RowLimit) return `${shown(ceiling.key)}<=${bound((ceiling as RowLimit).maxRows)}`;
+  if (kind === SpendCap) return `${shown(ceiling.key)}<=${bound((ceiling as SpendCap).maxSpend)}`;
+  if (kind === CallLimit) return `${shown(ceiling.key)}<=${bound((ceiling as CallLimit).maxCalls)}`;
+  if (kind === EgressRank) return `${shown(ceiling.key)}<=${shown((ceiling as EgressRank).level)}`;
+  if (kind === Allow) return `${shown(ceiling.key)} in [${members((ceiling as Allow).oneOf)}]`;
+  if (kind === Deny) return `${shown(ceiling.key)} not in [${members((ceiling as Deny).notOneOf)}]`;
+  if (kind === Prefix) return `${shown(ceiling.key)} startswith ${shown((ceiling as Prefix).prefix)}`;
+  const key = wireKeyOf(ceiling);
+  const text =
+    typeof ceiling.describe === "function" ? ceiling.describe() : `${pyStr(key)}=${pyRepr(ceiling.toWire())}`;
+  return /^[ -~]*$/.test(text) ? text : escaped(text);
 }
 
 /**

@@ -1,0 +1,117 @@
+{
+ "c14n": "JCS",
+ "chain_id": "parity",
+ "entries": [
+  {
+   "agent": "supervisor",
+   "authority": {
+    "constraints": [],
+    "scopes": [
+     "docs.write",
+     "web.search"
+    ],
+    "ttl": null
+   },
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "event": "root",
+   "hash": "6ddea9e8555a362342211cb90ca7adb8d4e7e35ec206c6eb842ecf9b936bb46c",
+   "node": "parity:n0",
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 1,
+   "v": 1
+  },
+  {
+   "agent": "brief-writer",
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "event": "spawn",
+   "granted": {
+    "constraints": [],
+    "scopes": [
+     "admin.delete",
+     "docs.write"
+    ],
+    "ttl": null
+   },
+   "hash": "89191056ed6e26d45e1657107c101d1c91ff840bc536461d10d5256da8d68cb0",
+   "node": "parity:n1",
+   "parent": [
+    "parity:n0"
+   ],
+   "prev_hash": "6ddea9e8555a362342211cb90ca7adb8d4e7e35ec206c6eb842ecf9b936bb46c",
+   "requested": {
+    "constraints": [],
+    "scopes": [
+     "docs.write"
+    ],
+    "ttl": null
+   },
+   "seq": 1,
+   "task": "write the brief",
+   "ts": 2,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "context": {},
+   "event": "allow",
+   "hash": "e21e01f5830b0f96d20669af4fab3b401b3e9bea3f35b760fcc298b04a80c19f",
+   "node": "parity:n1",
+   "prev_hash": "89191056ed6e26d45e1657107c101d1c91ff840bc536461d10d5256da8d68cb0",
+   "scope": "docs.write",
+   "seq": 2,
+   "tool": null,
+   "ts": 3,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "context": {},
+   "disposition": "out_of_authority",
+   "event": "deny",
+   "hash": "1c20efbbba332c54061267ede8e476fac5090385a39d90e354ca8cc934a3b719",
+   "node": "parity:n1",
+   "prev_hash": "e21e01f5830b0f96d20669af4fab3b401b3e9bea3f35b760fcc298b04a80c19f",
+   "reason": "scope_not_granted",
+   "reasons": [
+    {
+     "code": "scope_not_granted",
+     "constraint": null,
+     "limit": null,
+     "message": "scope 'web.search' not covered by held scopes ['docs.write']",
+     "requested": "web.search"
+    }
+   ],
+   "scope": "web.search",
+   "seq": 3,
+   "tool": null,
+   "ts": 4,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "context": {},
+   "event": "allow",
+   "hash": "58c09b6a04c08afc7f81109ab70ae90f5af44a78765b9f21653e6ae6cb932121",
+   "node": "parity:n1",
+   "prev_hash": "1c20efbbba332c54061267ede8e476fac5090385a39d90e354ca8cc934a3b719",
+   "scope": "web.search",
+   "seq": 4,
+   "tool": null,
+   "ts": 5,
+   "v": 1
+  }
+ ],
+ "envelopes": [],
+ "note": "offline-verifiable: attenu_guard.evidence.verify_bundle(bundle, signer)",
+ "redaction": {
+  "ok": true,
+  "violations": []
+ },
+ "v": 1
+}

@@ -1,0 +1,103 @@
+{
+ "c14n": "JCS",
+ "chain_id": "t",
+ "entries": [
+  {
+   "agent": "root",
+   "authority": {
+    "constraints": [],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "c14n": "JCS",
+   "chain_id": "t",
+   "event": "root",
+   "hash": "8689c867101400f40892a94aedc1459b7a08340c728b8eec250b73b9e2f8f791",
+   "node": "t:n0",
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 1,
+   "v": 1
+  },
+  {
+   "agent": "agent0",
+   "c14n": "JCS",
+   "chain_id": "t",
+   "event": "spawn",
+   "granted": {
+    "constraints": [],
+    "scopes": [
+     "admin.delete",
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "hash": "7de7698c062c79c26eaa068079f5e1c6bccb1dc90844bee78f65cc96c0967b16",
+   "node": "t:n1",
+   "parent": "t:n2",
+   "prev_hash": "8689c867101400f40892a94aedc1459b7a08340c728b8eec250b73b9e2f8f791",
+   "requested": {
+    "constraints": [],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "seq": 1,
+   "task": "t",
+   "ts": 2,
+   "v": 1
+  },
+  {
+   "agent": "agent1",
+   "c14n": "JCS",
+   "chain_id": "t",
+   "event": "spawn",
+   "granted": {
+    "constraints": [],
+    "scopes": [
+     "admin.delete",
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "hash": "2fed785b906a9b14b3318b69d3e7af9eefdf4aeb7e84ac5e7f393290a9de8f11",
+   "node": "t:n2",
+   "parent": "t:n1",
+   "prev_hash": "7de7698c062c79c26eaa068079f5e1c6bccb1dc90844bee78f65cc96c0967b16",
+   "requested": {
+    "constraints": [],
+    "scopes": [
+     "crm.read"
+    ],
+    "ttl": 600
+   },
+   "seq": 2,
+   "task": "t",
+   "ts": 3,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "t",
+   "context": {},
+   "event": "allow",
+   "hash": "eb3f69e8b57f4ea42b9e0add9671dd36083e8f267c2ae50447f9ed2ce2cc6fcb",
+   "node": "t:n2",
+   "prev_hash": "2fed785b906a9b14b3318b69d3e7af9eefdf4aeb7e84ac5e7f393290a9de8f11",
+   "scope": "admin.delete",
+   "seq": 3,
+   "tool": null,
+   "ts": 4,
+   "v": 1
+  }
+ ],
+ "note": "offline-verifiable: attenu_guard.evidence.verify_bundle(bundle, signer)",
+ "redaction": {
+  "ok": true,
+  "violations": []
+ },
+ "v": 1
+}

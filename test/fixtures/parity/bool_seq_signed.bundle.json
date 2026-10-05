@@ -1,0 +1,136 @@
+{
+ "c14n": "JCS",
+ "chain_id": "parity",
+ "entries": [
+  {
+   "agent": "supervisor",
+   "authority": {
+    "constraints": [],
+    "scopes": [
+     "docs.write",
+     "web.search"
+    ],
+    "ttl": null
+   },
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "event": "root",
+   "hash": "6ddea9e8555a362342211cb90ca7adb8d4e7e35ec206c6eb842ecf9b936bb46c",
+   "node": "parity:n0",
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "seq": 0,
+   "ts": 1,
+   "v": 1
+  },
+  {
+   "agent": "brief-writer",
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "event": "spawn",
+   "granted": {
+    "constraints": [],
+    "scopes": [
+     "docs.write"
+    ],
+    "ttl": null
+   },
+   "hash": "4c86d9bc7a8cb9c4bb2908859fd11534f459e51c981cb4a11ab4f3beb28e41b5",
+   "node": "parity:n1",
+   "parent": "parity:n0",
+   "prev_hash": "6ddea9e8555a362342211cb90ca7adb8d4e7e35ec206c6eb842ecf9b936bb46c",
+   "requested": {
+    "constraints": [],
+    "scopes": [
+     "docs.write"
+    ],
+    "ttl": null
+   },
+   "seq": true,
+   "task": "write the brief",
+   "ts": 2,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "context": {},
+   "event": "allow",
+   "hash": "9ac20789bae47880b75edaf897a9c5cd1894338dc92d0772c85c65cb53ceaa2b",
+   "node": "parity:n1",
+   "prev_hash": "4c86d9bc7a8cb9c4bb2908859fd11534f459e51c981cb4a11ab4f3beb28e41b5",
+   "scope": "docs.write",
+   "seq": 2,
+   "tool": null,
+   "ts": 3,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "context": {},
+   "disposition": "out_of_authority",
+   "event": "deny",
+   "hash": "87756e8b94fc632f53cc4081d73ddb3d986906f072732414ed57f5823918caa8",
+   "node": "parity:n1",
+   "prev_hash": "9ac20789bae47880b75edaf897a9c5cd1894338dc92d0772c85c65cb53ceaa2b",
+   "reason": "scope_not_granted",
+   "reasons": [
+    {
+     "code": "scope_not_granted",
+     "constraint": null,
+     "limit": null,
+     "message": "scope 'web.search' not covered by held scopes ['docs.write']",
+     "requested": "web.search"
+    }
+   ],
+   "scope": "web.search",
+   "seq": 3,
+   "tool": null,
+   "ts": 4,
+   "v": 1
+  },
+  {
+   "c14n": "JCS",
+   "chain_id": "parity",
+   "context": {},
+   "event": "allow",
+   "hash": "998fb760b13678afdbd74a1dd0366e8e33503ab893c61dfc142f2ff81b1c731f",
+   "node": "parity:n1",
+   "prev_hash": "87756e8b94fc632f53cc4081d73ddb3d986906f072732414ed57f5823918caa8",
+   "scope": "web.search",
+   "seq": 4,
+   "tool": null,
+   "ts": 5,
+   "v": 1
+  }
+ ],
+ "envelopes": [
+  {
+   "observed": {
+    "at": "2026-10-05T00:00:00Z",
+    "method": "signed by hand",
+    "result": "matched"
+   },
+   "sig": "72eaa5f36a2510bd5077f09d84cedceb1e172083fba558bfbe5ac37c763f35d2b2a04b1d9e7fde145f00d019cd04e3dd4d13697cbfedb45637e099a64bd62000",
+   "subject": {
+    "chain_id": "parity",
+    "entry_hash": "4c86d9bc7a8cb9c4bb2908859fd11534f459e51c981cb4a11ab4f3beb28e41b5",
+    "event": "spawn",
+    "node": "parity:n1",
+    "seq": 1
+   },
+   "typ": "delegation-event-observation",
+   "v": 1,
+   "witness": {
+    "alg": "EdDSA",
+    "kid": "witness-parity"
+   }
+  }
+ ],
+ "note": "offline-verifiable: attenu_guard.evidence.verify_bundle(bundle, signer)",
+ "redaction": {
+  "ok": true,
+  "violations": []
+ },
+ "v": 1
+}

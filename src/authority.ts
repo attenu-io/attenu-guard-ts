@@ -21,6 +21,7 @@
  */
 
 import { compareCodePoints, sortedStrings, toPlain, type CJson, type Json } from "./canonical.js";
+import { pyRepr, pyStrRepr } from "./display.js";
 import {
   ceilingFromWire,
   describe as describeCeiling,
@@ -95,10 +96,13 @@ function ceilingFromWireWhole(c: CJson): Ceiling {
     // cannot see because the member set is unchanged. Checked on its own rather
     // than by returning to whole-value equality, which broke conformant tokens a
     // revision ago.
+    // The values in these messages are the bundle's, and the messages reach `attenu-guard verify`
+    // output inside "unreadable authority (...)". So they print through Python's `repr`, as the
+    // Python port prints them: quoted, every non-printable character escaped, one line.
     if (emitted["key"] !== input["key"]) {
       throw new AuthorityError(
-        `constraint ${JSON.stringify(input)} names dimension ${JSON.stringify(input["key"])} ` +
-          `but this build reads it as ${JSON.stringify(emitted["key"])}; refusing rather ` +
+        `constraint ${pyRepr(input)} names dimension ${pyRepr(input["key"] ?? null)} ` +
+          `but this build reads it as ${pyRepr(emitted["key"] ?? null)}; refusing rather ` +
           "than silently changing which dimension is bounded",
         "malformed_constraint",
       );
@@ -114,11 +118,11 @@ function ceilingFromWireWhole(c: CJson): Ceiling {
       // (which never read `field` at all) and unconditionally for a custom
       // ceiling deriving `ctxField` from its own input.
       .filter((k) => !(k === "field" && (ceiling as { field?: unknown }).field === input["field"]))
-      .sort();
+      .sort(compareCodePoints);
     if (dropped.length > 0) {
       throw new AuthorityError(
-        `constraint ${JSON.stringify(input)} carries members this build does not ` +
-          `evaluate and will not ignore: ${dropped.join(", ")}`,
+        `constraint ${pyRepr(input)} carries members this build does not ` +
+          `evaluate and will not ignore: ${dropped.map(pyStrRepr).join(", ")}`,
         "malformed_constraint",
       );
     }
@@ -148,7 +152,7 @@ const SCOPE_RE = /^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*\.(?:[a-z][a-z0-9_-]*|
 function validateScope(scope: unknown): asserts scope is string {
   if (typeof scope !== "string" || !SCOPE_RE.test(scope)) {
     throw new TypeError(
-      `invalid scope ${JSON.stringify(scope)}: expected lowercase dot-separated segments; ` +
+      `invalid scope ${pyRepr((scope ?? null) as CJson)}: expected lowercase dot-separated segments; ` +
         "'*' is permitted only as the complete final segment after a dot",
     );
   }
@@ -355,11 +359,13 @@ export class Authority {
     // entry's TOP-LEVEL keys. Kept in step with the Python port.
     const unknownAuthorityMembers = Object.keys(d)
       .filter((k) => k !== "scopes" && k !== "constraints" && k !== "ttl")
-      .sort();
+      .sort(compareCodePoints);
     if (unknownAuthorityMembers.length > 0) {
+      // Through Python's `repr`, as the Python port prints it: this message reaches
+      // `attenu-guard verify` output, and a member name is the bundle's.
       throw new AuthorityError(
-        `authority ${JSON.stringify(d)} carries members this build does not evaluate ` +
-          `and will not ignore: ${unknownAuthorityMembers.join(", ")}`,
+        `authority ${pyRepr(d)} carries members this build does not evaluate ` +
+          `and will not ignore: ${unknownAuthorityMembers.map(pyStrRepr).join(", ")}`,
         "malformed_authority",
       );
     }

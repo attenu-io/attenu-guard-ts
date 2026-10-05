@@ -18,10 +18,14 @@ import { dirname } from "node:path";
 import {
   canonicalBytes,
   canonicalJson,
+  holdsUnsafeInteger,
+  intOr,
+  integral,
   parseJson,
   toPlain,
   type CJson,
 } from "./canonical.js";
+import { shown } from "./display.js";
 import type { Decision } from "./reasons.js";
 import type { Signer } from "./wire.js";
 
@@ -237,23 +241,39 @@ export class AuditLog {
     for (const [key, value] of Object.entries(a)) {
       if (key !== "kid" && key !== "sig" && key !== "verified") body[key] = value;
     }
+    // An integer past ±(2^53 - 1) has no RFC 8785 form, so no signer produced this anchor and its
+    // signature does not verify, whatever `sig` holds. The Python implementation's canonicalizer
+    // refuses one before the signature is read; this is the same order, so the same anchor gets
+    // the same line.
+    if (holdsUnsafeInteger(body)) return [false, "anchor signature invalid"];
     const sigHex = (toPlain(a["sig"]) as string) ?? "";
     if (typeof sigHex !== "string" || !/^(?:[0-9a-fA-F]{2})*$/.test(sigHex)) {
       return [false, "anchor signature not hex"];
     }
     const sig = Buffer.from(sigHex, "hex");
     const kid = toPlain(a["kid"]) as string | null;
-    if (!signer.verify(canonicalBytes(body), sig, kid)) {
+    let signingInput: Buffer;
+    try {
+      signingInput = canonicalBytes(body);
+    } catch {
+      // A member JCS cannot represent here, such as a float past ±(2^53 - 1) in `seq` or `v`, leaves
+      // no signing input to check the signature over, so the signature does not verify. Reported,
+      // never thrown: a bundle is attacker-supplied. The Python implementation, which can write
+      // such a float, reports the same anchor the same way, its signature failing to verify.
+      return [false, "anchor signature invalid"];
+    }
+    if (!signer.verify(signingInput, sig, kid)) {
       return [false, "anchor signature invalid"];
     }
     const [ok, err] = AuditLog.verify(entries);
     if (!ok) return [false, err];
-    if (entries.length === 0) return [asNumber(a["seq"]) === -1, null];
+    if (entries.length === 0) return [integral(a["seq"]) === -1, null];
     if (toPlain(a["chain_id"]) !== firstChainId(entries)) {
       return [false, "anchor chain_id does not match the ledger entries"];
     }
     const last = entries[entries.length - 1]!;
-    if (last["hash"] !== toPlain(a["head"]) || asNumber(last["seq"]) !== asNumber(a["seq"])) {
+    // The anchor's seq is read by the seq rule (`integral`): `1.0` is 1, and `true` is not.
+    if (last["hash"] !== toPlain(a["head"]) || integral(last["seq"]) !== integral(a["seq"])) {
       return [false, "anchor head does not match the ledger head (ledger rewritten?)"];
     }
     return [true, null];
@@ -264,16 +284,34 @@ export class AuditLog {
     let prev = GENESIS;
     let expectedSeq = 0;
     for (const e of entries) {
-      const seq = asNumber(e["seq"]);
-      if (seq !== expectedSeq) {
-        return [false, `seq gap at ${expectedSeq} (got ${formatSeq(e["seq"])})`];
+      // An integral number and never a boolean (`integral`), as the schema's integer type
+      // defines: `1.0` is 1, and RFC 8785 writes it as 1, so it hashes as 1. A chain re-hashed
+      // around `"seq": true` or `"seq": 1.5` at index 1 is a seq gap there, as it is to the Python
+      // implementation.
+      if (integral(e["seq"]) !== expectedSeq) {
+        // `seq` is the entry's own value, which a forged ledger chooses: printed by the one rule
+        // (display.ts `shown`) so it cannot end the reader's line and start another, and an
+        // integral one as its integer.
+        return [false, `seq gap at ${expectedSeq} (got ${shown(intOr(e["seq"]))})`];
       }
       const stored = e["hash"];
       const payload = withoutHash(e);
       if (toPlain(payload["prev_hash"]) !== prev) {
         return [false, `prev_hash mismatch at seq ${expectedSeq}`];
       }
-      if (hashEntry(prev, payload) !== stored) {
+      let reproduced: boolean;
+      try {
+        reproduced = hashEntry(prev, payload) === stored;
+      } catch {
+        // A member JCS cannot represent here, such as a number past ±(2^53 - 1), leaves no hash to
+        // reproduce the recorded one with: the existing integrity failure at this entry, reported
+        // and never thrown, since a ledger is attacker-supplied. The Python implementation reports
+        // an integer past that range the same way. A float past it hashes there, so a chain carrying
+        // `1e300` verifies in Python and fails here: this JCS refuses an integral number past that
+        // range, where RFC 8785 serializes any finite double.
+        reproduced = false;
+      }
+      if (!reproduced) {
         return [false, `hash mismatch at seq ${expectedSeq}`];
       }
       prev = stored as string;
@@ -294,11 +332,6 @@ export class AuditLog {
       .filter((line) => line.trim() !== "")
       .map((line) => parseJson(line) as LedgerEntry);
   }
-}
-
-function formatSeq(value: CJson | undefined): string {
-  const plain = toPlain(value);
-  return plain === undefined || plain === null ? "None" : String(plain);
 }
 
 /** The first `chain_id` any entry carries, or `"chain"`. */
