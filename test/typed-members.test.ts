@@ -15,8 +15,8 @@ import { AuditLog } from "../src/audit.js";
 import { Authority } from "../src/authority.js";
 import { canonicalBytes, canonicalJson, parseJson, type Json } from "../src/canonical.js";
 import {
-  Allow, CallLimit, Deny, EgressRank, Prefix, RowLimit, SpendCap, ceilingFromWire, describe, describeInFinding,
-  type Ceiling,
+  Allow, CallLimit, Deny, EgressRank, Prefix, RowLimit, SpendCap, UnknownCeiling, ceilingFromWire, describe,
+  describeInFinding, type Ceiling,
 } from "../src/ceilings.js";
 import { exportBundle, verifyBundle } from "../src/evidence.js";
 import { Guard } from "../src/guard.js";
@@ -494,6 +494,53 @@ test("a key that is not a string is malformed on every constraint type", () => {
     assert.equal(err.message, "invalid authorization_details: key of a constraint is a number, not a string");
     return true;
   });
+});
+
+test("a type that is not a string is malformed, and never routed by key", () => {
+  // The Python implementation loaded null or a number as an unknown constraint and raised on a list
+  // or an object; this build read a null type as absent and routed the constraint by its key, so
+  // {"key": "allow", "type": null, ...} loaded as an allow-list.
+  const kinds: [Json, string][] = [
+    [null, "null"], [5, "a number"], [true, "a boolean"], [["allow"], "an array"], [{ a: 1 }, "an object"],
+  ];
+  for (const [value, kind] of kinds) {
+    for (const wire of [{ key: "max_rows", type: value, max: 5 }, { key: "allow", type: value, one_of: ["us"] },
+      { key: "region", type: value, v: 1 }] as Record<string, Json>[]) {
+      assert.throws(() => ceilingFromWire(wire),
+        { name: "TypeError", message: `type of constraint ${pyRepr(wire["key"]!)} is ${kind}, not a string` });
+    }
+  }
+  // The key is read first, and a type that is a string routes as before.
+  assert.throws(() => ceilingFromWire({ type: null }), { name: "TypeError", message: "key of a constraint is absent, not a string" });
+  assert.ok(ceilingFromWire({ key: "region", type: "x-custom" }) instanceof UnknownCeiling);
+  assert.ok(ceilingFromWire({ key: "max_rows", max: 5 }) instanceof RowLimit);
+  assert.throws(() => load([rootToken({ key: "allow", type: null, one_of: ["us"] })], hs256), (err: unknown) => {
+    assert.ok(err instanceof WireError);
+    assert.equal(err.reason, WireReasonCode.MALFORMED);
+    assert.equal(err.message, "invalid authorization_details: type of constraint 'allow' is null, not a string");
+    return true;
+  });
+});
+
+test("a constraint that is not an object is malformed", () => {
+  // This build loaded every such value but null as an unknown constraint, and threw on null in
+  // JavaScript's words; the Python implementation raised AttributeError in its own.
+  const kinds: [Json, string][] = [
+    ["max_rows", "a string"], [5, "a number"], [1.5, "a number"], [null, "null"], [true, "a boolean"],
+    [["max_rows"], "an array"], [[], "an array"],
+  ];
+  for (const [value, kind] of kinds) {
+    const message = `a constraint is ${kind}, not an object`;
+    assert.throws(() => ceilingFromWire(value), { name: "TypeError", message });
+    assert.throws(() => Authority.fromWire({ scopes: ["crm.read"], constraints: [value], ttl: 60 }), { name: "TypeError", message });
+    assert.equal(unreadableBundle(value as any).failures[0], `root typed:n0: unreadable authority (${message})`);
+    assert.throws(() => load([rootToken(value as any)], hs256), (err: unknown) => {
+      assert.ok(err instanceof WireError);
+      assert.equal(err.reason, WireReasonCode.MALFORMED);
+      assert.equal(err.message, `invalid authorization_details: ${message}`);
+      return true;
+    });
+  }
 });
 
 test("an applies_to that is not a scope is malformed", () => {

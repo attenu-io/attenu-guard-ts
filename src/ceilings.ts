@@ -860,11 +860,23 @@ export class UnknownCeiling implements Ceiling {
  * Reconstruct a Ceiling from its wire form. Routes on "type" when present (it
  * disambiguates the generic ceilings), else on "key". An unrecognised
  * discriminator fails closed via `UnknownCeiling`.
+ *
+ * A constraint is a JSON object with a string `key`, and a `type` that, when present, is a string;
+ * anything else is malformed (attenu-ops#110), in the Python implementation's words too: `a
+ * constraint is a string, not an object`, `type of constraint 'max_rows' is null, not a string`.
+ * A constraint that is not an object loaded as an unknown constraint here, null aside, and a null
+ * `type` was read as absent, so the constraint was routed by its key: `{"key": "allow", "type":
+ * null, ...}` loaded as an allow-list, where the Python implementation loaded an unknown constraint.
  */
 export function ceilingFromWire(wire: CJson): Ceiling {
   const d = toPlain<Record<string, Json>>(wire);
+  if (d === null || typeof d !== "object" || Array.isArray(d)) {
+    throw new TypeError(`a constraint is ${jsonKind(d)}, not an object`);
+  }
   checkKey(d["key"]);
-  const discriminator = d["type"] ?? d["key"];
+  const type = d["type"];
+  if (type !== undefined && typeof type !== "string") throw malformed(d["key"], "type", type, "a string");
+  const discriminator = type ?? d["key"];
   const cls = typeof discriminator === "string" ? REGISTRY.get(discriminator) : undefined;
   if (cls === undefined) return UnknownCeiling.fromWire(d);
   return cls.fromWire(d);
