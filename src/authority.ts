@@ -233,8 +233,14 @@ export class Authority {
 
   /**
    * The greatest authority within BOTH `this` and `other` — the attenuation.
-   * This is the only way a child authority is constructed. It is commutative
-   * and can only ever shrink relative to either input.
+   * This is the only way a child authority is constructed, with `this` the
+   * parent and `other` the request. It is commutative and can only ever shrink
+   * relative to either input, except in one case, by design (attenu-ops#110):
+   * a constraint this build does not define on the parent's side passes down,
+   * so the child inherits it, and it denies every action; one in the request
+   * under a parent's ceiling of another type is refused with an AuthorityError
+   * (reason `not_narrower`), as two different ceiling types under one key are.
+   * So `parent.meet(request)` and `request.meet(parent)` differ there.
    */
   meet(other: Authority): Authority {
     // Scopes: keep a requested scope only if this side covers it, and keep this

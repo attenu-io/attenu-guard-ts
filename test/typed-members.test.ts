@@ -747,6 +747,33 @@ test("a constraint member named like an Object.prototype member is one this buil
   });
 });
 
+test("the members of an allow-list or a deny-list cannot change", () => {
+  // The wire order is computed once per member set. Through a cast, a caller could still add to the
+  // Set after the first toWire(), so permits() refused or admitted what the wire did not list, and a
+  // token or a ledger carried the old members. The Python implementation's members have no mutators.
+  const deny = new Deny("tool", ["rm"]);
+  const auth = new Authority({ scopes: ["shell.run"], ceilings: [deny] });
+  const wire = canonicalJson(auth.toWire());
+  const members = deny.notOneOf as Set<Json>;
+  for (const mutate of [() => members.add("curl"), () => members.delete("rm"), () => members.clear(),
+    () => Set.prototype.add.call(members, "curl")]) {
+    assert.throws(mutate, TypeError);
+  }
+  assert.equal(canonicalJson(auth.toWire()), wire);
+  assert.equal(auth.permits("shell.run", { tool: "curl" }).allowed, true);
+  assert.equal(auth.permits("shell.run", { tool: "rm" }).allowed, false);
+  const allow = new Allow("region", ["us"]);
+  allow.toWire();
+  assert.throws(() => (allow.oneOf as Set<Json>).add("eu"), TypeError);
+  assert.equal(allow.permits({ region: "eu" }).allowed, false);
+  assert.deepEqual(allow.toWire()["one_of"], ["us"]);
+  // Read-only access works as on a Set.
+  assert.equal(allow.oneOf.size, 1);
+  assert.equal(allow.oneOf.has("us"), true);
+  assert.deepEqual([...allow.oneOf], ["us"]);
+  assert.deepEqual([...deny.notOneOf.values()], ["rm"]);
+});
+
 test("the wire order is computed once, and every caller gets its own list", () => {
   const c = new Allow("t", ["b", "a", 1, "1"]);
   const first = c.toWire()["one_of"] as Json[];

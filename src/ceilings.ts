@@ -338,9 +338,64 @@ function sortByStr(values: Iterable<Json>): Json[] {
 }
 
 /**
+ * The members of an `Allow` or a `Deny`: a set that cannot change once built, as the Python
+ * implementation's member set has no mutators. `add`, `delete` and `clear` throw a TypeError, and the
+ * members live in a private Set no Set method can reach, so the wire order computed once
+ * (`inWireOrder`) cannot go stale: a plain Set a caller could still add to let `permits()` decide by
+ * members the wire did not list (attenu-ops#110).
+ */
+class Members implements ReadonlySet<Json> {
+  readonly #values: Set<Json>;
+
+  constructor(values: Iterable<Json>) {
+    this.#values = new Set(values);
+  }
+
+  get size(): number {
+    return this.#values.size;
+  }
+
+  has(value: Json): boolean {
+    return this.#values.has(value);
+  }
+
+  forEach(callback: (value: Json, key: Json, set: ReadonlySet<Json>) => void, thisArg?: unknown): void {
+    this.#values.forEach((value) => callback.call(thisArg, value, value, this));
+  }
+
+  entries() {
+    return this.#values.entries();
+  }
+
+  keys() {
+    return this.#values.keys();
+  }
+
+  values() {
+    return this.#values.values();
+  }
+
+  [Symbol.iterator]() {
+    return this.#values.values();
+  }
+
+  add(_value: Json): never {
+    throw new TypeError("the members of an allow-list or a deny-list are read-only");
+  }
+
+  delete(_value: Json): never {
+    throw new TypeError("the members of an allow-list or a deny-list are read-only");
+  }
+
+  clear(): never {
+    throw new TypeError("the members of an allow-list or a deny-list are read-only");
+  }
+}
+
+/**
  * The wire order (`sortByStr`) of an `Allow`'s or a `Deny`'s members, computed once per member set: a
- * denial, `toWire()` and `describe()` each sorted the whole set again. The members are read-only, as
- * the `ReadonlySet` type says; each caller gets its own copy of the order.
+ * denial, `toWire()` and `describe()` each sorted the whole set again. The members cannot change
+ * (`Members`); each caller gets its own copy of the order.
  */
 const wireOrders = new WeakMap<ReadonlySet<Json>, readonly Json[]>();
 
@@ -611,7 +666,7 @@ export class Allow implements Ceiling {
     readonly field: string | null = null,
   ) {
     checkKey(key);
-    this.oneOf = new Set(memberList(key, "one_of", oneOf));
+    this.oneOf = new Members(memberList(key, "one_of", oneOf));
     checkString(key, "field", field, true);
   }
 
@@ -673,7 +728,7 @@ export class Deny implements Ceiling {
     readonly field: string | null = null,
   ) {
     checkKey(key);
-    this.notOneOf = new Set(memberList(key, "not_one_of", notOneOf));
+    this.notOneOf = new Members(memberList(key, "not_one_of", notOneOf));
     checkString(key, "field", field, true);
   }
 
