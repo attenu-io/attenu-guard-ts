@@ -15,8 +15,10 @@
  * silently dropped.
  */
 
-import { MAX_SAFE_INTEGER, canonicalJson, compareCodePoints, pyNumber, toPlain, type CJson, type Json } from "./canonical.js";
-import { escaped, pyRepr, pyStr, shown, shownText } from "./display.js";
+import {
+  MAX_SAFE_INTEGER, RawNumber, canonicalJson, compareCodePoints, pyNumber, toPlain, type CJson, type Json,
+} from "./canonical.js";
+import { escaped, pyRepr, pyStr, pyStrRepr, shown, shownText } from "./display.js";
 import { Decision, Reason, ReasonCode } from "./reasons.js";
 
 /**
@@ -105,17 +107,23 @@ const SCALAR = ["a string", "a number", "a boolean"];
 
 /**
  * `value`'s JSON type as a refusal names it: null, a boolean, a number, a string, an array or an
- * object, or "a value that is not JSON" for anything else passed in-process (a bigint). The Python
- * implementation names the same values the same way.
+ * object, or "a value that is not JSON" for anything else passed in-process (a bigint). A number
+ * this library's `parseJson` read, a `RawNumber`, is a number. The Python implementation names the
+ * same values the same way.
  */
 function jsonKind(value: unknown): string {
   if (value === null) return "null";
   if (typeof value === "boolean") return "a boolean";
-  if (typeof value === "number") return "a number";
+  if (typeof value === "number" || value instanceof RawNumber) return "a number";
   if (typeof value === "string") return "a string";
   if (Array.isArray(value)) return "an array";
   if (typeof value === "object") return "an object";
   return "a value that is not JSON";
+}
+
+/** `value`, or the number it holds when `parseJson` read it as a `RawNumber`. */
+function plain(value: unknown): unknown {
+  return value instanceof RawNumber ? value.value : value;
 }
 
 /**
@@ -222,17 +230,22 @@ export function wireKeyOf(ceiling: Ceiling): CJson {
  * printed through `shown` (display.ts), so the finding stays on one line.
  *
  * `describe` itself is left alone, so dashboards and `Authority.describe()` print a region called
- * "São Paulo" as it is, and for values in the bare set the two agree character for character. A
- * ceiling this build does not define prints the Python implementation's description of it — its key,
- * `=`, and the wire object as Python prints a dict — as it is when that is printable ASCII, spaces
- * included, and as escaped JSON otherwise. Same text as the Python implementation's finding.
+ * "São Paulo" as it is, and for values in the bare set the two agree character for character, except
+ * that an allow-list's or a deny-list's string members are printed through Python's repr, quoted, so
+ * the string "1" and the number 1 read differently. A ceiling this build does not define prints the
+ * Python implementation's description of it — its key, `=`, and the wire object as Python prints a
+ * dict — as it is when that is printable ASCII, spaces included, and as escaped JSON otherwise. Same
+ * text as the Python implementation's finding.
  */
 export function describeInFinding(ceiling: Ceiling): string {
   // A bound the wire supplied: a number prints as `describe` prints it; anything else is shown.
   const bound = (v: unknown): string => (typeof v === "number" ? pyNumber(v) : shown(v as CJson));
+  // The typed members in wire order, as `describe` lists them, except that a string member is printed
+  // through Python's repr, quoted and escaped, so a finding tells the string "1" from the number 1
+  // (attenu-ops#110). Every other member's text is bare.
   const members = (values: Iterable<Json>): string =>
     sortByStr(values)
-      .map((v) => shownText(strOf(v), v))
+      .map((v) => (typeof v === "string" ? pyStrRepr(v) : shownText(strOf(v), v)))
       .join(", ");
   // By exact class, as the Python implementation matches by exact type: a subclass of a built-in
   // describes itself, and is printed the way any other ceiling this build does not define is.
@@ -282,14 +295,14 @@ function notAnArray(values: unknown): string | null {
 }
 
 /**
- * `values` as the members of an `Allow` or a `Deny`. Throws a TypeError naming the list and the
- * key when `values` is not a list of members (`notAnArray`); the Python implementation raises
- * ValueError with the same text.
+ * `values` as the members of an `Allow` or a `Deny`, a number `parseJson` read as the number it
+ * holds. Throws a TypeError naming the list and the key when `values` is not a list of members
+ * (`notAnArray`); the Python implementation raises ValueError with the same text.
  */
-function memberList(key: string, listName: string, values: unknown): Iterable<Json> {
+function memberList(key: string, listName: string, values: unknown): Json[] {
   const kind = notAnArray(values);
   if (kind !== null) throw new TypeError(`${listName} of constraint ${pyRepr(key)} is ${kind}, not an array`);
-  return values as Iterable<Json>;
+  return Array.from(values as Iterable<unknown>, (v) => plain(v) as Json);
 }
 
 /**
@@ -301,8 +314,26 @@ export function ownValue(ctx: Context, field: string): Json | undefined {
   return Object.prototype.hasOwnProperty.call(ctx, field) ? ctx[field] : undefined;
 }
 
+/**
+ * Where two members print alike ("1" and 1), JSON type decides their order: null, boolean, number,
+ * string, then anything else.
+ */
+function kindRank(value: Json): number {
+  if (value === null) return 0;
+  if (typeof value === "boolean") return 1;
+  if (typeof value === "number") return 2;
+  if (typeof value === "string") return 3;
+  return 4;
+}
+
+/**
+ * `values` as the wire form, a denial's `limit` and `describe()` list them: sorted by `strOf`, then
+ * by JSON type (`kindRank`). That is a total order on distinct members, so an equal member set
+ * re-emits the same bytes whatever order it arrived in, in both implementations; ties used to keep
+ * their arrival order.
+ */
 function sortByStr(values: Iterable<Json>): Json[] {
-  return Array.from(values).sort((a, b) => compareCodePoints(strOf(a), strOf(b)));
+  return Array.from(values).sort((a, b) => compareCodePoints(strOf(a), strOf(b)) || kindRank(a) - kindRank(b));
 }
 
 function strOf(value: Json): string {
@@ -322,16 +353,18 @@ function strOf(value: Json): string {
 export class RowLimit implements Ceiling {
   readonly key = "max_rows";
   readonly ctxField = "rows";
-  constructor(readonly maxRows: number) {
+  readonly maxRows: number;
+  constructor(maxRows: number) {
     checkMax("max_rows", maxRows);
-    validateSafeNumber("max_rows", maxRows);
+    this.maxRows = plain(maxRows) as number;
+    validateSafeNumber("max_rows", this.maxRows);
   }
 
   permits(ctx: Context): Decision {
     const n = ownValue(ctx, "rows");
     if (n === undefined || n === null) return Decision.allow();
     const kind = wrongKind(n, NUMBER);
-    if (kind === null && (n as number) <= this.maxRows) return Decision.allow();
+    if (kind === null && (plain(n) as number) <= this.maxRows) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
@@ -367,16 +400,18 @@ export class RowLimit implements Ceiling {
 export class SpendCap implements Ceiling {
   readonly key = "max_spend";
   readonly ctxField = "spend";
-  constructor(readonly maxSpend: number) {
+  readonly maxSpend: number;
+  constructor(maxSpend: number) {
     checkMax("max_spend", maxSpend);
-    validateSafeNumber("max_spend", maxSpend);
+    this.maxSpend = plain(maxSpend) as number;
+    validateSafeNumber("max_spend", this.maxSpend);
   }
 
   permits(ctx: Context): Decision {
     const n = ownValue(ctx, "spend");
     if (n === undefined || n === null) return Decision.allow();
     const kind = wrongKind(n, NUMBER);
-    if (kind === null && (n as number) <= this.maxSpend) return Decision.allow();
+    if (kind === null && (plain(n) as number) <= this.maxSpend) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
@@ -423,9 +458,10 @@ export class SpendCap implements Ceiling {
 export class CallLimit implements Ceiling {
   readonly key: string;
   readonly ctxField: string;
+  readonly maxCalls: number;
 
   constructor(
-    readonly maxCalls: number,
+    maxCalls: number,
     readonly appliesTo: string | null = null,
   ) {
     checkString("max_calls", "applies_to", appliesTo, true);
@@ -436,7 +472,8 @@ export class CallLimit implements Ceiling {
     }
     this.key = appliesTo ? `max_calls[${appliesTo}]` : "max_calls";
     checkMax(this.key, maxCalls);
-    validateSafeNumber("max_calls", maxCalls);
+    this.maxCalls = plain(maxCalls) as number;
+    validateSafeNumber("max_calls", this.maxCalls);
     this.ctxField = appliesTo ? `calls[${appliesTo}]` : "calls";
   }
 
@@ -456,7 +493,7 @@ export class CallLimit implements Ceiling {
     const n = ownValue(ctx, this.ctxField);
     if (n === undefined || n === null) return Decision.allow();
     const kind = wrongKind(n, NUMBER);
-    if (kind === null && (n as number) <= this.maxCalls) return Decision.allow();
+    if (kind === null && (plain(n) as number) <= this.maxCalls) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
@@ -569,7 +606,7 @@ export class Allow implements Ceiling {
     const val = ownValue(ctx, this.ctxKey());
     if (val === undefined || val === null) return Decision.allow();
     const kind = wrongKind(val, SCALAR);
-    if (kind === null && this.oneOf.has(val)) return Decision.allow();
+    if (kind === null && this.oneOf.has(plain(val) as Json)) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
@@ -631,7 +668,7 @@ export class Deny implements Ceiling {
     const val = ownValue(ctx, this.ctxKey());
     if (val === undefined || val === null) return Decision.allow();
     const kind = wrongKind(val, SCALAR);
-    if (kind === null && !this.notOneOf.has(val)) return Decision.allow();
+    if (kind === null && !this.notOneOf.has(plain(val) as Json)) return Decision.allow();
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,

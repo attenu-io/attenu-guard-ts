@@ -27,22 +27,27 @@ test("describe() is unchanged outside a finding", () => {
 });
 
 test("a finding prints a built-in ceiling as describe() does for bare values", () => {
+  // An allow-list or a deny-list differs in one way: a finding quotes its string members.
   for (const ceiling of [
     new RowLimit(100),
     new SpendCap(2.5),
     new CallLimit(3),
     new CallLimit(3, "fs.write"),
     new EgressRank("internal"),
-    new Allow("region", ["us", "eu"]),
-    new Deny("tool", ["shell", "rm"]),
     new Prefix("path", "data/"),
   ]) {
     assert.equal(describeInFinding(ceiling), describe(ceiling), describe(ceiling));
   }
+  assert.equal(describeInFinding(new Allow("region", ["us", "eu"])), "region in ['eu', 'us']");
+  assert.equal(describeInFinding(new Deny("tool", ["shell", "rm"])), "tool not in ['rm', 'shell']");
 });
 
-test("a finding escapes a value that is not bare, as Python's does", () => {
-  assert.equal(describeInFinding(new Allow("region", ["S\u00e3o Paulo", "us"])), "region in [\"S\\u00e3o\\u0020Paulo\", us]");
+test("a finding prints string members through Python's repr", () => {
+  // So a finding tells the string "1" from the number 1 (they printed alike), and a member
+  // carrying a line break or a control character stays on one line, escaped.
+  assert.equal(describeInFinding(new Allow("region", ["S\u00e3o Paulo", "us"])), "region in ['S\u00e3o Paulo', 'us']");
+  assert.equal(describeInFinding(new Allow("region", ["eu\nOK", "x\u202e"])), "region in ['eu\\nOK', 'x\\u202e']");
+  assert.equal(describeInFinding(new Allow("t", ["1", 1, "True", true, null])), "t in [1, '1', None, True, 'True']");
 });
 
 test("a ceiling this build does not define stays on one line, in Python's words", () => {

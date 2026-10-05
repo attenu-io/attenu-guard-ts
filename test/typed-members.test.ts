@@ -14,7 +14,10 @@ import test from "node:test";
 import { AuditLog } from "../src/audit.js";
 import { Authority } from "../src/authority.js";
 import { canonicalBytes, canonicalJson, parseJson, type Json } from "../src/canonical.js";
-import { Allow, CallLimit, Deny, EgressRank, Prefix, RowLimit, SpendCap, ceilingFromWire, describe, type Ceiling } from "../src/ceilings.js";
+import {
+  Allow, CallLimit, Deny, EgressRank, Prefix, RowLimit, SpendCap, ceilingFromWire, describe, describeInFinding,
+  type Ceiling,
+} from "../src/ceilings.js";
 import { exportBundle, verifyBundle } from "../src/evidence.js";
 import { Guard } from "../src/guard.js";
 import { ReasonCode } from "../src/reasons.js";
@@ -42,8 +45,15 @@ test("the issue's deny-list re-emits three members, in the order the Python impl
   const c = ceilingFromWire({ key: "region", type: "deny", not_one_of: ["secret", true, 1] });
   assert.equal(canonicalJson(c.toWire()), '{"key":"region","not_one_of":[1,true,"secret"],"type":"deny"}');
   assert.equal(c.describe!(), "region not in [1, True, secret]");
-  for (const given of [["1", 1], [1, "1"], ["True", true], [true, "True"]] as Json[][]) {
-    assert.deepEqual(typed(new Allow("t", given).toWire()["one_of"] as Json[]), typed(given));
+  // Members that print alike are ordered by JSON type (null, boolean, number, string), so an equal
+  // member set re-emits the same bytes whatever order it arrived in.
+  for (const [given, expected] of [[["1", 1], [1, "1"]], [["True", true], [true, "True"]],
+    [["None", null], [null, "None"]], [["1.5", 1.5], [1.5, "1.5"]]] as [Json[], Json[]][]) {
+    for (const order of [given, [...given].reverse()]) {
+      const c = new Allow("t", order);
+      assert.deepEqual(typed(c.toWire()["one_of"] as Json[]), typed(expected), JSON.stringify(order));
+      assert.deepEqual(typed((c.narrow(c) as Allow).toWire()["one_of"] as Json[]), typed(expected));
+    }
   }
 });
 
@@ -540,3 +550,29 @@ test("strict metering reads own fields, and a null quantity is undeclared", () =
   assert.equal(calls.check("crm.read", { context: { rows: null, calls: null } }).allowed, false);
 });
 
+test("a number the library's own parseJson read counts as a number in every ceiling", () => {
+  const context = (text: string) => parseJson(text) as unknown as Record<string, Json>;
+  assert.equal(new RowLimit(100).permits(context('{"rows": 50}')).allowed, true);
+  assert.equal(new RowLimit(100).permits(context('{"rows": 500}')).reasons[0]!.message, "");
+  assert.equal(new Allow("tier", [1]).permits(context('{"tier": 1.0}')).allowed, true);
+  assert.equal(new Deny("tier", [1]).permits(context('{"tier": 1}')).allowed, false);
+  assert.equal(new Prefix("path", "/").permits(context('{"path": 5}')).reasons[0]!.message,
+    "a number cannot be compared with a prefix; refused");
+  const guard = Guard.issue("root", new Authority({ scopes: ["db.query"], ceilings: [new RowLimit(100)] }));
+  assert.equal(guard.check("db.query", { context: context('{"rows": 50}') }).allowed, true);
+  // A bound or a member parseJson read is the number it holds: a deny-list of RawNumber members
+  // refused nothing, since a Set compares objects by identity.
+  const bound = new RowLimit(parseJson("100") as unknown as number);
+  assert.equal(bound.permits({ rows: 50 }).allowed, true);
+  assert.equal(bound.permits({ rows: 500 }).allowed, false);
+  assert.equal(bound.describe(), "max_rows<=100");
+  assert.equal(new Deny("t", parseJson("[1]") as unknown as Json[]).permits({ t: 1 }).allowed, false);
+  assert.equal(new Allow("t", parseJson("[1.0]") as unknown as Json[]).permits({ t: 1 }).allowed, true);
+});
+
+test("a finding prints a string member quoted, so \"1\" and 1 read differently", () => {
+  assert.equal(describeInFinding(new Allow("t", ["1"])), "t in ['1']");
+  assert.equal(describeInFinding(new Allow("t", [1])), "t in [1]");
+  const report = unreadableBundle({ key: "t", type: "allow", one_of: ["1"] }, { key: "t", type: "allow", one_of: [1] });
+  assert.deepEqual(report.failures, ["monotonicity: typed:n1 not ⊆ parent typed:n0 (ceiling t in [1] looser than parent t in ['1'])"]);
+});
