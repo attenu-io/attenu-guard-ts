@@ -12,15 +12,15 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { AuditLog } from "../src/audit.js";
-import { Authority } from "../src/authority.js";
+import { Authority, AuthorityError } from "../src/authority.js";
 import { canonicalBytes, canonicalJson, parseJson, type Json } from "../src/canonical.js";
 import {
   Allow, CallLimit, Deny, EgressRank, Prefix, RowLimit, SpendCap, UnknownCeiling, ceilingFromWire, describe,
-  describeInFinding, type Ceiling,
+  describeInFinding, registerCeiling, type Ceiling, type Context,
 } from "../src/ceilings.js";
 import { exportBundle, verifyBundle } from "../src/evidence.js";
 import { Guard } from "../src/guard.js";
-import { ReasonCode } from "../src/reasons.js";
+import { Decision, Reason, ReasonCode } from "../src/reasons.js";
 import { HS256TestSigner, WireError, WireReasonCode, b64urlEncode, load } from "../src/wire.js";
 import { pyRepr } from "../src/display.js";
 
@@ -134,14 +134,17 @@ test("Guard.check refuses a list against a deny-list and records why", () => {
  * A chain whose authorities carry each constraint exactly as given: a root token holding the
  * first, and, when there is a second, a child token holding that one, linked by `par_hash`.
  */
-function tokens(rootConstraint: Record<string, Json>, childConstraint?: Record<string, Json>): string[] {
+function tokens(rootConstraint: Record<string, Json>, childConstraint?: Record<string, Json>,
+  constraintLists = false): string[] {
   const part = (o: Record<string, Json>) => b64urlEncode(canonicalBytes(o));
   const header = part({ typ: "at+jwt", alg: "HS256", kid: "typed", c14n: "JCS" });
   const sign = (payload: Record<string, Json>) => {
     const signingInput = `${header}.${part(payload)}`;
     return [signingInput, `${signingInput}.${b64urlEncode(hs256.sign(Buffer.from(signingInput, "ascii")))}`];
   };
-  const detail = (c: Record<string, Json>) => [{ type: "agent_delegation", scopes: ["crm.read"], constraints: [c] }];
+  // With `constraintLists`, each argument is the token's whole constraint list rather than its one constraint.
+  const detail = (c: Record<string, Json>) =>
+    [{ type: "agent_delegation", scopes: ["crm.read"], constraints: constraintLists ? (c as unknown as Json[]) : [c] }];
   const [rootInput, root] = sign({
     iss: "typed", sub: "root", aud: null, iat: 0, exp: 60, jti: "n0", del_depth: 0, del_max_depth: 2,
     authorization_details: detail(rootConstraint),
@@ -553,13 +556,13 @@ test("an applies_to that is not a scope is malformed", () => {
   for (const value of ["crm.read", "crm.*", "a.b-c.d_e"]) assert.equal(new CallLimit(3, value).key, `max_calls[${value}]`);
 });
 
-test("different ceiling types under one key are not narrower, and meet refuses them", () => {
+test("two different known ceiling types under one key are not narrower, and meet refuses them", () => {
+  // Each threw a TypeError out of isNarrowerThan or meet; the Python implementation raised
+  // AttributeError. The refusal is an AuthorityError now, so a delegation lands on the ledger.
   const pairs: [Ceiling, Ceiling][] = [
     [new Allow("region", ["us"]), new Deny("region", ["eu"])],
     [new Deny("region", ["eu"]), new Allow("region", ["us"])],
     [new Prefix("region", "u"), new Allow("region", ["us"])],
-    [new RowLimit(5), ceilingFromWire({ key: "max_rows", type: "x-custom" })],
-    [ceilingFromWire({ key: "max_rows", type: "x-custom" }), new RowLimit(5)],
     [new EgressRank("none"), ceilingFromWire({ key: "egress", type: "prefix", prefix: "n" })],
   ];
   for (const [parent, child] of pairs) {
@@ -567,18 +570,193 @@ test("different ceiling types under one key are not narrower, and meet refuses t
     const p = new Authority({ scopes: ["crm.read"], ceilings: [parent], ttl: 60 });
     const c = new Authority({ scopes: ["crm.read"], ceilings: [child], ttl: 60 });
     assert.equal(c.isNarrowerThan(p), false, parent.key);
-    assert.throws(() => p.meet(c), {
-      name: "TypeError",
-      message: `constraint ${pyRepr(parent.key)} has a different ceiling type on each side; neither narrows the other`,
+    assert.throws(() => p.meet(c), (err: unknown) => {
+      assert.ok(err instanceof AuthorityError);
+      assert.equal(err.message, `constraint ${pyRepr(parent.key)} has a different ceiling type on each side; neither narrows the other`);
+      assert.deepEqual([err.reason, err.detail], ["not_narrower", { constraint: parent.key }]);
+      return true;
     });
   }
+  const root = Guard.issue("root", new Authority({ scopes: ["crm.read"], ceilings: [new Allow("region", ["us"])] }));
+  assert.throws(() => root.delegate("child", new Authority({ scopes: ["crm.read"], ceilings: [new Deny("region", ["eu"])] }), "t"),
+    AuthorityError);
+  const last = root.auditLog().entries.at(-1)!;
+  assert.deepEqual([last["event"], last["reason"], last["detail"]], ["spawn_denied", "not_narrower", { constraint: "region" }]);
   assert.throws(() => load(tokens({ key: "region", type: "allow", one_of: ["us"] }, { key: "region", type: "deny", not_one_of: ["eu"] }), hs256),
     (err: unknown) => err instanceof WireError && err.reason === WireReasonCode.NOT_NARROWER);
-  // It threw TypeError out of verifyBundle; the Python implementation raised AttributeError.
   const report = unreadableBundle({ key: "tier", type: "allow", one_of: [1] }, { key: "tier", type: "deny", not_one_of: [2] });
   assert.equal(report.checks.monotonicity, false);
   assert.deepEqual(report.failures,
     ["monotonicity: typed:n1 not ⊆ parent typed:n0 (ceiling tier not in [2] looser than parent tier in [1])"]);
+});
+
+test("a parent's unknown constraint is inherited, and a requested one under a bound is refused", () => {
+  // It denies every action. From a parent holding one, 0.13.0 delegated so. A request carrying one
+  // under a parent's bound failed the chain's invariant check in 0.13.0; it is refused as not
+  // narrower now, on the ledger, and the relation the verifiers read is unchanged.
+  const unknown = ceilingFromWire({ key: "max_rows", type: "x-custom", v: 1 });
+  const auth = (c: Ceiling) => new Authority({ scopes: ["crm.read"], ceilings: [c], ttl: 60 });
+  const inherited = auth(unknown).meet(auth(new RowLimit(5)));
+  assert.equal(inherited.ceilings[0], unknown);
+  assert.equal(inherited.isNarrowerThan(auth(unknown)), true);
+  assert.equal(inherited.permits("crm.read", { rows: 1 }).allowed, false);
+  assert.throws(() => auth(new RowLimit(5)).meet(auth(unknown)), (err: unknown) => {
+    assert.ok(err instanceof AuthorityError);
+    assert.equal(err.message, "constraint 'max_rows' has a different ceiling type on each side; neither narrows the other");
+    assert.deepEqual([err.reason, err.detail], ["not_narrower", { constraint: "max_rows" }]);
+    return true;
+  });
+  assert.equal(auth(unknown).isNarrowerThan(auth(new RowLimit(5))), false);
+  assert.equal(auth(new RowLimit(5)).isNarrowerThan(auth(unknown)), false);
+  const geo = ceilingFromWire({ key: "geo", type: "x-new", v: 1 });
+  let root = Guard.issue("root", new Authority({ scopes: ["crm.read"], ceilings: [geo] }));
+  const child = root.delegate("child", new Authority({ scopes: ["crm.read"], ceilings: [new Allow("geo", ["us"])] }), "t");
+  assert.equal(child.authority.ceilings[0], geo);
+  assert.equal(root.auditLog().entries.at(-1)!["event"], "spawn");
+  assert.equal(child.check("crm.read", { context: { geo: "us" } }).allowed, false);
+  root = Guard.issue("root", new Authority({ scopes: ["crm.read"], ceilings: [new RowLimit(5)] }));
+  assert.throws(() => root.delegate("child", new Authority({ scopes: ["crm.read"], ceilings: [ceilingFromWire({ key: "max_rows", type: "x-new" })] }), "t"),
+    AuthorityError);
+  const last = root.auditLog().entries.at(-1)!;
+  assert.deepEqual([last["event"], last["reason"], last["detail"]], ["spawn_denied", "not_narrower", { constraint: "max_rows" }]);
+  // On the wire, neither direction is narrower.
+  for (const [rootC, leafC] of [[{ key: "max_rows", max: 5 }, { key: "max_rows", type: "x-custom", v: 1 }],
+    [{ key: "max_rows", type: "x-custom", v: 1 }, { key: "max_rows", max: 5 }]] as Record<string, Json>[][]) {
+    assert.throws(() => load(tokens(rootC!, leafC), hs256),
+      (err: unknown) => err instanceof WireError && err.reason === WireReasonCode.NOT_NARROWER);
+  }
+  const report = unreadableBundle({ key: "max_rows", max: 5 }, { key: "max_rows", type: "x-custom" });
+  assert.deepEqual(report.failures, ["monotonicity: typed:n1 not ⊆ parent typed:n0 (ceiling max_rows={'key': 'max_rows', "
+    + "'type': 'x-custom'} looser than parent max_rows<=5)"]);
+});
+
+/** A custom ceiling whose subsumes() takes any ceiling for one of its own kind, as a custom ceiling may. */
+class AnyRegion implements Ceiling {
+  readonly key = "region";
+  constructor(readonly allowed: string) {}
+  permits(ctx: Context): Decision {
+    const v = Object.prototype.hasOwnProperty.call(ctx, "region") ? ctx["region"] : null;
+    return v === null || v === this.allowed ? Decision.allow()
+      : Decision.deny(new Reason(ReasonCode.CEILING_EXCEEDED, { constraint: this.key }));
+  }
+  narrow(_other: Ceiling): Ceiling {
+    return this;
+  }
+  subsumes(_other: Ceiling): boolean {
+    return true;
+  }
+  describe(): string {
+    return `region only ${this.allowed}`;
+  }
+  toWire(): Record<string, Json> {
+    return { key: this.key, type: "x-test-anyregion", allowed: this.allowed };
+  }
+  static fromWire(d: Record<string, Json>): AnyRegion {
+    return new AnyRegion(d["allowed"] as string);
+  }
+}
+
+test("the type checks keep a wider child of another type from passing as narrower than a custom ceiling", () => {
+  // 0.13.0 passed it: isNarrowerThan handed the parent's subsumes() the child's ceiling whatever its type.
+  const parent = new Authority({ scopes: ["crm.read"], ceilings: [new AnyRegion("us")], ttl: 60 });
+  const child = new Authority({ scopes: ["crm.read"], ceilings: [new Allow("region", ["us", "eu"])], ttl: 60 });
+  assert.equal(child.permits("crm.read", { region: "eu" }).allowed, true);
+  assert.equal(parent.permits("crm.read", { region: "eu" }).allowed, false);
+  assert.equal(child.isNarrowerThan(parent), false);
+  registerCeiling("x-test-anyregion", AnyRegion);
+  const report = unreadableBundle({ key: "region", type: "x-test-anyregion", allowed: "us" },
+    { key: "region", type: "allow", one_of: ["us", "eu"] });
+  assert.deepEqual(report.failures,
+    ['monotonicity: typed:n1 not ⊆ parent typed:n0 (ceiling region in ["eu", "us"] looser than parent region only us)']);
+  // Each built-in subsumes only its own class: a lookalike carrying every field one reads is refused.
+  const lookalike = {
+    key: "k", maxRows: 1, maxSpend: 1, maxCalls: 1, level: "none", oneOf: new Set<Json>(), notOneOf: new Set<Json>(["x"]),
+    prefix: "zz",
+  } as unknown as Ceiling;
+  for (const ceiling of [new RowLimit(5), new SpendCap(5), new CallLimit(5), new EgressRank("any"), new Allow("k", ["x"]),
+    new Deny("k", []), new Prefix("k", "z")]) {
+    assert.equal(ceiling.subsumes(lookalike), false, ceiling.constructor.name);
+  }
+  // A bound parseJson read is the number it holds, in every numeric cap.
+  const spend = new SpendCap(parseJson("2.5") as unknown as number);
+  assert.equal(spend.describe(), "max_spend<=2.5");
+  assert.equal(spend.permits({ spend: 3 }).allowed, false);
+  const calls = new CallLimit(parseJson("3") as unknown as number, "crm.read");
+  assert.equal(calls.describe(), "max_calls[crm.read]<=3");
+  assert.equal(calls.permits({ "calls[crm.read]": 4, _scope: "crm.read" }).allowed, false);
+});
+
+test("a custom ceiling's denial without a reason still denies", () => {
+  // Authority.permits allowed a call whenever it had collected no reason, as the Python implementation did.
+  class Closed implements Ceiling {
+    readonly key = "closed";
+    permits(_ctx: Context): Decision {
+      return Decision.deny([]);
+    }
+    narrow(_other: Ceiling): Ceiling {
+      return this;
+    }
+    subsumes(other: Ceiling): boolean {
+      return other instanceof Closed;
+    }
+    toWire(): Record<string, Json> {
+      return { key: this.key, type: "x-closed" };
+    }
+  }
+  const auth = new Authority({ scopes: ["crm.read"], ceilings: [new Closed()] });
+  const decision = auth.permits("crm.read", {});
+  assert.equal(decision.allowed, false);
+  const expected = [{ code: "ceiling_exceeded", constraint: "closed", limit: null, requested: null, message: "denied without a reason" }];
+  assert.deepEqual(decision.reasons.map((r) => r.toDict()), expected);
+  const guard = Guard.issue("root", auth);
+  assert.equal(guard.check("crm.read").allowed, false);
+  assert.deepEqual(guard.auditLog().entries.at(-1)!["reasons"], expected);
+});
+
+test("two constraints under one key are malformed, on every path", () => {
+  // The last one won, silently: [allow region in [us], deny region not in [rm]] permitted eu.
+  const message = "two constraints share the key 'region'; an authority holds one per key";
+  for (const ceilings of [[new Allow("region", ["us"]), new Deny("region", ["rm"])], [new Prefix("region", "u"), new Prefix("region", "u")]]) {
+    assert.throws(() => new Authority({ scopes: ["crm.read"], ceilings }), { name: "TypeError", message });
+  }
+  const pair: Json[] = [{ key: "region", type: "allow", one_of: ["us"] }, { key: "region", type: "deny", not_one_of: ["rm"] }];
+  assert.throws(() => Authority.fromWire({ scopes: ["crm.read"], constraints: pair, ttl: 60 }), { name: "TypeError", message });
+  assert.throws(() => load(tokens(pair as any, pair as any, true), hs256), (err: unknown) => {
+    assert.ok(err instanceof WireError);
+    assert.equal(err.reason, WireReasonCode.MALFORMED);
+    assert.equal(err.message, `invalid authorization_details: ${message}`);
+    return true;
+  });
+});
+
+test("a constraint member named like an Object.prototype member is one this build does not read", () => {
+  // `k in emitted` found `constructor` on every plain object, so the member was ignored; the Python
+  // implementation refuses it.
+  const read = (wire: string) => () => Authority.fromWire({ scopes: ["crm.read"], constraints: [parseJson(wire)], ttl: 60 });
+  assert.throws(read('{"key":"max_rows","max":5,"constructor":1}'), {
+    name: "AuthorityError",
+    message: "constraint {'key': 'max_rows', 'max': 5, 'constructor': 1} carries members this build does not evaluate and will not ignore: 'constructor'",
+  });
+  assert.throws(read('{"key":"max_rows","max":5,"valueOf":1,"min":3}'), {
+    name: "AuthorityError",
+    message: "constraint {'key': 'max_rows', 'max': 5, 'valueOf': 1, 'min': 3} carries members this build does not evaluate and will not ignore: 'min', 'valueOf'",
+  });
+  assert.throws(read('{"key":"max_rows","max":5,"__proto__":1}'), {
+    name: "AuthorityError",
+    message: "constraint {'key': 'max_rows', 'max': 5, '__proto__': 1} carries members this build does not evaluate and will not ignore: '__proto__'",
+  });
+});
+
+test("the wire order is computed once, and every caller gets its own list", () => {
+  const c = new Allow("t", ["b", "a", 1, "1"]);
+  const first = c.toWire()["one_of"] as Json[];
+  assert.deepEqual(typed(first), typed([1, "1", "a", "b"]));
+  first.push("zzz");
+  assert.deepEqual(typed(c.toWire()["one_of"] as Json[]), typed([1, "1", "a", "b"]));
+  const limit = c.permits({ t: "z" }).reasons[0]!.limit as Json[];
+  limit.push("zzz");
+  assert.deepEqual(c.permits({ t: "z" }).reasons[0]!.limit, [1, "1", "a", "b"]);
+  assert.equal(c.describe!(), "t in [1, 1, a, b]");
 });
 
 test("strict metering reads own fields, and a null quantity is undeclared", () => {
@@ -620,8 +798,8 @@ test("a number the library's own parseJson read counts as a number in every ceil
 });
 
 test("a finding prints a string member quoted, so \"1\" and 1 read differently", () => {
-  assert.equal(describeInFinding(new Allow("t", ["1"])), "t in ['1']");
+  assert.equal(describeInFinding(new Allow("t", ["1"])), 't in ["1"]');
   assert.equal(describeInFinding(new Allow("t", [1])), "t in [1]");
   const report = unreadableBundle({ key: "t", type: "allow", one_of: ["1"] }, { key: "t", type: "allow", one_of: [1] });
-  assert.deepEqual(report.failures, ["monotonicity: typed:n1 not ⊆ parent typed:n0 (ceiling t in [1] looser than parent t in ['1'])"]);
+  assert.deepEqual(report.failures, ['monotonicity: typed:n1 not ⊆ parent typed:n0 (ceiling t in [1] looser than parent t in ["1"])']);
 });

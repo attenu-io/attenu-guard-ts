@@ -18,7 +18,7 @@
 import {
   MAX_SAFE_INTEGER, RawNumber, canonicalJson, compareCodePoints, pyNumber, toPlain, type CJson, type Json,
 } from "./canonical.js";
-import { escaped, pyRepr, pyStr, pyStrRepr, shown, shownText } from "./display.js";
+import { escaped, pyRepr, pyStr, shown, shownText } from "./display.js";
 import { Decision, Reason, ReasonCode } from "./reasons.js";
 
 /**
@@ -231,8 +231,8 @@ export function wireKeyOf(ceiling: Ceiling): CJson {
  *
  * `describe` itself is left alone, so dashboards and `Authority.describe()` print a region called
  * "São Paulo" as it is, and for values in the bare set the two agree character for character, except
- * that an allow-list's or a deny-list's string members are printed through Python's repr, quoted, so
- * the string "1" and the number 1 read differently. A ceiling this build does not define prints the
+ * that an allow-list's or a deny-list's string members are printed in their escaped JSON form, quoted,
+ * so the string "1" and the number 1 read differently. A ceiling this build does not define prints the
  * Python implementation's description of it — its key, `=`, and the wire object as Python prints a
  * dict — as it is when that is printable ASCII, spaces included, and as escaped JSON otherwise. Same
  * text as the Python implementation's finding.
@@ -241,11 +241,12 @@ export function describeInFinding(ceiling: Ceiling): string {
   // A bound the wire supplied: a number prints as `describe` prints it; anything else is shown.
   const bound = (v: unknown): string => (typeof v === "number" ? pyNumber(v) : shown(v as CJson));
   // The typed members in wire order, as `describe` lists them, except that a string member is printed
-  // through Python's repr, quoted and escaped, so a finding tells the string "1" from the number 1
-  // (attenu-ops#110). Every other member's text is bare.
-  const members = (values: Iterable<Json>): string =>
-    sortByStr(values)
-      .map((v) => (typeof v === "string" ? pyStrRepr(v) : shownText(strOf(v), v)))
+  // in its escaped JSON form, quoted, so a finding tells the string "1" from the number 1
+  // (attenu-ops#110). That form is ASCII, the Python implementation's on every Python version; its
+  // repr printed a printable non-ASCII character as it is. Every other member's text is bare.
+  const members = (values: ReadonlySet<Json>): string =>
+    inWireOrder(values)
+      .map((v) => (typeof v === "string" ? escaped(v) : shownText(strOf(v), v)))
       .join(", ");
   // By exact class, as the Python implementation matches by exact type: a subclass of a built-in
   // describes itself, and is printed the way any other ceiling this build does not define is.
@@ -334,6 +335,22 @@ function kindRank(value: Json): number {
  */
 function sortByStr(values: Iterable<Json>): Json[] {
   return Array.from(values).sort((a, b) => compareCodePoints(strOf(a), strOf(b)) || kindRank(a) - kindRank(b));
+}
+
+/**
+ * The wire order (`sortByStr`) of an `Allow`'s or a `Deny`'s members, computed once per member set: a
+ * denial, `toWire()` and `describe()` each sorted the whole set again. The members are read-only, as
+ * the `ReadonlySet` type says; each caller gets its own copy of the order.
+ */
+const wireOrders = new WeakMap<ReadonlySet<Json>, readonly Json[]>();
+
+function inWireOrder(members: ReadonlySet<Json>): Json[] {
+  let order = wireOrders.get(members);
+  if (order === undefined) {
+    order = sortByStr(members);
+    wireOrders.set(members, order);
+  }
+  return [...order];
 }
 
 function strOf(value: Json): string {
@@ -610,7 +627,7 @@ export class Allow implements Ceiling {
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
-        limit: sortByStr(this.oneOf),
+        limit: inWireOrder(this.oneOf),
         requested: val,
         message: refusal(kind, "one_of members"),
       }),
@@ -618,7 +635,7 @@ export class Allow implements Ceiling {
   }
 
   describe(): string {
-    return `${this.key} in [${sortByStr(this.oneOf).map(strOf).join(", ")}]`;
+    return `${this.key} in [${inWireOrder(this.oneOf).map(strOf).join(", ")}]`;
   }
 
   narrow(other: Ceiling): Allow {
@@ -631,7 +648,7 @@ export class Allow implements Ceiling {
   }
 
   toWire(): Record<string, Json> {
-    const d: Record<string, Json> = { key: this.key, type: "allow", one_of: sortByStr(this.oneOf) };
+    const d: Record<string, Json> = { key: this.key, type: "allow", one_of: inWireOrder(this.oneOf) };
     if (this.field !== null && this.field !== this.key) d["field"] = this.field;
     return d;
   }
@@ -672,7 +689,7 @@ export class Deny implements Ceiling {
     return Decision.deny(
       new Reason(ReasonCode.CEILING_EXCEEDED, {
         constraint: this.key,
-        limit: sortByStr(this.notOneOf),
+        limit: inWireOrder(this.notOneOf),
         requested: val,
         message: refusal(kind, "not_one_of members"),
       }),
@@ -680,7 +697,7 @@ export class Deny implements Ceiling {
   }
 
   describe(): string {
-    return `${this.key} not in [${sortByStr(this.notOneOf).map(strOf).join(", ")}]`;
+    return `${this.key} not in [${inWireOrder(this.notOneOf).map(strOf).join(", ")}]`;
   }
 
   narrow(other: Ceiling): Deny {
@@ -698,7 +715,7 @@ export class Deny implements Ceiling {
     const d: Record<string, Json> = {
       key: this.key,
       type: "deny",
-      not_one_of: sortByStr(this.notOneOf),
+      not_one_of: inWireOrder(this.notOneOf),
     };
     if (this.field !== null && this.field !== this.key) d["field"] = this.field;
     return d;
@@ -803,7 +820,9 @@ export function registerCeiling(key: string, cls: CeilingClass): void {
  * Fail-closed placeholder for a wire constraint this build does not recognise.
  *
  * `permits` always denies. `narrow` stays an unknown ceiling, so it can never
- * resolve to something more permissive than "deny everything". `subsumes` is
+ * resolve to something more permissive than "deny everything"; `Authority.meet`
+ * keeps a parent's against a request of any other type, so the child inherits
+ * it. `subsumes` is
  * true only against an identical unknown ceiling — just enough reflexivity for
  * `isNarrowerThan(self)`. Identical means the same RFC 8785 bytes, which is
  * equality as JSON: `true` is not 1, `1.0` is 1, and key order is no difference

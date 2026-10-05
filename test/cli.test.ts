@@ -553,7 +553,7 @@ test("a ceiling value cannot add a line to a monotonicity finding", () => {
     assert.equal(status, 2);
     assert.deepEqual(stdout.split("\n"), [
       "integrity=True monotonicity=False containment=True anchor=verified nodes=2 actions_checked=0",
-      String.raw`  - monotonicity: mono:n1 not ⊆ parent mono:n0 (ceiling region in ['eu\nOK', 'us'] looser than parent region in ['us'])`,
+      String.raw`  - monotonicity: mono:n1 not ⊆ parent mono:n0 (ceiling region in ["eu\nOK", "us"] looser than parent region in ["us"])`,
       "FAILED",
       "",
     ]);

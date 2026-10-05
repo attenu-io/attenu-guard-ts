@@ -38,16 +38,21 @@ test("a finding prints a built-in ceiling as describe() does for bare values", (
   ]) {
     assert.equal(describeInFinding(ceiling), describe(ceiling), describe(ceiling));
   }
-  assert.equal(describeInFinding(new Allow("region", ["us", "eu"])), "region in ['eu', 'us']");
-  assert.equal(describeInFinding(new Deny("tool", ["shell", "rm"])), "tool not in ['rm', 'shell']");
+  assert.equal(describeInFinding(new Allow("region", ["us", "eu"])), 'region in ["eu", "us"]');
+  assert.equal(describeInFinding(new Deny("tool", ["shell", "rm"])), 'tool not in ["rm", "shell"]');
 });
 
-test("a finding prints string members through Python's repr", () => {
-  // So a finding tells the string "1" from the number 1 (they printed alike), and a member
-  // carrying a line break or a control character stays on one line, escaped.
-  assert.equal(describeInFinding(new Allow("region", ["S\u00e3o Paulo", "us"])), "region in ['S\u00e3o Paulo', 'us']");
-  assert.equal(describeInFinding(new Allow("region", ["eu\nOK", "x\u202e"])), "region in ['eu\\nOK', 'x\\u202e']");
-  assert.equal(describeInFinding(new Allow("t", ["1", 1, "True", true, null])), "t in [1, '1', None, True, 'True']");
+test("a finding prints string members under the display rule", () => {
+  // Quoted, so a finding tells the string "1" from the number 1 (they printed alike), and in the
+  // escaped JSON form, so the text is ASCII and the same as the Python implementation's on every
+  // Python version: Python's repr printed a printable non-ASCII character as it is, by the runtime's
+  // Unicode tables. A number, a boolean and null print bare.
+  assert.equal(describeInFinding(new Allow("region", ["S\u00e3o Paulo", "us"])), 'region in ["S\\u00e3o\\u0020Paulo", "us"]');
+  assert.equal(describeInFinding(new Allow("region", ["eu\nOK", "x\u202e"])), 'region in ["eu\\nOK", "x\\u202e"]');
+  assert.equal(describeInFinding(new Allow("t", ["1", 1, "True", true, null])), 't in [1, "1", None, True, "True"]');
+  const text = describeInFinding(new Allow("region", ["\u05e9\u05dc\u05d5\u05dd", "e\u0301", "\u{1f6dd}", "it's", 'say "hi"']));
+  assert.equal(text, 'region in ["e\\u0301", "it\'s", "say\\u0020\\"hi\\"", "\\u05e9\\u05dc\\u05d5\\u05dd", "\\ud83d\\udedd"]');
+  assert.match(text, /^[\x20-\x7e]*$/);
 });
 
 test("a ceiling this build does not define stays on one line, in Python's words", () => {

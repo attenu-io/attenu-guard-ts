@@ -24,6 +24,7 @@ import { compareCodePoints, sortedStrings, toPlain, type CJson, type Json } from
 import { pyRepr, pyStrRepr } from "./display.js";
 import {
   SCOPE_RE,
+  UnknownCeiling,
   ceilingFromWire,
   describe as describeCeiling,
   sameType,
@@ -110,7 +111,10 @@ function ceilingFromWireWhole(c: CJson): Ceiling {
       );
     }
     const dropped = Object.keys(input)
-      .filter((k) => !(k in emitted))
+      // The emission's OWN members: `k in emitted` found `constructor`, `toString` and the rest of
+      // Object.prototype on every plain object, so a member named like one was ignored, where the
+      // Python implementation refuses it (attenu-ops#110).
+      .filter((k) => !Object.prototype.hasOwnProperty.call(emitted, k))
       // `field` is read and then not re-emitted when it equals `key`, because at
       // that point it is redundant. Absent from the emission does not mean
       // unread, so exempt it only on EVIDENCE that this ceiling parsed it: the
@@ -169,10 +173,10 @@ export class Authority {
   readonly scopes: ReadonlySet<string>;
 
   /**
-   * At most one ceiling per `key` (last one wins), sorted by key for a
-   * deterministic wire form and integrity seal. A dimension with no ceiling is
-   * unbounded on that dimension unless a parent in the chain bounds it —
-   * attenuation can only add or tighten bounds, never remove one.
+   * One ceiling per `key` (a second one under the same key throws a TypeError),
+   * sorted by key for a deterministic wire form and integrity seal. A dimension
+   * with no ceiling is unbounded on that dimension unless a parent in the chain
+   * bounds it — attenuation can only add or tighten bounds, never remove one.
    */
   readonly ceilings: readonly Ceiling[];
 
@@ -184,7 +188,14 @@ export class Authority {
     for (const scope of scopes) validateScope(scope);
     this.scopes = scopes;
     const byKey = new Map<string, Ceiling>();
-    for (const c of init.ceilings ?? []) byKey.set(String(c.key), c);
+    for (const c of init.ceilings ?? []) {
+      // One constraint per key, on every path (attenu-ops#110): the last one won, silently, so
+      // [allow region in [us], deny region not in [rm]] kept only the deny-list.
+      if (byKey.has(String(c.key))) {
+        throw new TypeError(`two constraints share the key ${pyRepr(c.key as CJson)}; an authority holds one per key`);
+      }
+      byKey.set(String(c.key), c);
+    }
     this.ceilings = Array.from(byKey.keys())
       .sort(compareCodePoints)
       .map((k) => byKey.get(k)!);
@@ -255,10 +266,20 @@ export class Authority {
       const a = mine.get(k);
       const b = theirs.get(k);
       if (a !== undefined && b !== undefined && !sameType(a, b)) {
-        // An allow-list and a deny-list (or any two ceiling types) under one key have no common
-        // narrowing; refusing beats a TypeError from inside `narrow` or a guess.
-        throw new TypeError(
+        // Two ceiling types under one key have no common narrowing, so the delegation is refused
+        // as not narrower, and `Guard.delegate` records it as `spawn_denied` (attenu-ops#110). One
+        // exception: this side's constraint this build does not define, which denies every action,
+        // is kept, so the child inherits it, as 0.13.0 delegated from a parent holding one. A
+        // request carrying one under this side's other ceiling is refused: the child would not be
+        // narrower (`isNarrowerThan`).
+        if (a instanceof UnknownCeiling) {
+          ceilings.push(a);
+          continue;
+        }
+        throw new AuthorityError(
           `constraint ${pyRepr(k)} has a different ceiling type on each side; neither narrows the other`,
+          "not_narrower",
+          { constraint: k },
         );
       }
       ceilings.push(a !== undefined && b !== undefined ? a.narrow(b) : (a ?? b)!);
@@ -337,7 +358,11 @@ export class Authority {
     cctx["_scope"] = scope;
     for (const c of this.ceilings) {
       const decision = c.permits(cctx);
-      if (!decision.allowed) reasons.push(...decision.reasons);
+      if (decision.allowed) continue;
+      // A denial with no reason still denies: an empty list read as an allow, so a custom ceiling's
+      // bare `Decision.deny([])` let every call through (attenu-ops#110).
+      if (decision.reasons.length > 0) reasons.push(...decision.reasons);
+      else reasons.push(new Reason(ReasonCode.CEILING_EXCEEDED, { constraint: c.key, message: "denied without a reason" }));
     }
 
     return reasons.length > 0 ? Decision.deny(reasons) : Decision.allow();
