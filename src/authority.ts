@@ -26,6 +26,7 @@ import {
   SCOPE_RE,
   ceilingFromWire,
   describe as describeCeiling,
+  sameType,
   type Ceiling,
   type Context,
 } from "./ceilings.js";
@@ -253,6 +254,13 @@ export class Authority {
     for (const k of keys) {
       const a = mine.get(k);
       const b = theirs.get(k);
+      if (a !== undefined && b !== undefined && !sameType(a, b)) {
+        // An allow-list and a deny-list (or any two ceiling types) under one key have no common
+        // narrowing; refusing beats a TypeError from inside `narrow` or a guess.
+        throw new TypeError(
+          `constraint ${pyRepr(k)} has a different ceiling type on each side; neither narrows the other`,
+        );
+      }
       ceilings.push(a !== undefined && b !== undefined ? a.narrow(b) : (a ?? b)!);
     }
 
@@ -286,7 +294,9 @@ export class Authority {
     for (const [k, otherCeiling] of other.byKey()) {
       const selfCeiling = mine.get(k);
       if (selfCeiling === undefined) return false; // unbounded here where other bounds
-      if (!otherCeiling.subsumes(selfCeiling)) return false;
+      // Two ceiling types under one key are not comparable, so not narrower (a custom ceiling's
+      // subsumes() need not handle another type).
+      if (!sameType(selfCeiling, otherCeiling) || !otherCeiling.subsumes(selfCeiling)) return false;
     }
     if (other.ttl !== null) {
       if (this.ttl === null || this.ttl > other.ttl) return false;

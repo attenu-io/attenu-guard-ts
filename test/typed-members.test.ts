@@ -490,3 +490,31 @@ test("an applies_to that is not a scope is malformed", () => {
   for (const value of ["crm.read", "crm.*", "a.b-c.d_e"]) assert.equal(new CallLimit(3, value).key, `max_calls[${value}]`);
 });
 
+test("different ceiling types under one key are not narrower, and meet refuses them", () => {
+  const pairs: [Ceiling, Ceiling][] = [
+    [new Allow("region", ["us"]), new Deny("region", ["eu"])],
+    [new Deny("region", ["eu"]), new Allow("region", ["us"])],
+    [new Prefix("region", "u"), new Allow("region", ["us"])],
+    [new RowLimit(5), ceilingFromWire({ key: "max_rows", type: "x-custom" })],
+    [ceilingFromWire({ key: "max_rows", type: "x-custom" }), new RowLimit(5)],
+    [new EgressRank("none"), ceilingFromWire({ key: "egress", type: "prefix", prefix: "n" })],
+  ];
+  for (const [parent, child] of pairs) {
+    assert.equal(parent.subsumes(child), false, parent.key);
+    const p = new Authority({ scopes: ["crm.read"], ceilings: [parent], ttl: 60 });
+    const c = new Authority({ scopes: ["crm.read"], ceilings: [child], ttl: 60 });
+    assert.equal(c.isNarrowerThan(p), false, parent.key);
+    assert.throws(() => p.meet(c), {
+      name: "TypeError",
+      message: `constraint ${pyRepr(parent.key)} has a different ceiling type on each side; neither narrows the other`,
+    });
+  }
+  assert.throws(() => load(tokens({ key: "region", type: "allow", one_of: ["us"] }, { key: "region", type: "deny", not_one_of: ["eu"] }), hs256),
+    (err: unknown) => err instanceof WireError && err.reason === WireReasonCode.NOT_NARROWER);
+  // It threw TypeError out of verifyBundle; the Python implementation raised AttributeError.
+  const report = unreadableBundle({ key: "tier", type: "allow", one_of: [1] }, { key: "tier", type: "deny", not_one_of: [2] });
+  assert.equal(report.checks.monotonicity, false);
+  assert.deepEqual(report.failures,
+    ["monotonicity: typed:n1 not ⊆ parent typed:n0 (ceiling tier not in [2] looser than parent tier in [1])"]);
+});
+

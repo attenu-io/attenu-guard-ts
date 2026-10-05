@@ -190,6 +190,15 @@ export function ctxFieldOf(ceiling: Ceiling): string {
 }
 
 /**
+ * Python's `type(a) is type(b)`: whether two ceilings are of one class. Ceilings pair by key, and
+ * two of different classes under one key are not comparable: neither narrows the other, so an
+ * authority holding one is not narrower than an authority holding the other (attenu-ops#110).
+ */
+export function sameType(a: Ceiling, b: Ceiling): boolean {
+  return Object.getPrototypeOf(a) === Object.getPrototypeOf(b);
+}
+
+/**
  * Uniform human-readable rendering of any ceiling. Never parsed back. A ceiling without its own
  * `describe`, such as one this build does not define, prints as the Python implementation prints
  * it: its key as the wire carried it, `=`, and its wire form as Python prints a dict.
@@ -342,7 +351,7 @@ export class RowLimit implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return this.maxRows >= (other as RowLimit).maxRows;
+    return sameType(this, other) && this.maxRows >= (other as RowLimit).maxRows;
   }
 
   toWire(): Record<string, Json> {
@@ -387,7 +396,7 @@ export class SpendCap implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return this.maxSpend >= (other as SpendCap).maxSpend;
+    return sameType(this, other) && this.maxSpend >= (other as SpendCap).maxSpend;
   }
 
   toWire(): Record<string, Json> {
@@ -467,7 +476,7 @@ export class CallLimit implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return this.maxCalls >= (other as CallLimit).maxCalls;
+    return sameType(this, other) && this.maxCalls >= (other as CallLimit).maxCalls;
   }
 
   toWire(): Record<string, Json> {
@@ -517,7 +526,7 @@ export class EgressRank implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return egressRankOf(this.level) >= egressRankOf((other as EgressRank).level);
+    return sameType(this, other) && egressRankOf(this.level) >= egressRankOf((other as EgressRank).level);
   }
 
   toWire(): Record<string, Json> {
@@ -581,7 +590,7 @@ export class Allow implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return Array.from((other as Allow).oneOf).every((v) => this.oneOf.has(v));
+    return sameType(this, other) && Array.from((other as Allow).oneOf).every((v) => this.oneOf.has(v));
   }
 
   toWire(): Record<string, Json> {
@@ -645,7 +654,7 @@ export class Deny implements Ceiling {
   subsumes(other: Ceiling): boolean {
     // `this` admits a superset of `other`'s admitted set iff it forbids a
     // subset of what `other` forbids.
-    return Array.from(this.notOneOf).every((v) => (other as Deny).notOneOf.has(v));
+    return sameType(this, other) && Array.from(this.notOneOf).every((v) => (other as Deny).notOneOf.has(v));
   }
 
   toWire(): Record<string, Json> {
@@ -714,7 +723,7 @@ export class Prefix implements Ceiling {
   }
 
   subsumes(other: Ceiling): boolean {
-    return (other as Prefix).prefix.startsWith(this.prefix);
+    return sameType(this, other) && (other as Prefix).prefix.startsWith(this.prefix);
   }
 
   toWire(): Record<string, Json> {

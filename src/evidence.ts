@@ -48,7 +48,7 @@ import { createHash } from "node:crypto";
 
 import { AuditLog, SCHEMA_VERSION, chainIdOf, hashEntry, GENESIS, type Anchor, type LedgerEntry } from "./audit.js";
 import { Authority } from "./authority.js";
-import { describeInFinding, wireKeyOf, type Context } from "./ceilings.js";
+import { describeInFinding, sameType, wireKeyOf, type Context } from "./ceilings.js";
 import { pyRepr, pyStr, pyStrRepr, shown } from "./display.js";
 import { CAPTURES, BODY_STATES, POLICIES, BodyState, Capture } from "./reasons.js";
 import { PARAMS_HASH_REASONS } from "./params.js";
@@ -462,7 +462,7 @@ function monotonicityDetail(child: Authority, parent: Authority): string {
     if (childCeiling === undefined) {
       return `ceiling ${shown(wireKeyOf(parentCeiling))} unbounded, parent holds ${describeInFinding(parentCeiling)}`;
     }
-    if (!parentCeiling.subsumes(childCeiling)) {
+    if (!sameType(childCeiling, parentCeiling) || !parentCeiling.subsumes(childCeiling)) {
       return (
         `ceiling ${describeInFinding(childCeiling)} looser than parent ` +
         `${describeInFinding(parentCeiling)}`
