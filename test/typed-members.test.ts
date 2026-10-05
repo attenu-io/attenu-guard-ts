@@ -102,6 +102,10 @@ test("a field named like an Object.prototype member is absent when the context d
     assert.equal(new Allow(name, ["x"]).permits({}).allowed, true, name);
     assert.equal(new Deny(name, ["x"]).permits({}).allowed, true, name);
   }
+  // An inherited JSON value is not read either: 0.13.0 read it, so the deny-list refused "rm" and
+  // the allow-list refused "y" here.
+  assert.equal(new Deny("tool", ["rm"]).permits(Object.create({ tool: "rm" })).allowed, true);
+  assert.equal(new Allow("tool", ["x"]).permits(Object.create({ tool: "y" })).allowed, true);
   assert.equal(new Allow("constructor", ["x"]).permits({ constructor: "x" } as any).allowed, true);
   assert.equal(new Deny("constructor", ["x"]).permits({ constructor: "x" } as any).allowed, false);
 });
@@ -363,7 +367,7 @@ test("a value of the right type compares as before, and null or an absent field 
   }
   // A field named like an Object.prototype member is absent unless the context holds it.
   assert.equal(new Prefix("constructor", "c").permits({}).allowed, true);
-  assert.equal(new Prefix("toString", "f").permits({}).allowed, true);
+  assert.equal(new Prefix("toString", "/tmp/").permits({}).allowed, true);   // "function toString() …" is no match
 });
 
 test("Guard.check, a verified chain and the bundle verifier refuse a quantity of the wrong type", () => {
@@ -516,5 +520,23 @@ test("different ceiling types under one key are not narrower, and meet refuses t
   assert.equal(report.checks.monotonicity, false);
   assert.deepEqual(report.failures,
     ["monotonicity: typed:n1 not ⊆ parent typed:n0 (ceiling tier not in [2] looser than parent tier in [1])"]);
+});
+
+test("strict metering reads own fields, and a null quantity is undeclared", () => {
+  // A metered field named like an Object.prototype member counted as declared through `in`.
+  const proto = Guard.issue("root", new Authority({
+    scopes: ["fs.read"], ceilings: [ceilingFromWire({ key: "max_path", type: "prefix", prefix: "/tmp/", field: "constructor" })],
+  }), { strictMetering: true });
+  assert.equal(proto.check("fs.read", { metered: true, context: {} }).reasons[0]!.code, ReasonCode.UNMETERED);
+  assert.equal(proto.wouldAllow("fs.read", { metered: true, context: {} }).allowed, false);
+  // `null` asserts nothing, so it is undeclared: strict metering refuses it, and the guard meters a
+  // null call count itself. `{rows: null, calls: null}` passed CallLimit(1) any number of times.
+  const rows = Guard.issue("root", new Authority({ scopes: ["crm.read"], ceilings: [new RowLimit(5)] }), { strictMetering: true });
+  assert.equal(rows.check("crm.read", { metered: true, context: { rows: null } }).reasons[0]!.code, ReasonCode.UNMETERED);
+  assert.equal(rows.check("crm.read", { metered: true, context: { rows: 3 } }).allowed, true);
+  const calls = Guard.issue("root", new Authority({ scopes: ["crm.read"], ceilings: [new CallLimit(1)] }));
+  assert.equal(calls.check("crm.read", { context: { calls: null } }).allowed, true);
+  assert.equal(calls.check("crm.read", { context: { calls: null } }).allowed, false);
+  assert.equal(calls.check("crm.read", { context: { rows: null, calls: null } }).allowed, false);
 });
 

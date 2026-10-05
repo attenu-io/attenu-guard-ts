@@ -297,7 +297,7 @@ function memberList(key: string, listName: string, values: unknown): Iterable<Js
  * `toString` and the rest from Object.prototype, and a field named like one of them is absent unless
  * the context holds it, as `ctx.get(field)` reads it in the Python implementation.
  */
-function ownValue(ctx: Context, field: string): Json | undefined {
+export function ownValue(ctx: Context, field: string): Json | undefined {
   return Object.prototype.hasOwnProperty.call(ctx, field) ? ctx[field] : undefined;
 }
 
