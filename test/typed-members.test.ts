@@ -312,6 +312,8 @@ test("an unknown constraint describes itself and denies in the Python implementa
       "unrecognised constraint type for key='tier'; fail-closed", "tier"],
     [{ key: "t\nOK", type: "x-custom" }, "t\nOK={'key': 't\\nOK', 'type': 'x-custom'}",
       "unrecognised constraint type for key='t\\nOK'; fail-closed", "t\nOK"],
+    [{ key: "q", type: "x-custom", eps: 0.00001, n: -2.5e-7 }, "q={'key': 'q', 'type': 'x-custom', 'eps': 1e-05, 'n': -2.5e-07}",
+      "unrecognised constraint type for key='q'; fail-closed", "q"],
   ];
   for (const [wire, text, message, constraint] of cases) {
     const c = ceilingFromWire(wire);

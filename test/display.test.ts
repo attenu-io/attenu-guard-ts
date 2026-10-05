@@ -50,6 +50,19 @@ test("a parsed number keeps its literal: 3.0 prints as Python's float, 3 as its 
   }
 });
 
+test("a number without its literal prints as Python's repr when it has a fraction", () => {
+  // A ceiling read from the wire holds plain numbers. Python reads 0.00001 as a float and prints
+  // 1e-05; this printed 0.00001, so an unknown constraint's describe() and an authority message
+  // read differently. An integral number prints as an integer, as before (see the CHANGELOG's
+  // known differences: this build cannot tell 100 from 100.0 once the literal is gone).
+  const cases: [number, string][] = [
+    [0.00001, "1e-05"], [1.5e-7, "1.5e-07"], [-2.5e-7, "-2.5e-07"], [0.1, "0.1"], [1.5, "1.5"],
+    [1.5e300, "1.5e+300"], [123.456, "123.456"], [2 ** -30, "9.313225746154785e-10"], [7, "7"], [100, "100"],
+  ];
+  for (const [value, text] of cases) assert.equal(pyRepr(value), text, String(value));
+  assert.equal(pyRepr({ eps: 0.00001 }), "{'eps': 1e-05}");
+});
+
 test("no output of shown or escaped holds whitespace or a line break", () => {
   for (const [text] of STRINGS) {
     for (const out of [shown(text), escaped(text)]) assert.doesNotMatch(out, /\s/u, JSON.stringify(text));
