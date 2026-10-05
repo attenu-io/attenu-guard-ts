@@ -429,3 +429,26 @@ test("a bound of the wrong type is malformed, from the constructor, the wire, a 
     "root typed:n0: unreadable authority (max of constraint 'max_rows' is a boolean, not a number)");
 });
 
+test("a caller's _scope can never move a call to another meter", () => {
+  const own = new Authority({ scopes: ["crm.read"], ceilings: [new CallLimit(1, "crm.read")] });
+  assert.equal(own.permits("crm.read", { "calls[crm.read]": 2, _scope: "other.x" }).allowed, false);
+  const other = new Authority({ scopes: ["crm.read"], ceilings: [new CallLimit(0, "other.*")] });
+  assert.equal(other.permits("crm.read", { "calls[other.*]": 1, _scope: "other.x" }).allowed, true);
+  const guard = Guard.issue("root", own);
+  assert.equal(guard.check("crm.read").allowed, true);
+  assert.equal(guard.check("crm.read").allowed, false);
+  assert.equal(guard.check("crm.read", { context: { _scope: "other.x" } }).allowed, false);
+  const chain = load([rootToken({ key: "max_calls[crm.read]", type: "max_calls", max: 1, applies_to: "crm.read" })], hs256);
+  assert.equal(chain.permits("crm.read", { "calls[crm.read]": 2, _scope: "other.x" }).allowed, false);
+  const recorded = Guard.issue("root", new Authority({ scopes: ["docs.write"], ceilings: [new CallLimit(1, "docs.write")] }), {
+    chainId: "typed",
+  });
+  const root = recorded.auditLog().entries[0]!;
+  recorded.auditLog().append("allow", 1, {
+    chain_id: root["chain_id"]!, node: root["node"]!, scope: "docs.write", tool: null,
+    context: { "calls[docs.write]": 5, _scope: "other.x" },
+  });
+  assert.deepEqual(verifyBundle(exportBundle(recorded.auditLog(), hs256), hs256).failures, [
+    "containment: allow of 'docs.write' on typed:n0 outside its authority ['docs.write']",
+  ]);
+});

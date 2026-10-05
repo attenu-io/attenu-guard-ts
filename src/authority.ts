@@ -321,9 +321,11 @@ export class Authority {
       );
     }
 
-    // Reserved key so scoped ceilings can tell whether they apply.
+    // Reserved key so scoped ceilings can tell whether they apply. Always the scope being checked: a
+    // `_scope` in the caller's context is ignored, so it can move no call off its own meter or onto
+    // another (attenu-ops#110).
     const cctx: Context = { ...context };
-    if (!("_scope" in cctx)) cctx["_scope"] = scope;
+    cctx["_scope"] = scope;
     for (const c of this.ceilings) {
       const decision = c.permits(cctx);
       if (!decision.allowed) reasons.push(...decision.reasons);
