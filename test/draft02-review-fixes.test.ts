@@ -245,7 +245,7 @@ test("round 2: strict metering and evaluation read the same context", () => {
   assert.ok(g.check("pay.send", { context: { spend: 1 }, totals: { spend_total: 5 }, metered: true }).allowed);
 });
 
-test("round 2: only held cumulative fields are stripped", () => {
+test("round 2: only held cumulative fields are cumulative", () => {
   const a = A02(["a.b"], [new d.MaxLifetime("max_spend", 100), new Allow("region_total", ["eu"])]);
   assert.ok(a.permits("a.b", { region_total: "eu" }, { totals: { spend_total: 1 } }).allowed);
   assert.equal(a.permits("a.b", { region_total: "us" }, { totals: { spend_total: 1 } }).allowed, false);
@@ -297,4 +297,66 @@ test("round 2 D: a bad depth beside an altered sub is depth_invalid", () => {
     p["del_depth"] = 7;
   });
   reject(tokens, WireReasonCode.DEPTH_INVALID);
+});
+
+// ---- round 3: two namespaces, never merged --------------------------------------
+
+test("round 3 X1: a total never overwrites a request quantity", () => {
+  const a = A02(["shop.buy"], [new d.MaxLifetime("spend", 1000), new d.Max("spend_total", 10)]);
+  assert.equal(a.permits("shop.buy", { spend_total: 1_000_000 }, { totals: { spend_total: 0 } }).allowed, false);
+  assert.ok(a.permits("shop.buy", { spend_total: 5 }, { totals: { spend_total: 0 } }).allowed);
+  const g = Guard.issue("g", a);
+  assert.equal(g.check("shop.buy", { context: { spend_total: 1_000_000 }, totals: { spend_total: 0 } }).allowed, false);
+});
+
+test("round 3 X2: the meter never replaces a request quantity", () => {
+  const g = Guard.issue("g", A02(["a.b"], [new d.MaxLifetime("max_calls", 100), new d.Max("calls", 5)]));
+  assert.equal(g.check("a.b", { context: { calls: 1000 } }).allowed, false);
+  assert.ok(g.check("a.b", { context: { calls: 3 } }).allowed);
+});
+
+test("round 3: a request value never satisfies a cumulative bound", () => {
+  const a = A02(["a.b"], [new d.MaxLifetime("spend", 100)]);
+  assert.equal(a.permits("a.b", { spend_total: 1 }).allowed, false, "the request cannot assert its own total");
+  assert.ok(a.permits("a.b", { spend_total: 1_000_000 }, { totals: { spend_total: 1 } }).allowed);
+});
+
+test("round 3: namespaces do not collide for any field name (500 trials)", () => {
+  // A small seeded PRNG (mulberry32).
+  let s = 3;
+  const next = (): number => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const pick = <T>(xs: readonly T[]): T => xs[Math.floor(next() * xs.length)]!;
+  const names = ["spend", "spend_total", "calls", "rows", "x_total", "x_subtree_total", "max_rows", "max_spend"];
+  for (let i = 0; i < 500; i++) {
+    const perKey = pick(names);
+    const cumKey = pick(["spend", "max_spend", "max_calls", "x", "rows"]);
+    const cum = next() < 0.5 ? new d.MaxLifetime(cumKey, 10) : new d.MaxSubtree(cumKey, 10);
+    const per = new d.Max(perKey, 10);
+    const a = A02(["a.b"], [cum, per]);
+    const pf = per.ctxField;
+    const cf = cum.ctxField;
+    const label = `${per.describe()} ${cum.describe()}`;
+    // A satisfying total in the request and no trusted total: the cumulative bound denies.
+    assert.equal(a.permits("a.b", { [cf]: 1 }).allowed, false, label);
+    // A violating request value beside a satisfying trusted total: the per-action bound denies.
+    assert.equal(a.permits("a.b", { [pf]: 1000 }, { totals: { [cf]: 1 } }).allowed, false, label);
+    // A satisfying request value beside a violating trusted total: the cumulative bound denies.
+    assert.equal(a.permits("a.b", { [pf]: 1 }, { totals: { [cf]: 1000 } }).allowed, false, label);
+    // Both satisfied, each in its own namespace: allowed.
+    assert.ok(a.permits("a.b", { [pf]: 1 }, { totals: { [cf]: 1 } }).allowed, label);
+  }
+});
+
+test("round 3: totals under the default profile is refused", () => {
+  assert.throws(
+    () => new Authority({ scopes: ["a.b"], ceilings: [new CallLimit(2)], ttl: 60 }).permits("a.b", {}, { totals: { calls: 1 } }),
+    TypeError,
+  );
+  // ...and an empty totals is no totals, on either profile.
+  assert.ok(new Authority({ scopes: ["a.b"], ttl: 60 }).permits("a.b", {}, { totals: {} }).allowed);
 });

@@ -34,6 +34,16 @@
  * held by the guard. Every other cumulative total is supplied by the component that holds it, or
  * the constraint denies.
  *
+ * Known limitation (fail-closed): under the "02" profile a legacy fixed-key ceiling and the generic
+ * ceiling of the same -02 type on the same key (`RowLimit(5)` and `Max("max_rows", 5)`, `EgressRank`
+ * and `Rank("egress", ...)`, `CallLimit` and `MaxLifetime("max_calls", ...)`) share the (key, type)
+ * pair but are different classes, so neither subsumes nor narrows the other: `isNarrowerThan` is
+ * false and a delegation across them is refused as `not_narrower` even where the values narrow.
+ * That is a false deny, never a false allow. It arises only when the two forms are mixed in one
+ * process, for example a guard built from legacy ceilings delegating to a request built from
+ * `Authority.fromWire(..., "02")`; build both sides from the same form. The forms are not
+ * normalised into one in this release.
+ *
  * Kept in step with the Python reference implementation (`attenu_guard.draft02`): the same
  * classification, the same pairing, the same wire shapes and the same refusals, in the same words.
  */

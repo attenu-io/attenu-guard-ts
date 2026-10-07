@@ -457,12 +457,14 @@ export class Authority {
    * `options.totals` is the TRUSTED channel for the running totals a cumulative -02 constraint
    * (`max_lifetime`, `max_subtree`) is measured over: the component holding a total supplies it
    * here, keyed by the ceiling's total field (`spend_total`, `spend_subtree_total`, ...). Under
-   * the -02 profile the held total fields (`totalFields`) are dropped from `ctx` before
-   * evaluation, as `_scope` is: the context is what an adapter fills from the tool call's own
-   * arguments, and a total the caller asserts about itself is the attenu-ops#110 defect class.
+   * the -02 profile a cumulative ceiling reads `totals` only and a per-action ceiling reads `ctx`
+   * only: the context is what an adapter fills from the tool call's own arguments, and a total the
+   * caller asserts about itself is the attenu-ops#110 defect class. Under the default profile
+   * `totals` is refused (a TypeError).
    */
   permits(scope: string, ctx: Context | null = null, options: PermitsOptions = {}): Decision {
-    const context = this.effectiveContext(ctx, options.totals ?? null);
+    const context = this.effectiveContext(ctx);
+    const totals = this.effectiveTotals(options.totals ?? null);
     const reasons: Reason[] = [];
 
     if (!this.coversScope(scope)) {
@@ -481,8 +483,12 @@ export class Authority {
     // another (attenu-ops#110).
     const cctx: Context = { ...context };
     cctx["_scope"] = scope;
+    const tctx: Context = { ...totals };
+    tctx["_scope"] = scope;
     for (const c of this.ceilings) {
-      const decision = c.permits(cctx);
+      // Under the -02 a cumulative ceiling reads the trusted totals and nothing else; a per-action
+      // ceiling reads the request context and nothing else.
+      const decision = c.permits(this.profile === PROFILE_02 && Authority.isCumulative(c) ? tctx : cctx);
       if (decision.allowed) continue;
       // A denial with no reason still denies: an empty list read as an allow, so a custom ceiling's
       // bare `Decision.deny([])` let every call through (attenu-ops#110).
@@ -501,36 +507,50 @@ export class Authority {
    */
   totalFields(): Set<string> {
     return new Set(
-      this.ceilings
-        .filter((c) => (CUMULATIVE_TYPES as readonly string[]).includes(draftTypeOf(c)))
-        .map((c) => ctxFieldOf(c)),
+      this.ceilings.filter((c) => Authority.isCumulative(c)).map((c) => ctxFieldOf(c)),
     );
   }
 
+  /** Whether a ceiling is measured over a running total (`max_lifetime`, `max_subtree`, the
+   * library's metered call count) rather than over one action. */
+  static isCumulative(ceiling: Ceiling): boolean {
+    return (CUMULATIVE_TYPES as readonly string[]).includes(draftTypeOf(ceiling));
+  }
+
   /**
-   * The context an evaluation reads: the caller's context with the held total fields removed
-   * under the -02 profile, then the trusted `totals` applied. `totals` may name only held total
-   * fields; anything else is a TypeError, so a misuse is loud rather than a silent overwrite.
-   * `Guard` builds its strict-metering check from this same function, so the two never read
-   * different contexts.
+   * The per-action context an evaluation reads: the caller's context, unchanged. The trusted
+   * `totals` are NEVER merged into it: under the -02 profile a cumulative ceiling reads `totals`
+   * only and a per-action ceiling reads the context only (two namespaces, so a total field that
+   * is also another constraint's per-action field cannot overwrite the request quantity).
+   * `Guard` builds its strict-metering check from this function and `effectiveTotals`, so it
+   * reads what the evaluation reads.
    */
-  effectiveContext(ctx: Context | null, totals: Context | null = null): Context {
+  effectiveContext(ctx: Context | null): Context {
+    return { ...(ctx ?? {}) };
+  }
+
+  /**
+   * The trusted totals an evaluation reads. They may name only the total fields of the
+   * cumulative constraints this authority holds; anything else is a TypeError, so a misuse is
+   * loud. Under the default profile there is no totals namespace: the -01 algorithm reads one
+   * context, and the guard's meter writes into it.
+   */
+  effectiveTotals(totals: Context | null): Context {
+    if (!totals || Object.keys(totals).length === 0) return {};
+    if (this.profile !== PROFILE_02) {
+      throw new TypeError(
+        "totals is a parameter of the -02 profile; the default profile reads one context, which the guard's meter fills",
+      );
+    }
     const held = this.totalFields();
-    let context: Context = { ...(ctx ?? {}) };
-    if (this.profile === PROFILE_02) {
-      context = Object.fromEntries(Object.entries(context).filter(([k]) => !held.has(k)));
+    const stray = Object.keys(totals).filter((k) => !held.has(k)).sort(compareCodePoints);
+    if (stray.length > 0) {
+      throw new TypeError(
+        `totals names fields no held cumulative constraint reads: [${stray.map(pyStrRepr).join(", ")}]; ` +
+          `held total fields are [${[...held].sort(compareCodePoints).map(pyStrRepr).join(", ")}]`,
+      );
     }
-    if (totals) {
-      const stray = Object.keys(totals).filter((k) => !held.has(k)).sort(compareCodePoints);
-      if (stray.length > 0) {
-        throw new TypeError(
-          `totals names fields no held cumulative constraint reads: [${stray.map(pyStrRepr).join(", ")}]; ` +
-            `held total fields are [${[...held].sort(compareCodePoints).map(pyStrRepr).join(", ")}]`,
-        );
-      }
-      Object.assign(context, totals);
-    }
-    return context;
+    return { ...totals };
   }
 
   withTtl(ttl: number | null): Authority {

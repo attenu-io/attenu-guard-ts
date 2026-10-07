@@ -486,9 +486,16 @@ export class Guard {
     // (attenu-ops#110): counting it as declared let `{rows: null}` through, since every ceiling reads
     // null as absent.
     if (this.strict && metered) {
-      const declared = auth.effectiveContext(context, totals); // the context permits() reads
+      // Exactly what permits() reads: per-action ceilings the request context, cumulative ceilings
+      // (under the -02) the trusted totals; the two are never merged.
+      const declaredCtx = auth.effectiveContext(context);
+      const declaredTotals = auth.effectiveTotals(totals);
+      const is02 = auth.profile === PROFILE_02;
       const missing = auth.ceilings
-        .filter((c) => isMetered(c) && (ownValue(declared, ctxFieldOf(c)) ?? null) === null)
+        .filter((c) => {
+          const declared = is02 && Authority.isCumulative(c) ? declaredTotals : declaredCtx;
+          return isMetered(c) && (ownValue(declared, ctxFieldOf(c)) ?? null) === null;
+        })
         .map((c) => c.key);
       if (missing.length > 0) {
         const held = auth.ceilings.filter(isMetered).map((c) => c.key);
