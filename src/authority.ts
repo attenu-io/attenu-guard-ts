@@ -27,11 +27,25 @@ import {
   UnknownCeiling,
   ceilingFromWire,
   describe as describeCeiling,
+  jsonKind,
   sameType,
   type Ceiling,
   type Context,
 } from "./ceilings.js";
 import { Decision, Reason, ReasonCode } from "./reasons.js";
+import {
+  PROFILE_01,
+  PROFILE_02,
+  ceilingFromWire02,
+  ceilingToWire02,
+  checkProfile,
+  draftTypeJson,
+  draftTypeOf,
+  draftTypeRepr,
+  scopeCovers as scopeCovers02,
+  validateScope as validateScope02,
+  type Profile,
+} from "./draft02.js";
 
 /**
  * Raised for STRUCTURAL failures — bad input or invalid chain state, such as
@@ -141,6 +155,13 @@ export interface AuthorityInit {
   ceilings?: Iterable<Ceiling>;
   /** Seconds this authority remains valid from issuance; `null` is unbounded. */
   ttl?: number | null;
+  /**
+   * Which revision of the Internet-Draft this authority follows: "01" (the default, and every
+   * pre-existing caller) or "02" (draft02.ts: three-form scope grammar, generic constraint types,
+   * one constraint per (key, type)). The profile is not on the wire; `load(..., { draft })` and
+   * `Authority.fromWire(wire, profile)` set it.
+   */
+  profile?: Profile;
 }
 
 /** The wire form of an Authority. */
@@ -153,7 +174,15 @@ export interface AuthorityWire {
   [key: string]: CJson;
 }
 
-function validateScope(scope: unknown): asserts scope is string {
+/**
+ * Validate the agent_delegation scope grammar defined by the I-D: the -01's two forms by default,
+ * the -02's three forms (literal, wildcard, opaque) under profile "02".
+ */
+function validateScope(scope: unknown, profile: Profile = PROFILE_01): asserts scope is string {
+  if (profile === PROFILE_02) {
+    validateScope02(scope);
+    return;
+  }
   if (typeof scope !== "string" || !SCOPE_RE.test(scope)) {
     throw new TypeError(
       `invalid scope ${pyRepr((scope ?? null) as CJson)}: expected lowercase dot-separated segments; ` +
@@ -183,34 +212,78 @@ export class Authority {
   /** Seconds from issuance. `null` is unbounded (discouraged). */
   readonly ttl: number | null;
 
+  /** The revision of the Internet-Draft this authority follows (`AuthorityInit.profile`). */
+  readonly profile: Profile;
+
   constructor(init: AuthorityInit = {}) {
+    this.profile = checkProfile(init.profile ?? PROFILE_01);
     const scopes = new Set(init.scopes ?? []);
-    for (const scope of scopes) validateScope(scope);
+    for (const scope of scopes) validateScope(scope, this.profile);
     this.scopes = scopes;
     const byKey = new Map<string, Ceiling>();
     for (const c of init.ceilings ?? []) {
       // One constraint per key, on every path (attenu-ops#110): the last one won, silently, so
-      // [allow region in [us], deny region not in [rm]] kept only the deny-list.
-      if (byKey.has(String(c.key))) {
+      // [allow region in [us], deny region not in [rm]] kept only the deny-list. Under the -02
+      // the unit is (key, type), so a `min` and a `max` on one quantity form a range, while two
+      // `max` on one key are still malformed (draft -02 Section 4.2).
+      const k = this.pairKey(c);
+      if (byKey.has(k)) {
+        if (this.profile === PROFILE_02) {
+          throw new TypeError(
+            `two constraints share the key ${pyRepr(c.key as CJson)} and the type ` +
+              `${draftTypeRepr(c)}; an authority holds one per (key, type)`,
+          );
+        }
         throw new TypeError(`two constraints share the key ${pyRepr(c.key as CJson)}; an authority holds one per key`);
       }
-      byKey.set(String(c.key), c);
+      byKey.set(k, c);
     }
-    this.ceilings = Array.from(byKey.keys())
-      .sort(compareCodePoints)
-      .map((k) => byKey.get(k)!);
+    this.ceilings = this.sortedKeys(byKey.keys()).map((k) => byKey.get(k)!);
     this.ttl = init.ttl ?? null;
+  }
+
+  /**
+   * What two constraints are paired by in `meet` and `isNarrowerThan`: the key (-01), or the
+   * (key, type) pair (-02), encoded as one string.
+   */
+  private pairKey(c: Ceiling): string {
+    if (this.profile === PROFILE_02) return JSON.stringify([String(c.key), draftTypeOf(c)]);
+    return String(c.key);
+  }
+
+  /**
+   * Deterministic wire order of pairing keys. The -01 order (plain string sort) is unchanged; the
+   * -02's (key, type) pairs sort by key, then type.
+   */
+  private sortedKeys(keys: Iterable<string>): string[] {
+    if (this.profile === PROFILE_02) {
+      return Array.from(keys).sort((a, b) => {
+        const [ak, at] = JSON.parse(a) as [string, string];
+        const [bk, bt] = JSON.parse(b) as [string, string];
+        return compareCodePoints(ak, bk) || compareCodePoints(at, bt);
+      });
+    }
+    return Array.from(keys).sort(compareCodePoints);
   }
 
   private byKey(): Map<string, Ceiling> {
     const m = new Map<string, Ceiling>();
-    for (const c of this.ceilings) m.set(String(c.key), c);
+    for (const c of this.ceilings) m.set(this.pairKey(c), c);
     return m;
   }
 
-  /** The ceiling bound to `key`, or `undefined`. */
+  /**
+   * The ceiling bound to `key`, or `undefined`. Under the -02 a key may carry several constraints
+   * of different types; this returns the first in wire order, and `ceilingsFor(key)` returns them
+   * all.
+   */
   ceiling(key: string): Ceiling | undefined {
-    return this.byKey().get(key);
+    return this.ceilings.find((c) => c.key === key);
+  }
+
+  /** Every ceiling bound to `key`, in wire order. */
+  ceilingsFor(key: string): Ceiling[] {
+    return this.ceilings.filter((c) => c.key === key);
   }
 
   // ---- scope helpers ----------------------------------------------------
@@ -222,9 +295,15 @@ export class Authority {
     return false;
   }
 
+  /** The covering relation of this authority's profile: `scopeCovers` (-01) or draft02's. */
+  private covers(held: string, requested: string): boolean {
+    if (this.profile === PROFILE_02) return scopeCovers02(held, requested);
+    return Authority.scopeCovers(held, requested);
+  }
+
   coversScope(requested: string): boolean {
     for (const held of this.scopes) {
-      if (Authority.scopeCovers(held, requested)) return true;
+      if (this.covers(held, requested)) return true;
     }
     return false;
   }
@@ -243,6 +322,11 @@ export class Authority {
    * So `parent.meet(request)` and `request.meet(parent)` differ there.
    */
   meet(other: Authority): Authority {
+    if (other.profile !== this.profile) {
+      throw new TypeError(
+        `cannot meet an authority of profile ${pyStrRepr(this.profile)} with one of profile ${pyStrRepr(other.profile)}`,
+      );
+    }
     // Scopes: keep a requested scope only if this side covers it, and keep this
     // side's own concrete scopes that the other covers. The net effect is a
     // wildcard-aware intersection, never larger than either side's coverage.
@@ -256,7 +340,7 @@ export class Authority {
     const wildcards = Array.from(merged).filter((s) => s.endsWith(".*"));
     const pruned = new Set(
       Array.from(merged).filter(
-        (s) => !wildcards.some((w) => w !== s && Authority.scopeCovers(w, s)),
+        (s) => !wildcards.some((w) => w !== s && this.covers(w, s)),
       ),
     );
 
@@ -266,7 +350,7 @@ export class Authority {
     // exactly the property `isNarrowerThan` checks.
     const mine = this.byKey();
     const theirs = other.byKey();
-    const keys = Array.from(new Set([...mine.keys(), ...theirs.keys()])).sort(compareCodePoints);
+    const keys = this.sortedKeys(new Set([...mine.keys(), ...theirs.keys()]));
     const ceilings: Ceiling[] = [];
     for (const k of keys) {
       const a = mine.get(k);
@@ -282,19 +366,32 @@ export class Authority {
           ceilings.push(a);
           continue;
         }
+        // The constraint as the Python port names it: the key (-01), or the (key, type) pair (-02).
+        const named = this.profile === PROFILE_02 ? `(${pyStrRepr(String(a.key))}, ${draftTypeRepr(a)})` : pyRepr(k);
         throw new AuthorityError(
-          `constraint ${pyRepr(k)} has a different ceiling type on each side; neither narrows the other`,
+          `constraint ${named} has a different ceiling type on each side; neither narrows the other`,
           "not_narrower",
-          { constraint: k },
+          { constraint: this.profile === PROFILE_02 ? [String(a.key), draftTypeJson(a)] : k },
         );
       }
-      ceilings.push(a !== undefined && b !== undefined ? a.narrow(b) : (a ?? b)!);
+      if (a !== undefined && b !== undefined) {
+        try {
+          ceilings.push(a.narrow(b));
+        } catch (e) {
+          // A -02 rank whose ordering differs from the request's: no common narrowing. The Python
+          // port catches its ValueError here, which this port throws as a TypeError.
+          if (!(e instanceof TypeError)) throw e;
+          throw new AuthorityError(e.message, "not_narrower", { constraint: a.key });
+        }
+      } else {
+        ceilings.push((a ?? b)!);
+      }
     }
 
     const ttls = [this.ttl, other.ttl].filter((t): t is number => t !== null);
     const ttl = ttls.length > 0 ? Math.min(...ttls) : null;
 
-    return new Authority({ scopes: pruned, ceilings, ttl });
+    return new Authority({ scopes: pruned, ceilings, ttl, profile: this.profile });
   }
 
   /**
@@ -314,6 +411,7 @@ export class Authority {
    * token relation are the same relation.
    */
   isNarrowerThan(other: Authority): boolean {
+    if (other.profile !== this.profile) return false;
     for (const s of this.scopes) {
       if (!other.coversScope(s)) return false;
     }
@@ -375,20 +473,26 @@ export class Authority {
   }
 
   withTtl(ttl: number): Authority {
-    return new Authority({ scopes: this.scopes, ceilings: this.ceilings, ttl });
+    return new Authority({ scopes: this.scopes, ceilings: this.ceilings, ttl, profile: this.profile });
   }
 
   // ---- wire form --------------------------------------------------------
 
+  /**
+   * The authority's wire form under its own profile: the -01 constraint shapes by default; under
+   * "02", every constraint in its -02 shape (`ceilingToWire02`). The profile itself is not written:
+   * it is a property of the token format around it.
+   */
   toWire(): AuthorityWire {
     return {
       scopes: sortedStrings(this.scopes),
-      constraints: this.ceilings.map((c) => c.toWire()),
+      constraints:
+        this.profile === PROFILE_02 ? this.ceilings.map((c) => ceilingToWire02(c)) : this.ceilings.map((c) => c.toWire()),
       ttl: this.ttl,
     };
   }
 
-  static fromWire(wire: CJson): Authority {
+  static fromWire(wire: CJson, profile: Profile = PROFILE_01): Authority {
     const d = toPlain<Record<string, Json>>(wire) ?? {};
     // Read the authority object WHOLE, for the same reason the constraint inside
     // it is read whole. The token path is safe only by accident --
@@ -412,12 +516,20 @@ export class Authority {
       );
     }
     const scopes = (d["scopes"] as string[] | undefined) ?? [];
-    const constraints = (d["constraints"] as Record<string, Json>[] | undefined) ?? [];
+    // An absent list is empty. A null one is empty under the -01 as it always was here, and is
+    // refused under the -02 as the Python port refuses it on both.
+    const listed = d["constraints"];
+    const constraints = (listed === undefined || (listed === null && profile === PROFILE_01) ? [] : listed) as
+      Record<string, Json>[];
+    if (!Array.isArray(constraints)) {
+      throw new TypeError(`constraints is ${jsonKind(constraints)}, not an array`);
+    }
     const ttl = d["ttl"];
     return new Authority({
       scopes,
-      ceilings: constraints.map((c) => ceilingFromWireWhole(c)),
+      ceilings: constraints.map((c) => (profile === PROFILE_02 ? ceilingFromWire02(c) : ceilingFromWireWhole(c))),
       ttl: typeof ttl === "number" ? ttl : null,
+      profile,
     });
   }
 
@@ -429,6 +541,7 @@ export class Authority {
   }
 
   toString(): string {
-    return `Authority(${this.describe()})`;
+    const tail = this.profile === PROFILE_01 ? "" : ` profile=${this.profile}`;
+    return `Authority(${this.describe()}${tail})`;
   }
 }
