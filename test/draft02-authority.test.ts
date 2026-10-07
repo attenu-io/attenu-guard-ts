@@ -143,14 +143,16 @@ test("-02: a lifetime bound with no running total denies", () => {
     decision.reasons[0]!.message,
     "no running total for 'spend_total' is held here; a cumulative constraint is checked only where its total is held; refused",
   );
-  assert.ok(a.permits("a.b", { spend_total: 90 }).allowed);
-  assert.equal(a.permits("a.b", { spend_total: 101 }).allowed, false);
+  assert.ok(a.permits("a.b", { spend: 10 }, { totals: { spend_total: 90 } }).allowed);
+  assert.equal(a.permits("a.b", { spend: 10 }, { totals: { spend_total: 101 } }).allowed, false);
+  assert.equal(a.permits("a.b", { spend_total: 90 }).allowed, false, "a total in the caller context is ignored");
 });
 
 test("-02: a subtree bound reads its own total", () => {
   const a = A02(["a.b"], [new d.MaxSubtree("spend", 100)]);
-  assert.equal(a.permits("a.b", { spend_total: 1 }).allowed, false);
-  assert.ok(a.permits("a.b", { spend_subtree_total: 100 }).allowed);
+  assert.throws(() => a.permits("a.b", {}, { totals: { spend_total: 1 } }), TypeError); // not a field this authority holds
+  assert.equal(a.permits("a.b", {}, { totals: { spend_subtree_total: 101 } }).allowed, false);
+  assert.ok(a.permits("a.b", {}, { totals: { spend_subtree_total: 100 } }).allowed);
 });
 
 test("-02: a per-action max still asserts nothing when absent", () => {
@@ -166,8 +168,9 @@ test("-02: the guard's call meter feeds a lifetime call bound", () => {
   const generic = Authority.fromWire(root.authority.toWire(), "02");
   assert.ok(generic.ceilings[0] instanceof d.MaxLifetime);
   assert.equal(generic.ceilings[0]!.ctxField, "calls");
-  assert.ok(generic.permits("crm.read", { calls: 2 }).allowed);
-  assert.equal(generic.permits("crm.read", { calls: 3 }).allowed, false);
+  assert.ok(generic.permits("crm.read", {}, { totals: { calls: 2 } }).allowed);
+  assert.equal(generic.permits("crm.read", {}, { totals: { calls: 3 } }).allowed, false);
+  assert.equal(generic.permits("crm.read", { calls: 2 }).allowed, false, "a context count is not a total");
   assert.equal(generic.permits("crm.read", {}).allowed, false, "no total held: deny");
 });
 
@@ -261,7 +264,7 @@ test("-02: meet refuses and narrower is false across profiles", () => {
   const a02 = A02(["a.b"], [new RowLimit(1)], 10);
   assert.equal(a01.isNarrowerThan(a02), false);
   assert.equal(a02.isNarrowerThan(a01), false);
-  assert.throws(() => a01.meet(a02), TypeError);
+  assert.throws(() => a01.meet(a02), (e: unknown) => e instanceof AuthorityError && e.reason === "not_narrower");
   assert.throws(() => new Authority({ scopes: ["a.b"], profile: "03" as never }), TypeError);
 });
 

@@ -26,6 +26,7 @@ import {
   SCOPE_RE,
   UnknownCeiling,
   ceilingFromWire,
+  ctxFieldOf,
   describe as describeCeiling,
   jsonKind,
   sameType,
@@ -34,6 +35,7 @@ import {
 } from "./ceilings.js";
 import { Decision, Reason, ReasonCode } from "./reasons.js";
 import {
+  CUMULATIVE_TYPES,
   PROFILE_01,
   PROFILE_02,
   ceilingFromWire02,
@@ -148,6 +150,14 @@ function ceilingFromWireWhole(c: CJson): Ceiling {
     }
   }
   return ceiling;
+}
+
+export interface PermitsOptions {
+  /**
+   * The running totals the caller holds for this authority's cumulative -02 constraints, keyed by
+   * total field (`spend_total`, `calls_subtree_total`). The only source of a total under the -02.
+   */
+  totals?: Context | null;
 }
 
 export interface AuthorityInit {
@@ -323,8 +333,12 @@ export class Authority {
    */
   meet(other: Authority): Authority {
     if (other.profile !== this.profile) {
-      throw new TypeError(
+      // A request under another revision's rules has no common narrowing with this authority:
+      // refused as a delegation, so Guard.delegate records spawn_denied.
+      throw new AuthorityError(
         `cannot meet an authority of profile ${pyStrRepr(this.profile)} with one of profile ${pyStrRepr(other.profile)}`,
+        "not_narrower",
+        { profile: other.profile },
       );
     }
     // Scopes: keep a requested scope only if this side covers it, and keep this
@@ -439,9 +453,16 @@ export class Authority {
    * every failing reason — not just the first — so a single evaluation can
    * explain everything wrong with a request. A ceiling whose context field is
    * absent is not asserting anything on this call and is treated as satisfied.
+   *
+   * `options.totals` is the TRUSTED channel for the running totals a cumulative -02 constraint
+   * (`max_lifetime`, `max_subtree`) is measured over: the component holding a total supplies it
+   * here, keyed by the ceiling's total field (`spend_total`, `spend_subtree_total`, ...). Under
+   * the -02 profile the held total fields (`totalFields`) are dropped from `ctx` before
+   * evaluation, as `_scope` is: the context is what an adapter fills from the tool call's own
+   * arguments, and a total the caller asserts about itself is the attenu-ops#110 defect class.
    */
-  permits(scope: string, ctx: Context | null = null): Decision {
-    const context: Context = ctx ?? {};
+  permits(scope: string, ctx: Context | null = null, options: PermitsOptions = {}): Decision {
+    const context = this.effectiveContext(ctx, options.totals ?? null);
     const reasons: Reason[] = [];
 
     if (!this.coversScope(scope)) {
@@ -472,7 +493,47 @@ export class Authority {
     return reasons.length > 0 ? Decision.deny(reasons) : Decision.allow();
   }
 
-  withTtl(ttl: number): Authority {
+  /**
+   * The context fields the cumulative constraints this authority HOLDS read their running total
+   * from (`calls`, `spend_total`, `spend_subtree_total`, ...). Only these are stripped from a
+   * caller's context and only these may be supplied through `totals`; an ordinary constraint keyed
+   * `order_total` keeps reading its own field.
+   */
+  totalFields(): Set<string> {
+    return new Set(
+      this.ceilings
+        .filter((c) => (CUMULATIVE_TYPES as readonly string[]).includes(draftTypeOf(c)))
+        .map((c) => ctxFieldOf(c)),
+    );
+  }
+
+  /**
+   * The context an evaluation reads: the caller's context with the held total fields removed
+   * under the -02 profile, then the trusted `totals` applied. `totals` may name only held total
+   * fields; anything else is a TypeError, so a misuse is loud rather than a silent overwrite.
+   * `Guard` builds its strict-metering check from this same function, so the two never read
+   * different contexts.
+   */
+  effectiveContext(ctx: Context | null, totals: Context | null = null): Context {
+    const held = this.totalFields();
+    let context: Context = { ...(ctx ?? {}) };
+    if (this.profile === PROFILE_02) {
+      context = Object.fromEntries(Object.entries(context).filter(([k]) => !held.has(k)));
+    }
+    if (totals) {
+      const stray = Object.keys(totals).filter((k) => !held.has(k)).sort(compareCodePoints);
+      if (stray.length > 0) {
+        throw new TypeError(
+          `totals names fields no held cumulative constraint reads: [${stray.map(pyStrRepr).join(", ")}]; ` +
+            `held total fields are [${[...held].sort(compareCodePoints).map(pyStrRepr).join(", ")}]`,
+        );
+      }
+      Object.assign(context, totals);
+    }
+    return context;
+  }
+
+  withTtl(ttl: number | null): Authority {
     return new Authority({ scopes: this.scopes, ceilings: this.ceilings, ttl, profile: this.profile });
   }
 

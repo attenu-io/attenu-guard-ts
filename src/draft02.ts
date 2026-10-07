@@ -190,6 +190,16 @@ export class Max implements Ceiling {
 
   constructor(key: string, value: number) {
     checkKey(key);
+    // A per-action cap on a COUNT caps nothing (every action is one call), and it is exactly what a
+    // -01 producer emits as a call cap. This library meters `max_calls` as a running count, so
+    // under the -02 a count bound is `max_lifetime` or `max_subtree`; a `max` on that key is
+    // refused, in-process and at load (library profile restriction, not a rule of the draft, which
+    // reserves no key names).
+    if (key === "max_calls" || key.startsWith("max_calls[")) {
+      throw new TypeError(
+        `a per-action 'max' on the count key ${pyRepr(key)} bounds nothing; use max_lifetime or max_subtree for a call count`,
+      );
+    }
     checkNumber(key, "max", value);
     this.key = key;
     this.value = plain(value) as number;
