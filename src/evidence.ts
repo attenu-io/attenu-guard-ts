@@ -58,7 +58,7 @@ import {
 } from "./audit.js";
 import { Authority } from "./authority.js";
 import { describeInFinding, jsonKind, sameType, wireKeyOf, type Context } from "./ceilings.js";
-import { pyRepr, pyStr, pyStrRepr, shown } from "./display.js";
+import { escaped, pyRepr, pyStr, pyStrRepr, shown } from "./display.js";
 import { CAPTURES, BODY_STATES, POLICIES, BodyState, Capture } from "./reasons.js";
 import { PARAMS_HASH_REASONS } from "./params.js";
 import { Ed25519Signer, Ed25519Verifier, type Signer } from "./wire.js";
@@ -162,10 +162,17 @@ export class EvidenceLeakError extends Error {
 }
 
 export interface RedactionViolation {
-  event_index: number;
+  /** The entry's index, or null for `entries` that are not an array. */
+  event_index: number | null;
   event: Json;
   field?: string;
   context_key?: string;
+  /** `entries` that are not an array: their JSON kind ("a string", "null", ...). */
+  entries?: string;
+  /** An entry that is not a JSON object: its JSON kind. */
+  entry?: string;
+  /** With an allow-list, a context that is not an object: its JSON kind. */
+  context?: string;
 }
 
 export interface RedactionReport {
@@ -229,32 +236,63 @@ export function redactionReport(
 ): RedactionReport {
   const allow = contextAllowlist === undefined || contextAllowlist === null ? null : new Set(contextAllowlist);
   const violations: RedactionViolation[] = [];
-  entries.forEach((e, i) => {
+  // What it cannot read is a violation, never a throw, and never read by projection (a string's
+  // characters as fields). The Python implementation's same rule and shapes.
+  if (!Array.isArray(entries)) {
+    return { ok: false, violations: [{ event_index: null, event: null, entries: jsonKind(entries) }] };
+  }
+  for (let i = 0; i < entries.length; i++) {
+    const e: unknown = entries[i];
+    if (!isLedgerObject(e)) {
+      violations.push({ event_index: i, event: null, entry: jsonKind(e) });
+      continue;
+    }
     for (const f of Object.keys(e)) {
       if (!LEDGER_FIELDS.has(f)) {
-        violations.push({ event_index: i, event: toPlain(e["event"]), field: f });
+        violations.push({ event_index: i, event: orNull(e["event"]), field: f });
       }
     }
     if (allow !== null) {
-      const ctx = (e["context"] ?? {}) as Record<string, CJson>;
-      if (ctx !== null && typeof ctx === "object" && !Array.isArray(ctx)) {
-        for (const k of Object.keys(ctx)) {
-          if (!allow.has(k)) {
-            violations.push({ event_index: i, event: toPlain(e["event"]), context_key: k });
-          }
+      // A context Python counts as false (null, "", 0, false, [] or {}) is no context, as
+      // `verifyBundle` reads it; any other context that is not an object is a violation.
+      const raw = e["context"];
+      if (pyFalsy(toPlain(raw) as Json | undefined)) continue;
+      if (!isLedgerObject(raw)) {
+        violations.push({ event_index: i, event: orNull(e["event"]), context: jsonKind(raw) });
+        continue;
+      }
+      for (const k of Object.keys(raw)) {
+        if (!allow.has(k)) {
+          violations.push({ event_index: i, event: orNull(e["event"]), context_key: k });
         }
       }
     }
-  });
+  }
   return { ok: violations.length === 0, violations };
+}
+
+/**
+ * `entries` as the functions that SIGN them take them: an array of JSON objects. These produce
+ * evidence rather than read it, so anything else is refused by name, with a TypeError, before
+ * anything is signed over it. Before, a TypeError in the runtime's own words, or a signature over
+ * whatever was read. The Python implementation's `export_bundle` takes an `AuditLog`, so it has no
+ * such input to refuse.
+ */
+function signable(entries: unknown): readonly LedgerEntry[] {
+  if (!Array.isArray(entries)) throw new TypeError(`entries is ${jsonKind(entries)}, not an array`);
+  for (let i = 0; i < entries.length; i++) {
+    if (!isLedgerObject(entries[i])) throw new TypeError(`entries[${i}] is ${jsonKind(entries[i])}, not an object`);
+  }
+  return entries as readonly LedgerEntry[];
 }
 
 /** A signed commitment to the head of `entries` — mirrors `AuditLog.anchor`. */
 export function anchorFor(
-  entries: readonly LedgerEntry[],
+  given: readonly LedgerEntry[],
   signer: Signer,
   ts: number | string = 0,
 ): Anchor {
+  const entries = signable(given);
   let seq: number;
   let head: string;
   if (entries.length === 0) {
@@ -313,7 +351,7 @@ export function exportBundle(
         "sign_envelope over the exported entries",
     );
   }
-  const source = auditLog instanceof AuditLog ? auditLog.entries : auditLog;
+  const source = signable(auditLog instanceof AuditLog ? auditLog.entries : auditLog);
   const entries: LedgerEntry[] = source.map((e) => ({ ...e }));
 
   if (options.redactTask) {
@@ -603,7 +641,10 @@ export interface DelegationGraph {
  * renders. Derived from the ledger alone.
  */
 export function delegationGraph(bundle: Partial<Bundle>): DelegationGraph {
-  const entries = bundle.entries ?? [];
+  // A view, not a verdict: it shows what it can read and throws on nothing. A bundle, or entries,
+  // it cannot read is an empty graph, and an entry that is not a JSON object names no node;
+  // `verifyBundle` is what reports either.
+  const entries = readableEntries(bundle);
   const { auth, parent } = nodeAuthorities(entries);
   const meta: Record<string, GraphNode> = {};
   for (const e of entries) {
@@ -629,9 +670,14 @@ export function delegationGraph(bundle: Partial<Bundle>): DelegationGraph {
       meta[n]!.allows += 1;
     } else if (ev === "deny" && Object.hasOwn(meta, n)) {
       meta[n]!.denies += 1;
-      // A deny without a disposition is named by its reason.
-      const d = (toPlain(e["disposition"]) ?? toPlain(e["reason"]) ?? "unstated") as string;
-      meta[n]!.denials_by_disposition[d] = (meta[n]!.denials_by_disposition[d] ?? 0) + 1;
+      // A deny without a disposition is named by its reason, read as Python reads
+      // `disposition or reason`: an empty disposition (null, "", 0, false, [] or {}) names none.
+      // A key is a string; a value of another kind is filed by its printed form.
+      const disposition = toPlain(e["disposition"]) as Json | undefined;
+      const reason = toPlain(e["reason"]) as Json | undefined;
+      const picked = !pyFalsy(disposition) ? e["disposition"] : !pyFalsy(reason) ? e["reason"] : "unstated";
+      const d = typeof toPlain(picked) === "string" ? (toPlain(picked) as string) : shown(picked);
+      setOwn(meta[n]!.denials_by_disposition, d, (Object.hasOwn(meta[n]!.denials_by_disposition, d) ? meta[n]!.denials_by_disposition[d]! : 0) + 1);
     } else if (ev === "done" && Object.hasOwn(meta, n)) {
       meta[n]!.complete = true;
     } else if (ev === "kill") {
@@ -646,7 +692,7 @@ export function delegationGraph(bundle: Partial<Bundle>): DelegationGraph {
   for (const [child, p] of parent) {
     if (typeof p === "string" && p !== "") edges.push({ parent: p, child });
   }
-  return { chain_id: orNull(bundle.chain_id), nodes: meta, edges };
+  return { chain_id: isLedgerObject(bundle) ? orNull(bundle["chain_id"]) : null, nodes: meta, edges };
 }
 
 export interface DenialRow {
@@ -661,6 +707,11 @@ export interface DenialRow {
   /** The sub-agent a `spawn_denied` refused; `null` on a `deny` row. */
   requested: Json;
   count: number;
+  /**
+   * The first and the last refusal's own `seq`: a number on a well-formed ledger. On one that is
+   * not, the value as written, null when absent, as the Python implementation reports it; the type
+   * is kept as it was published.
+   */
   first_seq: number;
   last_seq: number;
 }
@@ -680,12 +731,16 @@ export interface DenialRow {
  * larger event of the two.
  */
 export function denials(bundle: Partial<Bundle>): DenialRow[] {
-  const entries = bundle.entries ?? [];
+  // A view, not a verdict, like `delegationGraph`: a bundle, or entries, it cannot read has no
+  // rows, an entry that is not a JSON object is no refusal, and it throws on nothing.
+  const entries = readableEntries(bundle);
   const agentOf = new Map<string, Json>();
   for (const e of entries) {
     const ev = toPlain(e["event"]);
-    if (ev === "root" || ev === "spawn") {
-      agentOf.set(toPlain(e["node"]) as string, orNull(e["agent"]));
+    const node = toPlain(e["node"]);
+    // A node id is a string; anything else names no node.
+    if ((ev === "root" || ev === "spawn") && typeof node === "string") {
+      agentOf.set(node, orNull(e["agent"]));
     }
   }
   const rows = new Map<string, DenialRow>();
@@ -696,19 +751,22 @@ export function denials(bundle: Partial<Bundle>): DenialRow[] {
     // what was refused), so it is folded onto the node that asked.
     const node = ev === "spawn_denied" ? orNull(e["parent"]) : orNull(e["node"]);
     const requested = ev === "spawn_denied" ? orNull(e["agent"]) : null;
-    const key = JSON.stringify([
-      node,
-      orNull(e["tool"]),
-      orNull(e["scope"]),
-      orNull(e["disposition"]),
-      requested,
+    // Grouped by the escaped JSON text of the five values, as the Python implementation groups
+    // them, which tells `true` from 1 and 1.0 from 1 as written.
+    const asWritten = (v: CJson | undefined): CJson => (v === undefined ? null : v);
+    const key = escaped([
+      asWritten(ev === "spawn_denied" ? e["parent"] : e["node"]),
+      asWritten(e["tool"]),
+      asWritten(e["scope"]),
+      asWritten(e["disposition"]),
+      ev === "spawn_denied" ? asWritten(e["agent"]) : null,
     ]);
-    const seq = toPlain(e["seq"]) as number;
+    const seq = orNull(e["seq"]) as number;
     const existing = rows.get(key);
     if (existing === undefined) {
       rows.set(key, {
         node,
-        agent: agentOf.get(node as string) ?? null,
+        agent: typeof node === "string" ? (agentOf.get(node) ?? null) : null,
         tool: orNull(e["tool"]),
         scope: orNull(e["scope"]),
         disposition: orNull(e["disposition"]),
@@ -724,7 +782,9 @@ export function denials(bundle: Partial<Bundle>): DenialRow[] {
       existing.last_seq = seq;
     }
   }
-  return Array.from(rows.values()).sort((a, b) => a.first_seq - b.first_seq);
+  // In the order each row first occurs. Sorting by `first_seq` said the same on a well-formed
+  // ledger, and ordered a seq that is not a number by NaN.
+  return Array.from(rows.values());
 }
 
 export interface VerifyChecks {
@@ -868,6 +928,9 @@ export interface WitnessKey {
  * implementation, not a second one for envelopes.
  */
 export function envelopeSigningInput(envelope: Record<string, CJson>): Buffer {
+  // An envelope that is not a JSON object has no members to sign. The Python implementation raises
+  // ValueError with the same words.
+  if (!isLedgerObject(envelope)) throw new Error(`an envelope is ${jsonKind(envelope)}, not an object`);
   const body: Record<string, CJson> = {};
   for (const [k, v] of Object.entries(envelope)) if (k !== "sig") body[k] = v;
   return canonicalBytes(body);
@@ -880,7 +943,11 @@ export function envelopeSigningInput(envelope: Record<string, CJson>): Buffer {
  * envelope finds the entry it covers through `subjectIndex`.
  */
 export function stateKey(e: LedgerEntry, index: number): string {
-  return String("seq" in e ? orNull(intOr(e["seq"])) : index);
+  // An entry that is not a JSON object has no seq member, so it is filed by its index; a seq that
+  // is a list or an object by its escaped JSON text, as the Python implementation files it.
+  if (!isLedgerObject(e) || !("seq" in e)) return String(index);
+  const seq = orNull(intOr(e["seq"]));
+  return seq !== null && typeof seq === "object" ? escaped(seq) : String(seq);
 }
 
 /**
@@ -1027,13 +1094,18 @@ function compareVersions(a: CJson, b: CJson): number {
  * verifier will check it against. Throws when `seq` names no entry, or names one whose `event` v1
  * defines no subject for.
  */
-export function envelopeSubject(entries: readonly LedgerEntry[], seq: number): Record<string, CJson> {
+export function envelopeSubject(given: readonly LedgerEntry[], seq: number): Record<string, CJson> {
+  // `entries` that are not an array are refused, and an entry that is not a JSON object is read as
+  // one with no members, as the verifier reads it. The Python implementation's ValueError, worded
+  // the same.
+  if (!Array.isArray(given)) throw new Error(`entries is ${jsonKind(given)}, not an array`);
+  const entries: LedgerEntry[] = Array.from(given as unknown[], (e) => (isLedgerObject(e) ? e : {}));
   const n = integral(seq);
   const at = n === null ? undefined : subjectIndex(entries).get(n);
   if (n === null || at === undefined) throw new Error(`no entry at seq ${seq}`);
   const entry = entries[at]!;
   const event = toPlain(entry["event"]) as string;
-  if (!ENVELOPE_SUBJECT_MEMBERS.has(event)) {
+  if (typeof event !== "string" || !ENVELOPE_SUBJECT_MEMBERS.has(event)) {
     throw new Error(`envelope v${ENVELOPE_VERSION} defines no subject for event '${event}'`);
   }
   const subject: Record<string, CJson> = {
@@ -1780,7 +1852,29 @@ export function verifyEnvelopes(
   bundle: Partial<Bundle>,
   options: VerifyEnvelopesOptions = {},
 ): EnvelopeSummary & { ok: boolean; failure_details: FailureDetail[]; failure_entries: (number | null)[] } {
-  const entries = bundle.entries ?? [];
+  // A bundle it cannot read, or whose `entries` or `envelopes` it cannot (the anchor is not read
+  // here), is reported, `ok` false and status "not checked", one `invalid_bundle` failure per
+  // member, as `verifyBundle` reports it. An entry that is not a JSON object is read as one with
+  // no members, filed by its index. The Python implementation's same report.
+  const unreadable = unreadableBundle(bundle, ["entries", "envelopes"]);
+  if (unreadable.length > 0) {
+    const log = new FailureLog();
+    for (const detail of unreadable) log.add("invalid_bundle", detail);
+    return {
+      ok: false,
+      status: "not checked",
+      count: 0,
+      witness_signed: [],
+      states: {},
+      results: {},
+      witnesses: {},
+      lines: {},
+      failures: log.messages,
+      failure_details: log.details,
+      failure_entries: unreadable.map(() => null),
+    };
+  }
+  const entries = readableEntries(bundle);
   const [summary, fail] = scoreEnvelopes(
     entries,
     bundle.envelopes ?? [],
@@ -2378,6 +2472,8 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
  * re-hashed ledger fails against the signed anchor, not here, and that failure is chain-level.
  */
 export function integrityBreak(entries: readonly LedgerEntry[]): number | null {
+  // `entries` that are not an array are no chain, and no entry is where it breaks.
+  if (!Array.isArray(entries)) return null;
   let prev: Json = GENESIS;
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
@@ -2488,20 +2584,60 @@ export interface VerifyBundleOptions {
   now?: Date | string | null;
 }
 
+/** What each bundle member this module reads has to be, when it is present and not null. */
+const BUNDLE_MEMBERS: Record<string, [string, (v: unknown) => boolean]> = {
+  entries: ["an array", (v) => Array.isArray(v)],
+  anchor: ["an object", (v) => isLedgerObject(v)],
+  envelopes: ["an array", (v) => Array.isArray(v)],
+};
+
 /**
- * The report on a bundle this verifier cannot read at all: a bundle that is not a JSON object, or
- * an `entries` that is not an array. One `invalid_bundle` failure, about no single entry; every
- * check false, and every status `"not checked"`, since none ran. The report has every member a full
+ * The `invalid_bundle` messages for a bundle this module cannot read: one when the bundle is not a
+ * JSON object, or one for each member in `members` that is present, not null, and not the type the
+ * format gives it. Empty when there is nothing of the kind. Reading such a member anyway reads it
+ * by projection (a string's characters as entries) or throws. The Python implementation's
+ * `_unreadable_bundle`.
+ */
+function unreadableBundle(bundle: unknown, members: readonly string[] = ["entries", "anchor", "envelopes"]): string[] {
+  if (!isLedgerObject(bundle)) return [`invalid_bundle: the bundle is ${jsonKind(bundle)}, not an object`];
+  const out: string[] = [];
+  for (const member of members) {
+    const [want, ok] = BUNDLE_MEMBERS[member]!;
+    const value: unknown = bundle[member];
+    if (value !== undefined && value !== null && !ok(value)) {
+      out.push(`invalid_bundle: ${member} is ${jsonKind(value)}, not ${want}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * A bundle's entries as the readers that never fail read them: none when the bundle or its
+ * `entries` cannot be read (`unreadableBundle`), and an entry that is not a JSON object read as one
+ * with no members, which names no node, no event and no seq. The Python implementation's
+ * `_readable_entries`.
+ */
+function readableEntries(bundle: unknown): LedgerEntry[] {
+  if (!isLedgerObject(bundle)) return [];
+  const entries: unknown = bundle["entries"];
+  if (!Array.isArray(entries)) return [];
+  return Array.from(entries as unknown[], (e) => (isLedgerObject(e) ? e : {}));
+}
+
+/**
+ * The report on a bundle this verifier cannot read at all (`unreadableBundle`): one
+ * `invalid_bundle` failure per member it cannot read, each about no single entry; every check
+ * false, and every status `"not checked"`, since none ran. The report has every member a full
  * verification's has, so a reader of it needs no second shape. The Python implementation's
  * `_invalid_bundle_report`, member for member.
  */
 function invalidBundleReport(
   bundle: unknown,
-  detail: string,
+  details: readonly string[],
   verifiedAgainst: VerifyReport["verified_against"],
 ): VerifyReport {
   const log = new FailureLog();
-  log.add("invalid_bundle", detail);
+  for (const detail of details) log.add("invalid_bundle", detail);
   return {
     ok: false,
     checks: {
@@ -2518,7 +2654,7 @@ function invalidBundleReport(
     },
     failures: log.messages,
     failure_details: log.details,
-    failure_entries: [null],
+    failure_entries: details.map(() => null),
     nodes: 0,
     actions_checked: 0,
     ungated: 0,
@@ -2547,26 +2683,15 @@ export function verifyBundle(
     (options.expectedAnchor ?? null) !== null || (options.expectedHead ?? null) !== null
       ? "expected_anchor"
       : "bundle_anchor";
-  // A bundle is a JSON object and its `entries` an array. Anything else threw out of this function
-  // (a TypeError), whose 0.8.0 note says it never throws. Such a bundle is reported alone, as
-  // `invalid_bundle`. An absent or null `entries` is an empty ledger. The Python implementation's
-  // same rule, message for message.
+  // A bundle is a JSON object, its `entries` and `envelopes` arrays and its `anchor` an object.
+  // Anything else threw out of this function (a TypeError), whose 0.8.0 note says it never throws,
+  // or was read by projection (a string anchor's characters as its members). Such a bundle is
+  // reported alone, as `invalid_bundle`, once per member it cannot read. An absent or null member
+  // is absent. The Python implementation's same rule, message for message.
   const given: unknown = bundle;
-  if (!isLedgerObject(given)) {
-    return invalidBundleReport(
-      given,
-      `invalid_bundle: the bundle is ${jsonKind(given)}, not an object`,
-      verifiedAgainst,
-    );
-  }
-  const rawEntries: unknown = given["entries"] ?? [];
-  if (!Array.isArray(rawEntries)) {
-    return invalidBundleReport(
-      bundle,
-      `invalid_bundle: entries is ${jsonKind(rawEntries)}, not an array`,
-      verifiedAgainst,
-    );
-  }
+  const unreadable = unreadableBundle(given);
+  if (unreadable.length > 0 || !isLedgerObject(given)) return invalidBundleReport(given, unreadable, verifiedAgainst);
+  const rawEntries: unknown[] = (given["entries"] ?? []) as unknown[];
   // An entry that is not a JSON object is reported once, as `invalid_ledger_entry` in (0b2), and
   // read everywhere else as an entry with no members: the checks that read an entry's fields skip
   // it, and the hash chain breaks at it. Each stand-in is a new object, so `failure_entries` finds

@@ -362,7 +362,9 @@ function verify(args: string[]): number {
     // A bundle carrying envelopes and no trust set fails every one of them, correctly and
     // unhelpfully: the keys are the caller's to supply and nothing in the bundle can stand in
     // for them. The failure stands; the line says how to make the run meaningful.
-    if ((bundle.envelopes?.length ?? 0) > 0 && witnessKeys === null) {
+    // Only over envelopes this verifier read: an `envelopes` that is not an array is reported
+    // (`invalid_bundle`), and no trust set would change that.
+    if (Array.isArray(bundle.envelopes) && bundle.envelopes.length > 0 && witnessKeys === null) {
       process.stdout.write("hint: pass --witness-keys FILE to supply the trusted witness keys\n");
     }
     process.stdout.write(rep.ok ? "OK\n" : "FAILED\n");

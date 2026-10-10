@@ -1318,3 +1318,38 @@ test("a ledger line that is not an object is a verdict, not a stack trace", () =
     assert.equal(stderr, "");
   });
 });
+
+test("an anchor that is not an object is a verdict under a key", () => {
+  inTempDir((dir) => {
+    const bundle = validV2Unanchored();
+    bundle["anchor"] = "x";
+    const file = join(dir, "bundle.json");
+    writeFileSync(file, JSON.stringify(bundle));
+    const { stdout, status, stderr } = run(["verify", file, "--hs256-key", "00"]);
+    assert.equal(
+      stdout,
+      [
+        "integrity=False monotonicity=False containment=False anchor=not checked nodes=0 actions_checked=0",
+        "  - invalid_bundle: anchor is a string, not an object",
+        "FAILED",
+        "",
+      ].join("\n"),
+    );
+    assert.equal(status, 2);
+    assert.equal(stderr, "");
+  });
+});
+
+test("no witness-key hint for envelopes that are not an array", () => {
+  inTempDir((dir) => {
+    for (const value of [5, { v: 1 }, "x"]) {
+      const bundle = validV2Unanchored();
+      bundle["envelopes"] = value;
+      const file = join(dir, "bundle.json");
+      writeFileSync(file, JSON.stringify(bundle));
+      const { stdout, status } = run(["verify", file]);
+      assert.equal(status, 2, JSON.stringify(value));
+      assert.ok(!stdout.includes("hint:"), JSON.stringify(value));
+    }
+  });
+});

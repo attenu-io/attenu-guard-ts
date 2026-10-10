@@ -26,6 +26,7 @@ import {
   toPlain,
   type CJson,
 } from "./canonical.js";
+import { jsonKind } from "./ceilings.js";
 import { shown } from "./display.js";
 import type { Decision } from "./reasons.js";
 import type { Signer } from "./wire.js";
@@ -245,7 +246,9 @@ export class AuditLog {
     anchor: Record<string, CJson> | null | undefined,
     signer: Signer,
   ): [boolean, string | null] {
-    const a = anchor ?? {};
+    // An anchor that is not a JSON object carries no member, so it is read as one with none, and its
+    // signature does not verify; a string's characters were read as its members.
+    const a: Record<string, CJson> = isLedgerObject(anchor) ? anchor : {};
     const body: Record<string, CJson> = {};
     for (const k of ["v", "chain_id", "seq", "head", "ts"]) body[k] = a[k] ?? null;
     for (const [key, value] of Object.entries(a)) {
@@ -294,9 +297,12 @@ export class AuditLog {
    *
    * An entry that is not a JSON object (a ledger line reading `null`, a string, a number or an
    * array) carries no member, so it is read as an entry with none: a seq gap at its position. A
-   * null one threw a TypeError here, out of `attenu-guard verify`.
+   * null one threw a TypeError here, out of `attenu-guard verify`. `entries` that are not an array
+   * are not a chain: `[false, "entries is a string, not an array"]`, the Python implementation's
+   * words, where null threw and a string's characters were read as entries.
    */
   static verify(entries: readonly LedgerEntry[]): [boolean, string | null] {
+    if (!Array.isArray(entries)) return [false, `entries is ${jsonKind(entries)}, not an array`];
     let prev = GENESIS;
     let expectedSeq = 0;
     for (const raw of entries) {

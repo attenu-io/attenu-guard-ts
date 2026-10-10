@@ -42,9 +42,18 @@ import {
   LEDGER_EVENTS_V1,
   LEDGER_FIELDS,
   anchorFor,
+  delegationGraph,
+  denials,
+  envelopeSigningInput,
+  envelopeSubject,
   exportBundle,
+  integrityBreak,
   parseBundle,
+  redactionReport,
+  signEnvelope,
+  stateKey,
   verifyBundle,
+  verifyEnvelopes,
   type Bundle,
   type FailureDetail,
   type VerifyBundleOptions,
@@ -1230,5 +1239,417 @@ test("a bundle that is not an object is reported, never thrown", () => {
     assert.equal(report.ok, false, label);
     assert.equal(report.chain_id, null, label);
     assertTwins(report);
+  }
+});
+
+// =============================================================================================
+// Hostile bundle content is reported or skipped by every public reader, never thrown
+// =============================================================================================
+//
+// `verifyBundle`'s 0.8.0 note says it never throws. It threw on `envelopes` that were not an
+// array, and read an `anchor` that was not an object by projection (a string's characters as its
+// members). `delegationGraph`, `denials`, `verifyEnvelopes` and `redactionReport` threw on a
+// bundle, its entries, or an entry that was not what the format says, and `stateKey` and
+// `integrityBreak` on one that was not an object or an array. Every public reader now reports
+// what it cannot read, by its own convention, or skips it; the signing helpers throw their
+// documented Error, and `exportBundle` and `anchorFor`, which sign, refuse such input by name. The
+// Python implementation's tests/test_bundle_vectors.py (`TestHostileBundleContent`) asserts the
+// same strings and shapes.
+
+/** One value of each JSON kind, and the empty ones Python counts as false. */
+const KINDS: unknown[] = [null, true, 0, 1.5, "", "x", [], ["x"], {}, { a: 1 }];
+
+const FIELD_CASES: [string, (es: LedgerEntry[]) => void, [string, Json, Json, number | null][]][] = [
+  ["v=[] at 4", (es) => void (es[4]!["v"] = []), [["mixed_entry_versions: entries declare v in [[]], bundle v=2", 4, "vectors:n1", 4]]],
+  [
+    "v={'a': 1} at 4, v=[] at 6",
+    (es) => {
+      es[4]!["v"] = { a: 1 };
+      es[6]!["v"] = [];
+    },
+    [["mixed_entry_versions: entries declare v in [[], {'a': 1}], bundle v=2", 4, "vectors:n1", 4]],
+  ],
+  [
+    "seq=[] at 4",
+    (es) => void (es[4]!["seq"] = []),
+    [
+      ["integrity: seq gap at 4 (got [])", [], "vectors:n1", 4],
+      ["integrity(anchor): seq gap at 4 (got [])", null, null, null],
+      ["outcome_before_allow: call_id 15d42567717e39b8ff1881a14ec42f96 outcome seq 6 not after allow seq []", 6, "vectors:n1", 6],
+    ],
+  ],
+  [
+    "seq='x' at 3",
+    (es) => void (es[3]!["seq"] = "x"),
+    [
+      ["integrity: seq gap at 3 (got x)", "x", "vectors:n0", 3],
+      ["integrity(anchor): seq gap at 3 (got x)", null, null, null],
+      ["outcome_before_allow: call_id eb099aeb221783e1442261f15df4fb35 outcome seq x not after allow seq 2", "x", "vectors:n0", 3],
+    ],
+  ],
+  [
+    "seq=true at 2",
+    (es) => void (es[2]!["seq"] = true),
+    [
+      ["integrity: seq gap at 2 (got True)", true, "vectors:n0", 2],
+      ["integrity(anchor): seq gap at 2 (got True)", null, null, null],
+      ["outcome_before_allow: call_id eb099aeb221783e1442261f15df4fb35 outcome seq 3 not after allow seq True", 3, "vectors:n0", 3],
+    ],
+  ],
+  [
+    "call_id=[] at 2",
+    (es) => void (es[2]!["call_id"] = []),
+    [
+      ["invalid_allow: call_id missing or malformed ([]) (seq 2)", 2, "vectors:n0", 2],
+      ["outcome_without_allow: call_id eb099aeb221783e1442261f15df4fb35 at seq 3 has no allow in this chain", 3, "vectors:n0", 3],
+    ],
+  ],
+  [
+    "capture={} at 2",
+    (es) => void (es[2]!["capture"] = {}),
+    [
+      ["invalid_allow: capture {} not a known value (seq 2)", 2, "vectors:n0", 2],
+      ["outcome_without_allow: call_id eb099aeb221783e1442261f15df4fb35 at seq 3 has no allow in this chain", 3, "vectors:n0", 3],
+    ],
+  ],
+  [
+    "params_hash_reason=[] at 2",
+    (es) => {
+      delete es[2]!["authorized_params_hash"];
+      es[2]!["params_hash_reason"] = [];
+    },
+    [
+      ["invalid_allow: params_hash_reason [] not a known value (seq 2)", 2, "vectors:n0", 2],
+      ["outcome_without_allow: call_id eb099aeb221783e1442261f15df4fb35 at seq 3 has no allow in this chain", 3, "vectors:n0", 3],
+    ],
+  ],
+  ["body_state=[] at 3", (es) => void (es[3]!["body_state"] = []), [["invalid_outcome: body_state [] not a known value (seq 3)", 3, "vectors:n0", 3]]],
+  [
+    "call_id=5 at 2 and 5",
+    (es) => {
+      es[2]!["call_id"] = 5;
+      es[5]!["call_id"] = 5;
+    },
+    [
+      ["invalid_allow: call_id missing or malformed (5) (seq 2)", 2, "vectors:n0", 2],
+      ["duplicate_call_id: call_id 5 on seq 5 (deny) already used at seq 2 (allow)", 5, "vectors:n1", 5],
+      ["invalid_deny: call_id missing or malformed (5) (seq 5)", 5, "vectors:n1", 5],
+      ["outcome_without_allow: call_id eb099aeb221783e1442261f15df4fb35 at seq 3 has no allow in this chain", 3, "vectors:n0", 3],
+    ],
+  ],
+];
+
+function hostile(edit: (b: Record<string, unknown>) => void): Bundle {
+  const bundle = validV2() as unknown as Record<string, unknown>;
+  edit(bundle);
+  return bundle as unknown as Bundle;
+}
+
+test("an anchor that is not an object is an invalid bundle", () => {
+  const cases: [unknown, string][] = [
+    ["x", "a string"], ["", "a string"], [5, "a number"], [0, "a number"], [true, "a boolean"],
+    [false, "a boolean"], [[], "an array"], [["x"], "an array"],
+  ];
+  for (const [value, kind] of cases) {
+    for (const signer of [null, VALID_V2_SIGNER]) {
+      const report = verifyBundle(hostile((b) => void (b["anchor"] = value)), signer);
+      assert.deepEqual(report.failures, [`invalid_bundle: anchor is ${kind}, not an object`], JSON.stringify(value));
+      assert.deepEqual(report.failure_entries, [null]);
+      assert.equal(report.ok, false);
+    }
+  }
+  // null is an absent anchor, as before
+  assert.equal(verifyBundle(hostile((b) => void (b["anchor"] = null))).ok, true);
+});
+
+test("envelopes that are not an array are an invalid bundle", () => {
+  const cases: [unknown, string][] = [["x", "a string"], [5, "a number"], [true, "a boolean"], [{}, "an object"], [{ v: 1 }, "an object"]];
+  for (const [value, kind] of cases) {
+    const report = verifyV2(hostile((b) => void (b["envelopes"] = value)));
+    assert.deepEqual(report.failures, [`invalid_bundle: envelopes is ${kind}, not an array`], JSON.stringify(value));
+    assert.equal(report.checks.envelopes, "not checked");
+  }
+  // null is no envelope, as before
+  const report = verifyV2(hostile((b) => void (b["envelopes"] = null)));
+  assert.equal(report.ok, true, JSON.stringify(report.failures));
+  assert.equal(report.checks.envelopes, "verified");
+});
+
+test("each unreadable member is reported", () => {
+  const report = verifyV2(
+    hostile((b) => {
+      b["entries"] = "x";
+      b["anchor"] = 5;
+      b["envelopes"] = {};
+    }),
+  );
+  assert.deepEqual(report.failures, [
+    "invalid_bundle: entries is a string, not an array",
+    "invalid_bundle: anchor is a number, not an object",
+    "invalid_bundle: envelopes is an object, not an array",
+  ]);
+  assert.deepEqual(report.failure_entries, [null, null, null]);
+});
+
+test("field values the Python implementation hashed or compared report as they do here", () => {
+  for (const [label, edit, expected] of FIELD_CASES) {
+    const report = verifyBundle(parseBundle(JSON.stringify(rechained(edit))), VALID_V2_SIGNER);
+    assert.deepEqual(
+      report.failures.map((m, k) => [m, report.failure_details[k]!.seq, report.failure_details[k]!.node, report.failure_entries[k]]),
+      expected,
+      label,
+    );
+  }
+});
+
+test("a value RFC 8785 cannot write is a hash mismatch, never a throw", () => {
+  // The parser refuses NaN, Infinity and a lone surrogate; a caller can still hand one over, and
+  // no hash reproduces over it. The Python implementation, whose json reads all three, reports
+  // them the same way.
+  for (const value of [NaN, Infinity, String.fromCharCode(0xd800)]) {
+    const bundle = validV2();
+    bundle.entries[3]!["error_code"] = value as CJson;
+    const report = verifyV2(bundle);
+    assert.ok(report.failures.includes("integrity: hash mismatch at seq 3"), String(value));
+    assert.ok(report.failures.includes("integrity(anchor): hash mismatch at seq 3"), String(value));
+    assert.deepEqual(AuditLog.verify(bundle.entries), [false, "hash mismatch at seq 3"]);
+  }
+  const bundle = validV2();
+  (bundle.anchor as unknown as Record<string, CJson>)["ts"] = NaN;
+  assert.deepEqual(AuditLog.verifyAnchor(bundle.entries, bundle.anchor as unknown as Record<string, CJson>, VALID_V2_SIGNER), [
+    false,
+    "anchor signature invalid",
+  ]);
+});
+
+test("the graph and denials skip what they cannot read", () => {
+  for (const value of [null, "x", 5, true, [], ["x"]] as unknown[]) {
+    assert.deepEqual(delegationGraph(value as Bundle), { chain_id: null, nodes: {}, edges: [] }, JSON.stringify(value));
+    assert.deepEqual(denials(value as Bundle), []);
+  }
+  for (const value of ["x", 5, true, {}, { "0": {} }]) {
+    const bundle = hostile((b) => void (b["entries"] = value));
+    assert.deepEqual(delegationGraph(bundle), { chain_id: "vectors", nodes: {}, edges: [] }, JSON.stringify(value));
+    assert.deepEqual(denials(bundle), []);
+  }
+  // An entry that is not an object names no node and folds into no row.
+  let bundle = validV2();
+  bundle.entries[5] = null as unknown as LedgerEntry; // the one deny
+  assert.equal(delegationGraph(bundle).nodes["vectors:n1"]!.denies, 0);
+  assert.deepEqual(denials(bundle), []);
+  bundle = validV2();
+  bundle.entries[1] = "x" as unknown as LedgerEntry; // the spawn: vectors:n1 is never defined
+  const graph = delegationGraph(bundle);
+  assert.deepEqual([Object.keys(graph.nodes).sort(), graph.edges], [["vectors:n0"], []]);
+  assert.equal(denials(bundle)[0]!.agent, null);
+});
+
+test("the graph and denials read values of any kind", () => {
+  let bundle = validV2();
+  bundle.entries[5]!["disposition"] = ["x"];
+  assert.deepEqual(delegationGraph(bundle).nodes["vectors:n1"]!.denials_by_disposition, { "['x']": 1 });
+  assert.deepEqual(denials(bundle)[0]!.disposition, ["x"]);
+  // Read as Python reads `disposition or reason`: an empty disposition names none.
+  for (const empty of ["", 0, []]) {
+    bundle = validV2();
+    bundle.entries[5]!["disposition"] = empty as CJson;
+    assert.deepEqual(delegationGraph(bundle).nodes["vectors:n1"]!.denials_by_disposition, { scope_not_granted: 1 }, JSON.stringify(empty));
+  }
+  bundle = validV2();
+  const deny = bundle.entries[5]!;
+  deny["node"] = { id: "n1" };
+  deny["scope"] = ["a", "b"];
+  deny["tool"] = { t: 1 };
+  const twin = JSON.parse(JSON.stringify(deny)) as LedgerEntry;
+  twin["seq"] = "z";
+  bundle.entries.splice(6, 0, twin);
+  assert.equal(delegationGraph(bundle).nodes["vectors:n1"]!.denies, 0);
+  assert.deepEqual(
+    denials(bundle).map((r) => [r.node, r.agent, r.scope, r.tool, r.count, r.first_seq, r.last_seq]),
+    [[{ id: "n1" }, null, ["a", "b"], { t: 1 }, 2, 5, "z"]],
+  );
+  // Rows are in the order each first occurs, whatever their seqs are.
+  bundle = validV2();
+  const later = JSON.parse(JSON.stringify(bundle.entries[5])) as LedgerEntry;
+  later["scope"] = "crm.delete";
+  later["seq"] = "a";
+  bundle.entries.splice(6, 0, later);
+  bundle.entries[5]!["seq"] = 9;
+  assert.deepEqual(denials(bundle).map((r) => r.scope), ["crm.export", "crm.delete"]);
+  // A parent that is not a string names no node, so it is no edge.
+  bundle = validV2();
+  bundle.entries[1]!["parent"] = 5;
+  assert.deepEqual(delegationGraph(bundle).edges, []);
+});
+
+test("verifyEnvelopes reports a bundle it cannot read", () => {
+  assert.deepEqual(verifyEnvelopes(null as unknown as Bundle), {
+    ok: false,
+    status: "not checked",
+    count: 0,
+    witness_signed: [],
+    states: {},
+    results: {},
+    witnesses: {},
+    lines: {},
+    failures: ["invalid_bundle: the bundle is null, not an object"],
+    failure_details: [
+      { reason: "invalid_bundle", seq: null, node: null, call_id: null, detail: "invalid_bundle: the bundle is null, not an object" },
+    ],
+    failure_entries: [null],
+  });
+  for (const [member, value, message] of [
+    ["entries", 5, "invalid_bundle: entries is a number, not an array"],
+    ["envelopes", "x", "invalid_bundle: envelopes is a string, not an array"],
+  ] as [string, unknown, string][]) {
+    const report = verifyEnvelopes(hostile((b) => void (b[member] = value)));
+    assert.deepEqual([report.ok, report.failures], [false, [message]]);
+  }
+  assert.equal(verifyEnvelopes(hostile((b) => void (b["anchor"] = 5))).ok, true); // not read here
+  const bundle = validV2();
+  bundle.entries[7] = null as unknown as LedgerEntry; // an entry with no members: filed by its index
+  const report = verifyEnvelopes(bundle);
+  assert.equal(report.ok, true);
+  assert.equal(report.states["7"], "process-asserted");
+});
+
+test("an entry whose seq is a boolean keeps its own state", () => {
+  // The Python implementation's dict took `true` for 1, so two entries shared one state there;
+  // both now file a seq by its JSON text.
+  const bundle = rechained((es) => void (es[0]!["seq"] = true));
+  for (const report of [verifyEnvelopes(bundle), verifyBundle(bundle, VALID_V2_SIGNER).envelopes]) {
+    assert.equal(Object.keys(report.states).length, 9);
+    assert.deepEqual([report.states["true"], report.states["1"]], ["process-asserted", "process-asserted"]);
+  }
+});
+
+test("redactionReport reports what it cannot read", () => {
+  for (const [value, kind] of [["x", "a string"], [null, "null"], [{}, "an object"]] as [unknown, string][]) {
+    assert.deepEqual(redactionReport(value as LedgerEntry[]), {
+      ok: false,
+      violations: [{ event_index: null, event: null, entries: kind }],
+    });
+  }
+  let entries = validV2().entries;
+  entries[3] = ["x"] as unknown as LedgerEntry;
+  entries[7] = null as unknown as LedgerEntry;
+  assert.deepEqual(redactionReport(entries), {
+    ok: false,
+    violations: [
+      { event_index: 3, event: null, entry: "an array" },
+      { event_index: 7, event: null, entry: "null" },
+    ],
+  });
+  const contexts: [unknown, unknown[]][] = [
+    ["x", [{ event_index: 2, event: "allow", context: "a string" }]],
+    [["rows", ["x"]], [{ event_index: 2, event: "allow", context: "an array" }]],
+    [[], []],
+    [null, []],
+  ];
+  for (const [context, violations] of contexts) {
+    entries = validV2().entries;
+    entries[2]!["context"] = context as CJson;
+    assert.deepEqual(redactionReport(entries, ["rows"]), { ok: violations.length === 0, violations }, JSON.stringify(context));
+  }
+});
+
+test("the signing helpers throw their documented Error", () => {
+  const seed = Buffer.from([...Array(32).keys()]);
+  const observed = { at: "t", method: "m" };
+  const calls: [() => unknown, string][] = [
+    [() => envelopeSubject("x" as unknown as LedgerEntry[], 1), "entries is a string, not an array"],
+    [() => envelopeSubject(null as unknown as LedgerEntry[], 1), "entries is null, not an array"],
+    [() => signEnvelope(5 as unknown as LedgerEntry[], 1, seed, "w", observed), "entries is a number, not an array"],
+    [() => envelopeSigningInput(null as unknown as Record<string, CJson>), "an envelope is null, not an object"],
+    [() => envelopeSigningInput(["x"] as unknown as Record<string, CJson>), "an envelope is an array, not an object"],
+  ];
+  for (const [call, message] of calls) {
+    assert.throws(call, (err: Error) => err.constructor === Error && err.message === message, message);
+  }
+  // An entry that is not an object has no event, so v1 defines no subject for it.
+  assert.throws(
+    () => envelopeSubject([null, null] as unknown as LedgerEntry[], 1),
+    (err: Error) => err.constructor === Error && /defines no subject for event/.test(err.message),
+  );
+});
+
+test("exportBundle and anchorFor refuse entries they cannot sign, by name", () => {
+  for (const [value, message] of [
+    ["x", "entries is a string, not an array"],
+    [null, "entries is null, not an array"],
+    [[{}, null], "entries[1] is null, not an object"],
+    [[{}, ["x"]], "entries[1] is an array, not an object"],
+  ] as [unknown, string][]) {
+    for (const call of [() => exportBundle(value as LedgerEntry[], TWIN_SIGNER), () => anchorFor(value as LedgerEntry[], TWIN_SIGNER)]) {
+      assert.throws(call, (err: Error) => err instanceof TypeError && err.message === message, message);
+    }
+  }
+});
+
+test("AuditLog reports entries that are not an array", () => {
+  const anchor = validV2().anchor as Record<string, CJson>;
+  for (const [value, kind] of [[null, "null"], ["x", "a string"], [5, "a number"], [{}, "an object"]] as [unknown, string][]) {
+    const expected = [false, `entries is ${kind}, not an array`];
+    assert.deepEqual(AuditLog.verify(value as LedgerEntry[]), expected);
+    assert.deepEqual(AuditLog.verifyAnchor(value as LedgerEntry[], anchor, VALID_V2_SIGNER), expected);
+  }
+  for (const value of [null, "x", 5, []] as unknown[]) {
+    assert.equal(AuditLog.verifyAnchor(validV2().entries, value as Record<string, CJson>, VALID_V2_SIGNER)[0], false);
+  }
+});
+
+test("stateKey and integrityBreak read an entry, or entries, of any kind", () => {
+  assert.equal(stateKey(null as unknown as LedgerEntry, 7), "7");
+  assert.equal(stateKey("x" as unknown as LedgerEntry, 3), "3");
+  assert.equal(stateKey({ seq: [1, [2]] }, 0), "[1,[2]]");
+  assert.equal(stateKey({ seq: { a: 1 } }, 0), '{"a":1}');
+  assert.equal(stateKey({ seq: 4 }, 0), "4");
+  assert.equal(integrityBreak("x" as unknown as LedgerEntry[]), null);
+  assert.equal(integrityBreak(null as unknown as LedgerEntry[]), null);
+});
+
+test("no public reader throws on a value of any kind anywhere", () => {
+  const readers: Record<string, (b: unknown) => unknown> = {
+    verifyBundle: (b) => verifyBundle(b as Bundle),
+    "verifyBundle(key)": (b) => verifyBundle(b as Bundle, VALID_V2_SIGNER),
+    "verifyBundle(head)": (b) => verifyBundle(b as Bundle, VALID_V2_SIGNER, { expectedHead: [8, "f".repeat(64)] }),
+    delegationGraph: (b) => delegationGraph(b as Bundle),
+    denials: (b) => denials(b as Bundle),
+    verifyEnvelopes: (b) => verifyEnvelopes(b as Bundle),
+    redactionReport: (b) => redactionReport(entriesOf(b) as LedgerEntry[], ["rows"]),
+    "AuditLog.verify": (b) => AuditLog.verify(entriesOf(b) as LedgerEntry[]),
+    stateKey: (b) => (Array.isArray(entriesOf(b)) ? (entriesOf(b) as LedgerEntry[]) : []).map((e, i) => stateKey(e, i)),
+    integrityBreak: (b) => integrityBreak(entriesOf(b) as LedgerEntry[]),
+  };
+  function entriesOf(b: unknown): unknown {
+    return b !== null && typeof b === "object" && !Array.isArray(b) ? (b as Record<string, unknown>)["entries"] : b;
+  }
+  const bundles: unknown[] = [];
+  for (const value of KINDS) {
+    bundles.push(value);
+    for (const member of ["entries", "anchor", "envelopes", "v", "chain_id"]) {
+      bundles.push(hostile((b) => void (b[member] = JSON.parse(JSON.stringify(value)))));
+    }
+    for (let i = 0; i < 9; i++) {
+      if (value !== null && typeof value === "object" && !Array.isArray(value)) continue;
+      const bundle = validV2();
+      bundle.entries[i] = JSON.parse(JSON.stringify(value)) as LedgerEntry;
+      bundles.push(bundle);
+    }
+    for (const i of [0, 1, 2, 3, 5, 7]) {
+      // root, spawn, allow, outcome, deny, done
+      for (const field of [...LEDGER_FIELDS].sort()) {
+        bundles.push(parseBundle(JSON.stringify(rechained((es) => void (es[i]![field] = JSON.parse(JSON.stringify(value)) as CJson)))));
+      }
+    }
+  }
+  for (const bundle of bundles) {
+    for (const [name, read] of Object.entries(readers)) {
+      try {
+        read(bundle);
+      } catch (err) {
+        assert.fail(`${name} threw ${(err as Error).name}: ${(err as Error).message} on ${JSON.stringify(bundle).slice(0, 200)}`);
+      }
+    }
   }
 });
