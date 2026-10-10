@@ -1722,6 +1722,18 @@ test("a ttl that is not finite is an unreadable authority", () => {
       String(value),
     );
   }
+  // 10**400 as JSON text: JSON.parse reads it as Infinity, the Python implementation's json as an
+  // int, and both report the same message.
+  const big = validV2();
+  authorityOfEntry(big.entries[1]!, "granted")["ttl"] = 123456789;
+  const text = JSON.stringify(big);
+  assert.equal(text.split('"ttl":123456789').length, 2);
+  const parsed = JSON.parse(text.replace('"ttl":123456789', `"ttl":1${"0".repeat(400)}`)) as Bundle;
+  assert.equal(authorityOfEntry(parsed.entries[1]!, "granted")["ttl"], Infinity);
+  assert.ok(
+    verifyBundle(parsed, VALID_V2_SIGNER).failures.includes("spawn vectors:n1: unreadable granted (ttl is not a finite number)"),
+    "10**400",
+  );
 });
 
 test("a readable authority still verifies", () => {
@@ -1747,7 +1759,8 @@ test("no public reader throws on a value of any kind in a nested member", () => 
   // The members inside an entry or an envelope that a reader reads: the root's authority and a
   // spawn's granted (scopes, constraints, ttl, a scope, a constraint and its members), an allow's
   // context and adapter, an outcome's receipt, a kill's revoked and pending_at_kill, and every
-  // member of an envelope. The Python implementation raised on a ttl that was not a number.
+  // member of an envelope. The Python implementation raised on a ttl that was a string, an array or
+  // an object.
   const put = (bundle: unknown, path: (string | number)[], value: unknown): void => {
     let target = bundle as Record<string | number, unknown>;
     for (const key of path.slice(0, -1)) {

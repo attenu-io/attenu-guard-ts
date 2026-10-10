@@ -554,17 +554,6 @@ function monotonicityDetail(child: Authority, parent: Authority): string {
 }
 
 /**
- * `node -> Authority` and `node -> parent`, reconstructed from `root` and `spawn` events in ledger
- * order. No engine state.
- *
- * A node id is a string, and a node is defined once, by the root or by one spawn. A root or a
- * spawn whose `node` is not a string defines nothing and is reported unreadable here. A second
- * definition of a node is left out of these maps, so every later check reads the first one, and
- * `verifyBundle`'s monotonicity check reports it. `parent` maps a spawned node to its `parent`
- * member as written, whatever its type; whether that names a node defined earlier is judged there
- * too. The Python implementation's `_node_authorities`.
- */
-/**
  * Why `value`, a root's `authority` or a spawn's `granted`, cannot be read as an authority by the
  * type of one of its members, or null. The object itself is an object; `scopes` and `constraints`,
  * when present, arrays, and a scope a string; `ttl`, when present and not null, a finite number.
@@ -599,6 +588,17 @@ function authorityWireError(value: unknown, member: string): string | null {
   return null;
 }
 
+/**
+ * `node -> Authority` and `node -> parent`, reconstructed from `root` and `spawn` events in ledger
+ * order. No engine state.
+ *
+ * A node id is a string, and a node is defined once, by the root or by one spawn. A root or a
+ * spawn whose `node` is not a string defines nothing and is reported unreadable here. A second
+ * definition of a node is left out of these maps, so every later check reads the first one, and
+ * `verifyBundle`'s monotonicity check reports it. `parent` maps a spawned node to its `parent`
+ * member as written, whatever its type; whether that names a node defined earlier is judged there
+ * too. The Python implementation's `_node_authorities`.
+ */
 function nodeAuthorities(entries: readonly LedgerEntry[]): NodeAuthorities {
   const auth = new Map<string, Authority>();
   const parent = new Map<string, Json>();
