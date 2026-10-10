@@ -30,7 +30,7 @@
 
 import { readFileSync } from "node:fs";
 
-import { AuditLog, type LedgerEntry } from "./audit.js";
+import { AuditLog, isLedgerObject, type LedgerEntry } from "./audit.js";
 import { intOr, parseJson, type CJson } from "./canonical.js";
 import { BARE, escaped, integerText, oneLine } from "./display.js";
 import {
@@ -187,8 +187,12 @@ function entryValue(value: CJson): string {
  * `=`, and keys never contain one, though a value may (`scope=failed=containment` is the scope
  * "failed=containment"); a value that starts with `"` is a JSON string, and any other value is
  * printed as it is.
+ *
+ * An entry that is not a JSON object has no member to print, so its line is `seq=null` and what the
+ * verifier said about it, as for any entry without those members.
  */
-function entryLine(e: LedgerEntry, rest: readonly (readonly [string, CJson | undefined])[]): string {
+function entryLine(raw: LedgerEntry, rest: readonly (readonly [string, CJson | undefined])[]): string {
+  const e: LedgerEntry = isLedgerObject(raw) ? raw : {};
   const tokens = [`seq=${entryValue((intOr(e["seq"]) ?? null) as CJson)}`];
   const pairs: (readonly [string, CJson | undefined])[] = [
     ["event", e["event"]],
@@ -217,7 +221,7 @@ function bundleEntryLines(entries: readonly LedgerEntry[], rep: VerifyReport): s
     const kid = Object.hasOwn(witnesses, String(i)) ? witnesses[String(i)]! : null;
     // `results` is keyed the way `states` is (`stateKey`), and for a covered entry the result filed
     // there is its own envelope's.
-    const key = stateKey(e, i);
+    const key = stateKey(isLedgerObject(e) ? e : {}, i);
     return entryLine(e, [
       ["state", kid === null ? PROCESS_ASSERTED : WITNESS_SIGNED],
       ["observed", kid !== null && Object.hasOwn(results, key) ? results[key]! : null],
@@ -362,7 +366,8 @@ function verify(args: string[]): number {
       process.stdout.write("hint: pass --witness-keys FILE to supply the trusted witness keys\n");
     }
     process.stdout.write(rep.ok ? "OK\n" : "FAILED\n");
-    if (listEntries) writeEntries(bundleEntryLines(bundle.entries ?? [], rep));
+    // `entries` that are not an array list nothing: the verifier read none of them.
+    if (listEntries) writeEntries(bundleEntryLines(Array.isArray(bundle.entries) ? bundle.entries : [], rep));
     return rep.ok ? 0 : 2;
   }
 

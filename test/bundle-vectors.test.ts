@@ -38,13 +38,19 @@ import { AuditLog, GENESIS, hashEntry, type LedgerEntry } from "../src/audit.js"
 import { RowLimit } from "../src/ceilings.js";
 import type { CJson, Json } from "../src/canonical.js";
 import {
+  LEDGER_EVENTS,
+  LEDGER_EVENTS_V1,
+  LEDGER_FIELDS,
   anchorFor,
   exportBundle,
+  parseBundle,
   verifyBundle,
   type Bundle,
   type FailureDetail,
   type VerifyBundleOptions,
+  type VerifyReport,
 } from "../src/evidence.js";
+import * as api from "../src/index.js";
 import { Guard } from "../src/guard.js";
 import { BodyState, Capture } from "../src/reasons.js";
 import { HS256TestSigner } from "../src/wire.js";
@@ -453,6 +459,7 @@ function sites(): Site[] {
   const outcomeI = indexOf(BASE, "outcome");
   const denyI = indexOf(BASE, "deny");
   const spawnI = indexOf(BASE, "spawn");
+  const doneI = indexOf(BASE, "done");
   const childAllowI = indexOf(BASE, "allow", 1);
   const childNode = BASE.entries[spawnI]!["node"] as CJson;
 
@@ -661,6 +668,12 @@ function sites(): Site[] {
       reasons: ["params_mismatch"],
     },
     { name: "v2_field_on_v1", bundle: v1Leak, options: {}, reasons: ["v2_field_on_v1"] },
+    {
+      name: "unknown_ledger_event",
+      bundle: broken(setEntry(doneI, "event", "frobnicate"), { rehash: true, reanchor: true }),
+      options: {},
+      reasons: ["unknown_ledger_event"],
+    },
   ];
 }
 
@@ -893,4 +906,329 @@ test("the first failing dimension is the one reported", () => {
     granted({ maxRows: 250, ttl: 7200 }),
     "ceiling max_rows<=250 looser than parent max_rows<=100",
   );
+});
+
+// =============================================================================================
+// Every entry is a JSON object, and its event one its chain's version defines
+// =============================================================================================
+//
+// The schema (`schema/agent-audit.schema.json` in the Python distribution) closes the ledger
+// `event` set, and the verifier did not enforce it: `valid_bundle_v2` with a `done` renamed
+// `frobnicate` or `""`, re-chained and re-anchored, verified ok; an `allow` renamed was read by no
+// check, containment included; and a bare `outcome` on a schemaVersion 1 chain verified, though
+// the schema makes `outcome` v2-only. An entry that is not a JSON object, or an `entries` that is
+// not an array, threw out of `verifyBundle` instead of reporting. Both entry-level names are
+// XuebinMa's (A2A #1575).
+//
+// Every expected string here is the Python implementation's, asserted byte for byte by its
+// tests/test_bundle_vectors.py (`TestEntryShapeAndEventNames`), for the same mutation of the same
+// bundle.
+
+const UNKNOWN_EVENT =
+  "unknown_ledger_event: entry carries an event this verifier does not evaluate and will not ignore: ";
+
+const VALID_V2_CASE = DOCUMENT.cases.find((c) => c.name === "valid_bundle_v2")!;
+const VALID_V2_SIGNER = signerFor(VALID_V2_CASE);
+
+function validV2(): Bundle {
+  return clone(VALID_V2_CASE.bundle);
+}
+
+/** valid_bundle_v2 with `edit(entries)` applied, re-chained and re-anchored, so integrity is not what fails. */
+function rechained(edit: (entries: LedgerEntry[]) => void): Bundle {
+  const bundle = validV2();
+  edit(bundle.entries);
+  rehash(bundle);
+  const anchor = anchorFor(bundle.entries, VALID_V2_SIGNER, 0);
+  anchor.verified = AuditLog.verifyAnchor(bundle.entries, anchor as Record<string, CJson>, VALID_V2_SIGNER)[0];
+  bundle.anchor = anchor;
+  return bundle;
+}
+
+function verifyV2(bundle: unknown, options: VerifyBundleOptions = {}): VerifyReport {
+  return verifyBundle(bundle as Bundle, VALID_V2_SIGNER, options);
+}
+
+function assertTwins(report: VerifyReport): void {
+  assert.equal(report.failure_details.length, report.failures.length);
+  assert.equal(report.failure_entries.length, report.failures.length);
+  report.failures.forEach((message, i) => {
+    assert.equal(report.failure_details[i]!.detail, message);
+    assert.equal(report.failure_details[i]!.reason, message.split(":", 1)[0]);
+  });
+}
+
+test("LEDGER_EVENTS is the schema's event enum, and version 1 has every name but outcome", () => {
+  // No copy of the schema ships in this repository. The Python implementation's
+  // `test_ledger_events_are_the_schema_enum_per_version` pins these same sets against it.
+  assert.deepEqual([...LEDGER_EVENTS].sort(), [
+    "allow", "deny", "done", "kill", "outcome", "root", "spawn", "spawn_denied",
+  ]);
+  assert.deepEqual([...LEDGER_EVENTS_V1].sort(), [
+    "allow", "deny", "done", "kill", "root", "spawn", "spawn_denied",
+  ]);
+  assert.equal(api.LEDGER_EVENTS, LEDGER_EVENTS);
+  assert.equal(api.LEDGER_EVENTS_V1, LEDGER_EVENTS_V1);
+});
+
+test("LEDGER_FIELDS is the schema's property set", () => {
+  // The Python implementation's `test_the_schema_names_exactly_the_ledger_fields` pins this same
+  // set against the schema's properties.
+  assert.deepEqual([...LEDGER_FIELDS].sort(), [
+    "adapter", "agent", "authority", "authorized_params_hash", "body_state", "c14n", "call_id",
+    "capture", "chain_id", "context", "detail", "disposition", "duration_ms", "error_code", "event",
+    "granted", "hash", "invoked_params_hash", "mode", "node", "params_hash_reason", "params_salt",
+    "parent", "pending_at_kill", "policy", "prev_hash", "reason", "reasons", "receipt", "requested",
+    "revoked", "scope", "seq", "strikes", "target", "task", "tool", "ts", "v",
+  ]);
+});
+
+test("an event outside the eight fails at its entry", () => {
+  // Printed by the display rule, as unknown_ledger_fields prints a field name.
+  const cases: [string, string][] = [
+    ["frobnicate", "frobnicate"], ["", '""'], ["Done", "Done"], ["done ", '"done\\u0020"'],
+    ["spawn-denied", "spawn-denied"], ["5", "5"], ["None", "None"],
+  ];
+  for (const [value, shown] of cases) {
+    const report = verifyV2(rechained((entries) => void (entries[7]!["event"] = value)));
+    const message = UNKNOWN_EVENT + shown;
+    assert.equal(report.ok, false, value);
+    assert.equal(report.checks.ledger_fields, false, value);
+    assert.equal(report.checks.integrity, true, value);
+    assert.deepEqual(report.failures, [message]);
+    assert.deepEqual(report.failure_details, [
+      { reason: "unknown_ledger_event", seq: 7, node: "vectors:n1", call_id: null, detail: message },
+    ]);
+    assert.deepEqual(report.failure_entries, [7]);
+  }
+});
+
+test("an event that is not a string fails at its entry", () => {
+  // Said to be no string, so the number 5 and null read differently from the strings "5" and
+  // "None" above. An absent event reads as None, as an absent seq does.
+  const cases: [string, (e: LedgerEntry) => void, string][] = [
+    ["absent", (e) => void delete e["event"], "None"],
+    ["null", (e) => void (e["event"] = null), "None"],
+    ["number", (e) => void (e["event"] = 5), "5"],
+    ["boolean", (e) => void (e["event"] = true), "True"],
+    ["array", (e) => void (e["event"] = ["done"]), "['done']"],
+    ["object", (e) => void (e["event"] = { name: "done" }), '{"name":"done"}'],
+  ];
+  for (const [label, edit, shown] of cases) {
+    const report = verifyV2(rechained((entries) => edit(entries[7]!)));
+    const message = `${UNKNOWN_EVENT}${shown}, which is not a string`;
+    assert.equal(report.ok, false, label);
+    assert.equal(report.checks.ledger_fields, false, label);
+    assert.deepEqual(report.failures, [message], label);
+    assert.deepEqual(report.failure_details, [
+      { reason: "unknown_ledger_event", seq: 7, node: "vectors:n1", call_id: null, detail: message },
+    ]);
+    assert.deepEqual(report.failure_entries, [7], label);
+  }
+});
+
+test("an allow renamed is reported, not skipped", () => {
+  // Before, the only failure was the outcome it orphaned: the renamed entry itself was read by no
+  // check, containment included.
+  const report = verifyV2(rechained((entries) => void (entries[2]!["event"] = "frobnicate")));
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.failures, [
+    UNKNOWN_EVENT + "frobnicate",
+    "outcome_without_allow: call_id eb099aeb221783e1442261f15df4fb35 at seq 3 has no allow in this chain",
+  ]);
+  assert.deepEqual(report.failure_entries, [2, 3]);
+  assertTwins(report);
+});
+
+test("a bare outcome on a schemaVersion 1 chain fails at its entry", () => {
+  // `outcome` is v2-only. A bare one carries no v2-only field, so v2_field_on_v1 does not see it
+  // either, and this bundle verified.
+  const bundle = v1Bundle();
+  const last = bundle.entries[bundle.entries.length - 1]!;
+  bundle.entries.push({
+    v: 1,
+    c14n: last["c14n"]!,
+    seq: (last["seq"] as number) + 1,
+    ts: last["ts"]!,
+    event: "outcome",
+    chain_id: last["chain_id"]!,
+    node: last["node"]!,
+  });
+  rehash(bundle);
+  reanchor(bundle);
+  const report = verifyBundle(bundle, TWIN_SIGNER);
+  const message = UNKNOWN_EVENT + "outcome, a v2-only event on a schema_version=1 chain";
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.failures, [message]);
+  assert.deepEqual(report.failure_details, [
+    { reason: "unknown_ledger_event", seq: 2, node: "t:n0", call_id: null, detail: message },
+  ]);
+  assert.deepEqual(report.failure_entries, [2]);
+  // The other seven are version 1's own.
+  assert.equal(verifyBundle(v1Bundle(), TWIN_SIGNER).ok, true);
+});
+
+test("each defect on one entry is reported", () => {
+  const report = verifyV2(
+    rechained((entries) => {
+      entries[7]!["event"] = "frobnicate";
+      entries[7]!["critical"] = true;
+    }),
+  );
+  assert.deepEqual(report.failures, [
+    UNKNOWN_EVENT + "frobnicate",
+    "unknown_ledger_fields: entry carries fields this verifier does not evaluate and will not ignore: critical",
+  ]);
+  assert.deepEqual(report.failure_entries, [7, 7]);
+  assertTwins(report);
+});
+
+test("every event the schema names still verifies", () => {
+  // The control: the eight names are read, and nothing above fires on a clean bundle.
+  const report = verifyV2(validV2());
+  assert.equal(report.ok, true, JSON.stringify(report.failures));
+  assert.equal(report.checks.ledger_fields, true);
+});
+
+test("an entry that is not an object is reported, never thrown", () => {
+  // Chain-level, since it has no seq or node; its index is in the message, and `failure_entries`
+  // names it. Nothing else reads it, so it is reported once; the hash chain breaks there, which is
+  // the one consequence. Not re-chained: such an entry has no hash to re-chain.
+  const cases: [unknown, string][] = [
+    ["x", "a string"], [null, "null"], [[], "an array"], [["root"], "an array"], [5, "a number"],
+    [1.5, "a number"], [true, "a boolean"],
+  ];
+  for (const [value, kind] of cases) {
+    const bundle = validV2();
+    bundle.entries[7] = value as LedgerEntry;
+    const report = verifyV2(bundle);
+    const label = JSON.stringify(value);
+    assert.equal(report.ok, false, label);
+    assert.equal(report.checks.ledger_fields, false, label);
+    assert.equal(report.checks.integrity, false, label);
+    assert.equal(report.checks.version, true, label);
+    assert.equal(report.checks.chain_id, true, label);
+    assert.deepEqual(report.failures, [
+      `invalid_ledger_entry: entries[7] is ${kind}, not an object`,
+      "integrity: seq gap at 7 (got None)",
+      "integrity(anchor): seq gap at 7 (got None)",
+    ], label);
+    assert.deepEqual(
+      report.failure_details.map((d) => [d.reason, d.seq, d.node, d.call_id]),
+      [
+        ["invalid_ledger_entry", null, null, null],
+        ["integrity", null, null, null],
+        ["integrity(anchor)", null, null, null],
+      ],
+      label,
+    );
+    assert.deepEqual(report.failure_entries, [7, 7, null], label);
+    assertTwins(report);
+  }
+});
+
+test("a number entry read by parseBundle is a number, not an object", () => {
+  // `parseBundle` keeps every number's literal as a RawNumber, which is an object to `typeof`.
+  const bundle = validV2() as unknown as Record<string, unknown>;
+  (bundle["entries"] as unknown[])[7] = 5;
+  const report = verifyV2(parseBundle(JSON.stringify(bundle)));
+  assert.equal(report.failures[0], "invalid_ledger_entry: entries[7] is a number, not an object");
+});
+
+test("two entries that are not objects are each positioned", () => {
+  // By index, never by the value: two nulls are two entries.
+  const bundle = validV2();
+  bundle.entries[3] = null as unknown as LedgerEntry;
+  bundle.entries[7] = null as unknown as LedgerEntry;
+  const report = verifyV2(bundle);
+  assert.deepEqual(report.failures, [
+    "invalid_ledger_entry: entries[3] is null, not an object",
+    "invalid_ledger_entry: entries[7] is null, not an object",
+    "integrity: seq gap at 3 (got None)",
+    "integrity(anchor): seq gap at 3 (got None)",
+  ]);
+  assert.deepEqual(report.failure_entries, [3, 7, 3, null]);
+});
+
+test("an expected head past an entry that is not an object is reported", () => {
+  const bundle = validV2();
+  const head = bundle.entries[8]!["hash"] as string;
+  bundle.entries[8] = null as unknown as LedgerEntry;
+  const report = verifyV2(bundle, { expectedHead: [8, head] });
+  assert.ok(
+    report.failures.includes(
+      `expected_head_mismatch: bundle head is (seq=8, hash=None) but the independently retained expected head is (seq=8, hash=${head})`,
+    ),
+    JSON.stringify(report.failures),
+  );
+  assert.equal(report.ok, false);
+});
+
+test("entries that is not an array is reported, never thrown", () => {
+  const cases: [unknown, string][] = [
+    ["x", "a string"], ["", "a string"], [{}, "an object"], [{ "0": {} }, "an object"],
+    [5, "a number"], [0, "a number"], [false, "a boolean"],
+  ];
+  for (const [value, kind] of cases) {
+    const bundle = validV2() as unknown as Record<string, unknown>;
+    bundle["entries"] = value;
+    const report = verifyV2(bundle);
+    const message = `invalid_bundle: entries is ${kind}, not an array`;
+    const label = JSON.stringify(value);
+    assert.deepEqual(report.failures, [message], label);
+    assert.deepEqual(report.failure_details, [
+      { reason: "invalid_bundle", seq: null, node: null, call_id: null, detail: message },
+    ]);
+    assert.deepEqual(report.failure_entries, [null], label);
+    assert.equal(report.ok, false, label);
+    assert.deepEqual(report.checks, {
+      integrity: false,
+      monotonicity: false,
+      containment: false,
+      anchor: "not checked",
+      version: false,
+      ledger_fields: false,
+      chain_id: false,
+      root: false,
+      expected_anchor: "not checked",
+      envelopes: "not checked",
+    });
+    assert.deepEqual([report.nodes, report.actions_checked, report.ungated], [0, 0, 0]);
+    assert.equal(report.chain_id, "vectors");
+    assert.deepEqual(report.execution_binding, { status: "not applicable" });
+    assert.equal(report.envelopes.status, "not checked");
+    assert.equal(report.verified_against, "bundle_anchor");
+  }
+});
+
+test("absent or null entries are still an empty ledger", () => {
+  const cases: [string, (b: Record<string, unknown>) => void][] = [
+    ["absent", (b) => void delete b["entries"]],
+    ["null", (b) => void (b["entries"] = null)],
+    ["empty", (b) => void (b["entries"] = [])],
+  ];
+  for (const [label, edit] of cases) {
+    const bundle = validV2() as unknown as Record<string, unknown>;
+    edit(bundle);
+    assert.deepEqual(
+      verifyBundle(bundle as unknown as Bundle).failures,
+      ["missing_root: bundle has 0 root event(s), expected exactly 1"],
+      label,
+    );
+  }
+});
+
+test("a bundle that is not an object is reported, never thrown", () => {
+  const cases: [unknown, string][] = [
+    [[], "an array"], ["x", "a string"], [null, "null"], [5, "a number"], [true, "a boolean"],
+  ];
+  for (const [value, kind] of cases) {
+    const report = verifyV2(value);
+    const label = JSON.stringify(value);
+    assert.deepEqual(report.failures, [`invalid_bundle: the bundle is ${kind}, not an object`], label);
+    assert.deepEqual(report.failure_entries, [null], label);
+    assert.equal(report.ok, false, label);
+    assert.equal(report.chain_id, null, label);
+    assertTwins(report);
+  }
 });

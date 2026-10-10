@@ -46,9 +46,18 @@ import {
 } from "./canonical.js";
 import { createHash } from "node:crypto";
 
-import { AuditLog, SCHEMA_VERSION, chainIdOf, hashEntry, GENESIS, type Anchor, type LedgerEntry } from "./audit.js";
+import {
+  AuditLog,
+  SCHEMA_VERSION,
+  chainIdOf,
+  hashEntry,
+  isLedgerObject,
+  GENESIS,
+  type Anchor,
+  type LedgerEntry,
+} from "./audit.js";
 import { Authority } from "./authority.js";
-import { describeInFinding, sameType, wireKeyOf, type Context } from "./ceilings.js";
+import { describeInFinding, jsonKind, sameType, wireKeyOf, type Context } from "./ceilings.js";
 import { pyRepr, pyStr, pyStrRepr, shown } from "./display.js";
 import { CAPTURES, BODY_STATES, POLICIES, BodyState, Capture } from "./reasons.js";
 import { PARAMS_HASH_REASONS } from "./params.js";
@@ -115,6 +124,30 @@ export const LEDGER_FIELDS: ReadonlySet<string> = new Set([
   "receipt",
   "pending_at_kill",
 ]);
+
+/**
+ * The COMPLETE set of ledger event names, closed: the `event` enum of
+ * `schema/agent-audit.schema.json` (in the Python distribution). Every check in `verifyBundle`
+ * reads an entry by its event, so an entry whose event none of them reads was skipped by all of
+ * them: a `done` renamed `frobnicate` verified, and an `allow` renamed left containment without a
+ * word. `verifyBundle` reports such an entry as `unknown_ledger_event`. The Python implementation's
+ * `evidence.LEDGER_EVENTS`, name for name.
+ */
+export const LEDGER_EVENTS: ReadonlySet<string> = new Set([
+  "root",
+  "spawn",
+  "spawn_denied",
+  "allow",
+  "deny",
+  "kill",
+  "done",
+  "outcome",
+]);
+
+/** `outcome` is v2-only (0.9.0, execution binding): a schemaVersion 1 chain has the other seven. */
+export const LEDGER_EVENTS_V1: ReadonlySet<string> = new Set(
+  [...LEDGER_EVENTS].filter((event) => event !== "outcome"),
+);
 
 /**
  * Thrown by `exportBundle({strict: true})` when a bundle would carry a field or
@@ -701,9 +734,10 @@ export interface VerifyChecks {
   anchor: "not checked" | "verified" | "FAILED";
   version: boolean;
   /**
-   * Every entry's top-level fields are within `LEDGER_FIELDS`. False means the bundle carries a
-   * field this verifier does not evaluate, so reporting success would be reporting it on an entry
-   * that was only partly read.
+   * Every entry is a JSON object whose top-level fields are within `LEDGER_FIELDS` and whose
+   * `event` is one its chain's version defines (`LEDGER_EVENTS`, `LEDGER_EVENTS_V1`). False means
+   * the bundle carries an entry this verifier does not fully read, so reporting success would be
+   * reporting it on an entry that was only partly read, or not read at all.
    */
   ledger_fields: boolean;
   chain_id: boolean;
@@ -712,9 +746,10 @@ export interface VerifyChecks {
   /**
    * `"not present"` on a bundle with no `envelopes` array, which is every bundle written before
    * observer envelopes existed. Like `anchor`, it is a status string rather than a pass/fail
-   * boolean, and a failed envelope already lands its own entry in `failures`.
+   * boolean, and a failed envelope already lands its own entry in `failures`. `"not checked"` on a
+   * bundle reported `invalid_bundle`, where nothing was checked.
    */
-  envelopes: "not present" | "verified" | "FAILED";
+  envelopes: "not present" | "verified" | "FAILED" | "not checked";
 }
 
 // `pyRepr` and `pyStr` (display.ts) are Python's `repr` and `str` for the values these failure
@@ -1329,7 +1364,8 @@ function envelopeLine(state: EnvelopeState, result: Json): string {
 
 /** What `verifyEnvelopes` and `verifyBundle`'s `envelopes` field report. */
 export interface EnvelopeSummary {
-  status: "verified" | "FAILED" | "not present";
+  /** `"not checked"` only on a bundle `verifyBundle` reported `invalid_bundle`. */
+  status: "verified" | "FAILED" | "not present" | "not checked";
   count: number;
   /** The seqs a verifying envelope covers, ascending. */
   witness_signed: number[];
@@ -2344,7 +2380,10 @@ function executionBinding(entries: readonly LedgerEntry[], bundleV: Json): [Exec
 export function integrityBreak(entries: readonly LedgerEntry[]): number | null {
   let prev: Json = GENESIS;
   for (let i = 0; i < entries.length; i++) {
-    const e = entries[i]!;
+    const e = entries[i];
+    // An entry that is not a JSON object carries no member, so the chain breaks at it, as
+    // `AuditLog.verify` reads it.
+    if (!isLedgerObject(e)) return i;
     const payload: LedgerEntry = {};
     for (const [k, v] of Object.entries(e)) {
       if (k !== "hash") payload[k] = v;
@@ -2449,12 +2488,96 @@ export interface VerifyBundleOptions {
   now?: Date | string | null;
 }
 
+/**
+ * The report on a bundle this verifier cannot read at all: a bundle that is not a JSON object, or
+ * an `entries` that is not an array. One `invalid_bundle` failure, about no single entry; every
+ * check false, and every status `"not checked"`, since none ran. The report has every member a full
+ * verification's has, so a reader of it needs no second shape. The Python implementation's
+ * `_invalid_bundle_report`, member for member.
+ */
+function invalidBundleReport(
+  bundle: unknown,
+  detail: string,
+  verifiedAgainst: VerifyReport["verified_against"],
+): VerifyReport {
+  const log = new FailureLog();
+  log.add("invalid_bundle", detail);
+  return {
+    ok: false,
+    checks: {
+      integrity: false,
+      monotonicity: false,
+      containment: false,
+      anchor: "not checked",
+      version: false,
+      ledger_fields: false,
+      chain_id: false,
+      root: false,
+      expected_anchor: "not checked",
+      envelopes: "not checked",
+    },
+    failures: log.messages,
+    failure_details: log.details,
+    failure_entries: [null],
+    nodes: 0,
+    actions_checked: 0,
+    ungated: 0,
+    chain_id: isLedgerObject(bundle) ? orNull((bundle as Record<string, CJson>)["chain_id"]) : null,
+    execution_binding: { status: "not applicable" },
+    envelopes: {
+      status: "not checked",
+      count: 0,
+      witness_signed: [],
+      states: {},
+      results: {},
+      witnesses: {},
+      lines: {},
+      failures: [],
+    },
+    verified_against: verifiedAgainst,
+  };
+}
+
 export function verifyBundle(
   bundle: Partial<Bundle>,
   signer: Signer | null = null,
   options: VerifyBundleOptions = {},
 ): VerifyReport {
-  const entries = bundle.entries ?? [];
+  const verifiedAgainst =
+    (options.expectedAnchor ?? null) !== null || (options.expectedHead ?? null) !== null
+      ? "expected_anchor"
+      : "bundle_anchor";
+  // A bundle is a JSON object and its `entries` an array. Anything else threw out of this function
+  // (a TypeError), whose 0.8.0 note says it never throws. Such a bundle is reported alone, as
+  // `invalid_bundle`. An absent or null `entries` is an empty ledger. The Python implementation's
+  // same rule, message for message.
+  const given: unknown = bundle;
+  if (!isLedgerObject(given)) {
+    return invalidBundleReport(
+      given,
+      `invalid_bundle: the bundle is ${jsonKind(given)}, not an object`,
+      verifiedAgainst,
+    );
+  }
+  const rawEntries: unknown = given["entries"] ?? [];
+  if (!Array.isArray(rawEntries)) {
+    return invalidBundleReport(
+      bundle,
+      `invalid_bundle: entries is ${jsonKind(rawEntries)}, not an array`,
+      verifiedAgainst,
+    );
+  }
+  // An entry that is not a JSON object is reported once, as `invalid_ledger_entry` in (0b2), and
+  // read everywhere else as an entry with no members: the checks that read an entry's fields skip
+  // it, and the hash chain breaks at it. Each stand-in is a new object, so `failure_entries` finds
+  // its index by identity, as it finds every other entry's. `Array.from` visits a hole as well.
+  const unread = new Set<LedgerEntry>();
+  const entries: LedgerEntry[] = Array.from(rawEntries as unknown[], (e) => {
+    if (isLedgerObject(e)) return e;
+    const standIn: LedgerEntry = {};
+    unread.add(standIn);
+    return standIn;
+  });
   const anchor = (bundle.anchor ?? {}) as Record<string, CJson>;
   const anchorPresent = Object.keys(anchor).length > 0;
   const checks: VerifyChecks = {
@@ -2508,7 +2631,7 @@ export function verifyBundle(
       { seq: orNull(rootEntry["seq"]), node: orNull(rootEntry["node"]), entry: rootEntry },
     );
   }
-  const mixedEntries = entries.filter((e) => !sameNumber(e["v"], rawV));
+  const mixedEntries = entries.filter((e) => !unread.has(e) && !sameNumber(e["v"], rawV));
   // An entry without `v` is Python's None in the list. Numbers come first in numeric order, then
   // everything else by its repr, compared by code point as Python compares strings, never by locale.
   const mixed = pySetOf(mixedEntries.map((e) => (intOr(e["v"]) ?? null) as CJson)).sort(compareVersions);
@@ -2539,8 +2662,41 @@ export function verifyBundle(
   // is a property of the bundle, not an error in the call.
   //
   // Kept in step with the Python port (`evidence._verify_bundle`, same check, same reason string).
+  //
+  // The same pass reads every entry's shape and event, and reports each defect an entry has. An
+  // entry that is not a JSON object is `invalid_ledger_entry`, chain-level since it has no seq or
+  // node, its index in the message. An event that is absent, not a string, or not one its chain's
+  // version defines (`outcome` is v2-only) is `unknown_ledger_event`: every check below reads an
+  // entry by its event, so such an entry was read by none of them.
   let unknownOk = true;
-  for (const e of entries) {
+  const events = bundleV === 1 ? LEDGER_EVENTS_V1 : LEDGER_EVENTS;
+  for (let index = 0; index < entries.length; index++) {
+    const e = entries[index]!;
+    if (unread.has(e)) {
+      unknownOk = false;
+      log.add(
+        "invalid_ledger_entry",
+        `invalid_ledger_entry: entries[${index}] is ${jsonKind(rawEntries[index])}, not an object`,
+        { entry: e },
+      );
+      continue;
+    }
+    const ev = toPlain(e["event"]) as Json | undefined;
+    if (typeof ev !== "string" || !events.has(ev)) {
+      unknownOk = false;
+      const why =
+        typeof ev !== "string"
+          ? ", which is not a string"
+          : LEDGER_EVENTS.has(ev)
+            ? ", a v2-only event on a schema_version=1 chain"
+            : "";
+      log.add(
+        "unknown_ledger_event",
+        `unknown_ledger_event: entry carries an event this verifier does not evaluate and will not ` +
+          `ignore: ${shown(e["event"])}${why}`,
+        { seq: orNull(e["seq"]), node: orNull(e["node"]), entry: e },
+      );
+    }
     const extra = Object.keys(e)
       .filter((f) => !LEDGER_FIELDS.has(f))
       .sort();
@@ -2614,7 +2770,7 @@ export function verifyBundle(
   // must all name the SAME chain. Without this a correctly-signed, internally-consistent bundle
   // for a DIFFERENT chain could be handed to a verifier who believes it is checking this one.
   const bundleChainId = orNull(bundle.chain_id as CJson | undefined);
-  const foreign = entries.find((e) => orNull(e["chain_id"]) !== bundleChainId);
+  const foreign = entries.find((e) => !unread.has(e) && orNull(e["chain_id"]) !== bundleChainId);
   const entriesOk = foreign === undefined;
   if (foreign !== undefined) {
     log.add("chain_id_mismatch", `chain_id_mismatch: an entry does not carry chain_id=${pyRepr(bundleChainId)}`, {
@@ -2856,7 +3012,7 @@ export function verifyBundle(
     chain_id: orNull(bundle.chain_id),
     execution_binding: eb,
     envelopes: envelopeSummary,
-    verified_against: expectedAnchor !== null || expectedHead !== null ? "expected_anchor" : "bundle_anchor",
+    verified_against: verifiedAgainst,
   };
 }
 

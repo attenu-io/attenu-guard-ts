@@ -1227,3 +1227,94 @@ test("a file that cannot be read is a usage error naming it, exit 1", () => {
     assert.deepEqual([directory.status, directory.stdout], [1, `cannot read ${dir}: Is a directory\n`]);
   });
 });
+
+// ---- an entry that is not an object, or entries that are not an array, is a verdict ------------
+//
+// Each threw out of `verifyBundle` and ended `attenu-guard verify` in a stack trace. Every expected
+// output here is the Python CLI's, asserted byte for byte by its tests/test_cli_verify.py
+// (`TestUnreadableEntriesCli`).
+
+const VALID_V2_ENTRY_LINES = [
+  "  seq=0 event=root node=vectors:n0",
+  "  seq=1 event=spawn node=vectors:n1",
+  "  seq=2 event=allow node=vectors:n0 scope=mail.send",
+  "  seq=3 event=outcome node=vectors:n0",
+  "  seq=4 event=allow node=vectors:n1 scope=crm.read",
+  "  seq=5 event=deny node=vectors:n1 scope=crm.export",
+  "  seq=6 event=outcome node=vectors:n1",
+  "  seq=7 event=done node=vectors:n1",
+  "  seq=8 event=done node=vectors:n0",
+];
+
+/** valid_bundle_v2 from the vendored bundle vectors, without its anchor. */
+function validV2Unanchored(): Record<string, unknown> {
+  const doc = fixtureJson<{ cases: { name: string; bundle: Record<string, unknown> }[] }>(
+    "vectors/bundles/bundle_vectors_v1.json",
+  );
+  const bundle = JSON.parse(JSON.stringify(doc.cases.find((c) => c.name === "valid_bundle_v2")!.bundle));
+  delete bundle["anchor"];
+  return bundle as Record<string, unknown>;
+}
+
+test("an entry that is not an object is a verdict, not a stack trace", () => {
+  inTempDir((dir) => {
+    const bundle = validV2Unanchored();
+    (bundle["entries"] as unknown[])[7] = null;
+    const file = join(dir, "bundle.json");
+    writeFileSync(file, JSON.stringify(bundle));
+    const { stdout, status, stderr } = run(["verify", file, "--entries"]);
+    const lines = VALID_V2_ENTRY_LINES.map((line) => `${line} state=process-asserted`);
+    lines[7] = "  seq=null state=process-asserted failed=invalid_ledger_entry,integrity";
+    assert.equal(
+      stdout,
+      [
+        "integrity=False monotonicity=True containment=True anchor=not checked nodes=2 actions_checked=2",
+        "  - invalid_ledger_entry: entries[7] is null, not an object",
+        "  - integrity: seq gap at 7 (got None)",
+        "FAILED",
+        "entries:",
+        ...lines,
+        "",
+      ].join("\n"),
+    );
+    assert.equal(status, 2);
+    assert.equal(stderr, "");
+  });
+});
+
+test("entries that are not an array are a verdict, not a stack trace", () => {
+  inTempDir((dir) => {
+    const bundle = validV2Unanchored();
+    bundle["entries"] = "x";
+    const file = join(dir, "bundle.json");
+    writeFileSync(file, JSON.stringify(bundle));
+    const { stdout, status, stderr } = run(["verify", file, "--entries"]);
+    assert.equal(
+      stdout,
+      [
+        "integrity=False monotonicity=False containment=False anchor=not checked nodes=0 actions_checked=0",
+        "  - invalid_bundle: entries is a string, not an array",
+        "FAILED",
+        "entries:",
+        "",
+      ].join("\n"),
+    );
+    assert.equal(status, 2);
+    assert.equal(stderr, "");
+  });
+});
+
+test("a ledger line that is not an object is a verdict, not a stack trace", () => {
+  inTempDir((dir) => {
+    const rows = (validV2Unanchored()["entries"] as unknown[]).map((e) => JSON.stringify(e));
+    rows[1] = "null";
+    const file = join(dir, "ledger.jsonl");
+    writeFileSync(file, rows.map((row) => `${row}\n`).join(""));
+    const { stdout, status, stderr } = run(["verify", file, "--entries"]);
+    const lines = [...VALID_V2_ENTRY_LINES];
+    lines[1] = "  seq=null failed=integrity";
+    assert.equal(stdout, ["TAMPERED — seq gap at 1 (got None)", "entries:", ...lines, ""].join("\n"));
+    assert.equal(status, 2);
+    assert.equal(stderr, "");
+  });
+});
