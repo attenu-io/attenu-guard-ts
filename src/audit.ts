@@ -22,9 +22,11 @@ import {
   intOr,
   integral,
   parseJson,
+  RawNumber,
   toPlain,
   type CJson,
 } from "./canonical.js";
+import { jsonKind } from "./ceilings.js";
 import { shown } from "./display.js";
 import type { Decision } from "./reasons.js";
 import type { Signer } from "./wire.js";
@@ -34,6 +36,15 @@ export const GENESIS = "0".repeat(64);
 
 /** One line of the ledger. */
 export type LedgerEntry = Record<string, CJson>;
+
+/**
+ * True when `value` is a JSON object, the one thing a ledger entry can be: what `ceilings.jsonKind`
+ * names "an object". null, a string, a number (a `RawNumber` too, which `typeof` calls an object), a
+ * boolean and an array are not. The Python implementation asks `isinstance(e, Mapping)`.
+ */
+export function isLedgerObject(value: unknown): value is LedgerEntry {
+  return value !== null && typeof value === "object" && !Array.isArray(value) && !(value instanceof RawNumber);
+}
 
 /** A local destination that receives every entry after the file write. */
 export interface Sink {
@@ -235,7 +246,9 @@ export class AuditLog {
     anchor: Record<string, CJson> | null | undefined,
     signer: Signer,
   ): [boolean, string | null] {
-    const a = anchor ?? {};
+    // An anchor that is not a JSON object carries no member, so it is read as one with none, and its
+    // signature does not verify; a string's characters were read as its members.
+    const a: Record<string, CJson> = isLedgerObject(anchor) ? anchor : {};
     const body: Record<string, CJson> = {};
     for (const k of ["v", "chain_id", "seq", "head", "ts"]) body[k] = a[k] ?? null;
     for (const [key, value] of Object.entries(a)) {
@@ -279,11 +292,21 @@ export class AuditLog {
     return [true, null];
   }
 
-  /** Recompute the chain. Returns `[ok, firstBadReason]`. */
+  /**
+   * Recompute the chain. Returns `[ok, firstBadReason]`.
+   *
+   * An entry that is not a JSON object (a ledger line reading `null`, a string, a number or an
+   * array) carries no member, so it is read as an entry with none: a seq gap at its position. A
+   * null one threw a TypeError here, out of `attenu-guard verify`. `entries` that are not an array
+   * are not a chain: `[false, "entries is a string, not an array"]`, the Python implementation's
+   * words, where null threw and a string's characters were read as entries.
+   */
   static verify(entries: readonly LedgerEntry[]): [boolean, string | null] {
+    if (!Array.isArray(entries)) return [false, `entries is ${jsonKind(entries)}, not an array`];
     let prev = GENESIS;
     let expectedSeq = 0;
-    for (const e of entries) {
+    for (const raw of entries) {
+      const e: LedgerEntry = isLedgerObject(raw) ? raw : {};
       // An integral number and never a boolean (`integral`), as the schema's integer type
       // defines: `1.0` is 1, and RFC 8785 writes it as 1, so it hashes as 1. A chain re-hashed
       // around `"seq": true` or `"seq": 1.5` at index 1 is a seq gap there, as it is to the Python
