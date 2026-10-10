@@ -32,6 +32,11 @@
 export { Authority, AuthorityError } from "./authority.js";
 export type { AuthorityInit, AuthorityWire } from "./authority.js";
 
+// The -02 profile of the Internet-Draft (opt-in; "01" stays the default everywhere): the
+// three-form scope grammar, the generic constraint types and the -02 wire shapes.
+export * as draft02 from "./draft02.js";
+export type { Profile } from "./draft02.js";
+
 export { Guard, AuthorityDenied, DuplicateOutcomeError } from "./guard.js";
 export type {
   AdapterInfo,
@@ -156,7 +161,7 @@ export {
   b64urlEncode,
   load,
 } from "./wire.js";
-export type { LoadOptions, Signer, WireReasonCodeValue } from "./wire.js";
+export type { LoadOptions, PermitsOptions, Signer, WireReasonCodeValue } from "./wire.js";
 
 export {
   CanonicalizationError,

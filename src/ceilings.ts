@@ -30,7 +30,7 @@ import { Decision, Reason, ReasonCode } from "./reasons.js";
  * at construction, not at signing — mirrors `authority.ts`'s scope validator,
  * which also throws `TypeError`.
  */
-function validateSafeNumber(key: string, value: number): void {
+export function validateSafeNumber(key: string, value: number): void {
   if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
     throw new TypeError(
       `${key} value ${value} exceeds the safe integer range ±${MAX_SAFE_INTEGER} for a ` +
@@ -88,12 +88,21 @@ export interface Ceiling {
 
   /** Scoped ceilings only: the pattern this ceiling meters against, or "*". */
   readonly meterKey?: string;
+
+  /**
+   * The draft -02 constraint type this ceiling is on the wire (`max`, `max_lifetime`, `rank`, ...):
+   * under the -02 profile an authority pairs constraints by (key, type), not by key (draft02.ts).
+   */
+  readonly draftType?: string;
+
+  /** The -02 wire shape, where it differs from `toWire()` (draft02.ts, `ceilingToWire02`). */
+  toWire02?(): Record<string, Json>;
 }
 
 // Ordered enum for egress: index 0 is the strictest. A value outside this
 // vocabulary is treated as maximally permissive-requested (worst case), so a
 // garbage or unknown egress value fails closed rather than silently passing.
-const EGRESS_ORDER = ["none", "internal", "any"] as const;
+export const EGRESS_ORDER = ["none", "internal", "any"] as const;
 
 function egressRankOf(value: unknown): number {
   const i = (EGRESS_ORDER as readonly unknown[]).indexOf(value);
@@ -101,8 +110,8 @@ function egressRankOf(value: unknown): number {
 }
 
 /** The JSON kinds a ceiling compares, as `jsonKind` names them. */
-const NUMBER = ["a number"];
-const STRING = ["a string"];
+export const NUMBER = ["a number"];
+export const STRING = ["a string"];
 const SCALAR = ["a string", "a number", "a boolean"];
 
 /**
@@ -122,7 +131,7 @@ export function jsonKind(value: unknown): string {
 }
 
 /** `value`, or the number it holds when `parseJson` read it as a `RawNumber`. */
-function plain(value: unknown): unknown {
+export function plain(value: unknown): unknown {
   return value instanceof RawNumber ? value.value : value;
 }
 
@@ -133,7 +142,7 @@ function plain(value: unknown): unknown {
  * `"50"`, `[50]` and `true` passed a row cap through `<=`, `["/tmp/x"]` passed the prefix "/tmp/" as
  * the text "/tmp/x", and `true` passed the prefix "t" as "true".
  */
-function wrongKind(value: unknown, accepted: readonly string[]): string | null {
+export function wrongKind(value: unknown, accepted: readonly string[]): string | null {
   const kind = jsonKind(value);
   return accepted.includes(kind) ? null : kind;
 }
@@ -143,7 +152,7 @@ function wrongKind(value: unknown, accepted: readonly string[]): string | null {
  * `<kind> cannot be compared with <against>; refused`, one wording per ceiling kind, and the Python
  * implementation's too.
  */
-function refusal(kind: string | null, against: string): string {
+export function refusal(kind: string | null, against: string): string {
   return kind === null ? "" : `${kind} cannot be compared with ${against}; refused`;
 }
 
@@ -158,7 +167,7 @@ function refusal(kind: string | null, against: string): string {
  * context field in each implementation. A token carrying one is refused as malformed, and a bundle
  * reports the authority unreadable.
  */
-function malformed(key: unknown, member: string, value: unknown, expected: string, shownAs?: string): TypeError {
+export function malformed(key: unknown, member: string, value: unknown, expected: string, shownAs?: string): TypeError {
   const kind = value === undefined ? "absent" : (shownAs ?? jsonKind(value));
   return new TypeError(`${member} of constraint ${pyRepr(key as CJson)} is ${kind}, not ${expected}`);
 }
@@ -170,7 +179,7 @@ function malformed(key: unknown, member: string, value: unknown, expected: strin
  * "undefined"; the Python implementation read a field no JSON context carries. Every constraint is
  * refused without one, an unknown type included, in the Python implementation's words.
  */
-function checkKey(key: unknown): void {
+export function checkKey(key: unknown): void {
   if (typeof key !== "string") {
     throw new TypeError(`key of a constraint is ${key === undefined ? "absent" : jsonKind(key)}, not a string`);
   }
@@ -426,6 +435,10 @@ export class RowLimit implements Ceiling {
   readonly key = "max_rows";
   readonly ctxField = "rows";
   readonly maxRows: number;
+  /** The -02 constraint type this ceiling is on the wire (draft02.ts). */
+  get draftType(): string {
+    return "max";
+  }
   constructor(maxRows: number) {
     checkMax("max_rows", maxRows);
     this.maxRows = plain(maxRows) as number;
@@ -473,6 +486,9 @@ export class SpendCap implements Ceiling {
   readonly key = "max_spend";
   readonly ctxField = "spend";
   readonly maxSpend: number;
+  get draftType(): string {
+    return "max";
+  }
   constructor(maxSpend: number) {
     checkMax("max_spend", maxSpend);
     this.maxSpend = plain(maxSpend) as number;
@@ -554,6 +570,15 @@ export class CallLimit implements Ceiling {
     return this.appliesTo ?? "*";
   }
 
+  /**
+   * A call count is a RUNNING total over the node's lifetime, so under the -02 this is the
+   * per-lifetime type. The -01 wire form below still says `max`, which the -02 names as the
+   * defect it fixes; `toWire02` emits the honest type.
+   */
+  get draftType(): string {
+    return "max_lifetime";
+  }
+
   appliesToScope(scope: string | null | undefined): boolean {
     if (!this.appliesTo || scope === null || scope === undefined) return true;
     const held = this.appliesTo;
@@ -593,6 +618,15 @@ export class CallLimit implements Ceiling {
     return { key: this.key, type: "max_calls", max: this.maxCalls, applies_to: this.appliesTo };
   }
 
+  /**
+   * The -02 shape: a cumulative bound under its own type, keyed `max_calls` or
+   * `max_calls[<pattern>]`; the pattern lives in the key, as the -02 constraint object admits no
+   * `applies_to` member.
+   */
+  toWire02(): Record<string, Json> {
+    return { key: this.key, max_lifetime: this.maxCalls };
+  }
+
   static fromWire(d: Record<string, Json>): CallLimit {
     return new CallLimit(d["max"] as number, (d["applies_to"] as string | undefined) ?? null);
   }
@@ -608,6 +642,10 @@ export class EgressRank implements Ceiling {
       throw malformed("egress", "rank", level, "'none', 'internal' or 'any'",
         typeof level === "string" ? pyRepr(level) : undefined);
     }
+  }
+
+  get draftType(): string {
+    return "rank";
   }
 
   permits(ctx: Context): Decision {
@@ -642,6 +680,14 @@ export class EgressRank implements Ceiling {
     return { key: this.key, rank: this.level };
   }
 
+  /**
+   * The -02 shape carries the ordering on the wire, so a verifier needs no registry entry for
+   * `egress`; the -01 shape above relies on the fixed `none < internal < any`.
+   */
+  toWire02(): Record<string, Json> {
+    return { key: this.key, rank: this.level, order: [...EGRESS_ORDER] };
+  }
+
   static fromWire(d: Record<string, Json>): EgressRank {
     return new EgressRank(d["rank"] as string);
   }
@@ -668,6 +714,10 @@ export class Allow implements Ceiling {
     checkKey(key);
     this.oneOf = new Members(memberList(key, "one_of", oneOf));
     checkString(key, "field", field, true);
+  }
+
+  get draftType(): string {
+    return "one_of";
   }
 
   private ctxKey(): string {
@@ -732,6 +782,10 @@ export class Deny implements Ceiling {
     checkString(key, "field", field, true);
   }
 
+  get draftType(): string {
+    return "not_one_of";
+  }
+
   private ctxKey(): string {
     return this.field ?? this.key;
   }
@@ -792,6 +846,10 @@ export class Prefix implements Ceiling {
     checkKey(key);
     checkString(key, "prefix", prefix);
     checkString(key, "field", field, true);
+  }
+
+  get draftType(): string {
+    return "prefix";
   }
 
   private ctxKey(): string {

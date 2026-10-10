@@ -40,6 +40,12 @@ What lands in `test/fixtures/`:
                            (attenu_guard.vectors.load_bundle_vectors); an older release simply
                            leaves the committed copy alone, so CI's fixture-drift check stays
                            green until the pin is bumped to a release that has them.
+  vectors/draft02/         the Delegation Token vectors of draft -02, the second, separately
+                           named set, copied verbatim the same way: each carries a `verifier`
+                           block (accepted algorithms, audience) and is scored under the -02
+                           profile (`load(..., { draft: "02" })`). Written only when the installed
+                           attenu-guard ships them (`vectors.read_vector_bytes_02`); an older
+                           release leaves the committed copy alone.
   parity/                  CLI parity cases for `verify --entries`, trust-row `not_after` and
                            whole-row reading, and strict seq: the inputs, and in cli.json the
                            stdout and exit code the PYTHON CLI gives for each, run from inside
@@ -487,6 +493,21 @@ def envelope_vectors() -> str | None:
     return read().decode("utf-8")
 
 
+def chain_vectors_02() -> dict[str, str] | None:
+    """The draft -02 Delegation Token vectors, copied VERBATIM out of the installed `attenu_guard`
+    package (`attenu_guard/vectors/draft02/`), as `chain_vectors` copies the -01 set. Their only
+    writer is the Python repository's `tests/vectors-02/generate_02.py`.
+
+    Returns None when the installed release predates them, on the same reasoning as
+    `bundle_vectors`: the committed copy is checked out from the Python repository ahead of the
+    release that ships it, and the fixture-drift check starts comparing once the pin has them.
+    """
+    read = getattr(attenu_vectors, "read_vector_bytes_02", None)
+    if read is None:
+        return None
+    return {name: read(name).decode("utf-8") for name in attenu_vectors.VECTOR_NAMES_02}
+
+
 # --------------------------------------------- CLI parity: --entries, not_after, strict seq
 
 #: The parity witness's Ed25519 seed and kid. Fixed, so every run signs the same bytes; it signs
@@ -912,6 +933,13 @@ def main() -> None:
     vectors = chain_vectors()
     for filename, text in vectors.items():
         write(f"vectors/{filename}", text)
+
+    vectors_02 = chain_vectors_02()
+    if vectors_02 is not None:
+        for filename, text in vectors_02.items():
+            write(f"vectors/draft02/{filename}", text)
+    else:
+        print("  (installed attenu-guard has no -02 vectors; committed copy left as is)")
 
     bundles = bundle_vectors()
     if bundles is not None:

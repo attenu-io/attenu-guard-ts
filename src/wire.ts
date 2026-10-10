@@ -48,13 +48,16 @@ import {
   RawNumber,
   UnsafeIntegerError,
   canonicalJson,
+  compareCodePoints,
   parseJson,
   toPlain,
   type CJson,
   type Json,
 } from "./canonical.js";
+import { pyRepr, pyStrRepr } from "./display.js";
 import type { Context } from "./ceilings.js";
-import { ReasonCode, type Decision } from "./reasons.js";
+import { PROFILE_01, PROFILE_02, checkIntegerSafe, checkProfile, type Profile } from "./draft02.js";
+import { Decision, Reason, ReasonCode } from "./reasons.js";
 
 /**
  * The pluggable signing and verification backend. `alg` is the JOSE algorithm
@@ -281,6 +284,8 @@ export const WireReasonCode = {
   NON_FINITE: "non_finite",
   DUPLICATE_MEMBER: "duplicate_member",
   NON_CANONICAL: "non_canonical",
+  PRINCIPAL_ALTERED: "principal_altered",
+  AUDIENCE_MISMATCH: "audience_mismatch", // draft -02 step 8: DT_n's aud does not name this verifier
   EXPIRED: ReasonCode.EXPIRED, // "expired" — reuse, don't reinvent
 } as const;
 
@@ -525,16 +530,169 @@ export class VerifiedChain {
     readonly leafAuthority: Authority,
     readonly depth: number,
     readonly delMaxDepth: number,
+    /** The revision of the draft `load()` verified the chain under. */
+    readonly draft: Profile = PROFILE_01,
+    /** The audience `load(..., { audience })` confirmed DT_n names, or `null` when none was given. */
+    readonly audience: string | null = null,
   ) {}
 
   /**
    * Authorize `scope` (with request context `ctx`) against the LEAF authority.
    * Delegates entirely to `Authority.permits`; no policy logic is reimplemented
    * here, so a decision taken from a verified chain and a decision taken
-   * in-process are the same decision.
+   * in-process are the same decision. Under the -02, `options.audience` names
+   * this Enforcement Point and is checked against DT_n's `aud` first (reason
+   * `audience_mismatch`); a cumulative constraint whose running total `ctx` does
+   * not carry denies (draft02.ts).
    */
-  permits(scope: string, ctx: Context | null = null): Decision {
-    return this.leafAuthority.permits(scope, ctx);
+  permits(scope: string, ctx: Context | null = null, options: PermitsOptions = {}): Decision {
+    if (this.draft === PROFILE_02) {
+      // Step 8 is not opt-in: an Enforcement Point that never said who it is cannot have
+      // confirmed that DT_n was issued for it.
+      const audience = options.audience ?? this.audience;
+      const aud = this.payloads[this.payloads.length - 1]!["aud"] ?? null;
+      if (audience === null) {
+        return Decision.deny(
+          new Reason(WireReasonCode.AUDIENCE_MISMATCH, {
+            constraint: "aud",
+            limit: aud,
+            requested: null,
+            message: "no audience was supplied at load or at this call; DT_n's aud cannot have been checked",
+          }),
+        );
+      }
+      if (!namesAudience(aud, audience)) {
+        return Decision.deny(
+          new Reason(WireReasonCode.AUDIENCE_MISMATCH, {
+            constraint: "aud",
+            limit: aud,
+            requested: audience,
+            message: "DT_n's aud does not identify this Enforcement Point",
+          }),
+        );
+      }
+    }
+    return this.leafAuthority.permits(scope, ctx, { totals: options.totals ?? null });
+  }
+}
+
+export interface PermitsOptions {
+  /**
+   * Draft -02 only: the audience this Enforcement Point answers to, checked against DT_n's `aud`;
+   * defaults to the one `load(..., { audience })` confirmed. With neither, a -02 chain denies.
+   */
+  audience?: string | null;
+  /** The running totals this Enforcement Point holds (`Authority.permits`'s `totals`). */
+  totals?: Context | null;
+}
+
+/**
+ * RFC 7519 Section 4.1.3 as the -02 Section 3 profiles it: a string, or a non-empty array of
+ * strings. null, absent and an empty array are malformed.
+ */
+function isAudience(aud: Json | undefined): boolean {
+  if (typeof aud === "string") return true;
+  return Array.isArray(aud) && aud.length > 0 && aud.every((a) => typeof a === "string");
+}
+
+function namesAudience(aud: Json | undefined, audience: string): boolean {
+  return aud === audience || (Array.isArray(aud) && aud.includes(audience));
+}
+
+function ownClaim(payload: Record<string, Json>, claim: string): Json | undefined {
+  return Object.prototype.hasOwnProperty.call(payload, claim) ? payload[claim] : undefined;
+}
+
+const DETAIL_MEMBERS = new Set(["type", "scopes", "constraints"]);
+
+/**
+ * The confirmation members a -02 `cnf` may bind the holder key with: a JWK thumbprint (RFC 9449
+ * DPoP), a JWK (RFC 7800), or a certificate thumbprint (RFC 8705 mTLS, which Section 7 of the
+ * draft allows). An object carrying none of them confirms nothing.
+ */
+const CNF_MEMBERS = ["jkt", "jwk", "x5t#S256"];
+
+function isCnf(value: Json | undefined): boolean {
+  return isJsonObject(value) && CNF_MEMBERS.some((m) => Object.prototype.hasOwnProperty.call(value, m));
+}
+
+/**
+ * The -02's parse-time rules for one token (Sections 3, 4, 4.4), applied to every DT_i before
+ * step 1 so that DT_0 is subject to them as every other token is. Each failure is `malformed`.
+ * Returns the token's Authority under the -02 profile. Kept in step with the Python port
+ * (`wire._check_token_02`).
+ */
+function checkToken02(payload: Record<string, Json>, i: number): Authority {
+  const bad = (msg: string): WireError => new WireError(WireReasonCode.MALFORMED, `token[${i}] ${msg}`);
+  for (const claim of ["iss", "jti"]) {
+    const v = ownClaim(payload, claim);
+    if (typeof v !== "string" || v === "") throw bad(`${claim} must be a non-empty string (RFC 9068)`);
+  }
+  const sub = ownClaim(payload, "sub");
+  if (typeof sub !== "string" || sub === "") {
+    throw bad("sub must be a non-empty string naming the Principal (draft -02 Section 3)");
+  }
+  if (typeof ownClaim(payload, "client_id") !== "string") {
+    throw bad("client_id must be a string naming the Acting Agent (draft -02 Section 3)");
+  }
+  if (!isAudience(ownClaim(payload, "aud"))) {
+    throw bad("aud must be a string or a non-empty array of strings; null is malformed (draft -02 Section 3)");
+  }
+  for (const claim of ["iat", "exp"]) {
+    if (typeof ownClaim(payload, claim) !== "number") throw bad(`${claim} must be a number`);
+  }
+  if (!isCnf(ownClaim(payload, "cnf"))) {
+    throw bad(
+      "cnf must be an object carrying one of ['jkt', 'jwk', 'x5t#S256'], binding the token to its " +
+        "holder's key (draft -02 Sections 3 and 7)",
+    );
+  }
+  for (const value of Object.values(payload)) {
+    try {
+      checkIntegerSafe(value);
+    } catch (e) {
+      throw bad((e as Error).message);
+    }
+  }
+  const details = ownClaim(payload, "authorization_details");
+  if (!Array.isArray(details) || details.length !== 1) {
+    const n = Array.isArray(details) ? String(details.length) : "no";
+    throw bad(
+      "authorization_details must carry exactly one detail, of type 'agent_delegation'; " +
+        `found ${n} (draft -02 Section 4)`,
+    );
+  }
+  const d0 = details[0];
+  if (!isJsonObject(d0) || d0["type"] !== "agent_delegation") {
+    const got = isJsonObject(d0) ? (d0["type"] ?? null) : (d0 ?? null);
+    throw bad(
+      `authorization detail type ${pyRepr(got)} is not 'agent_delegation'; a type this ` +
+        "verifier does not implement is a rejection (draft -02 Section 4.4)",
+    );
+  }
+  const unknownMembers = Object.keys(d0).filter((k) => !DETAIL_MEMBERS.has(k)).sort(compareCodePoints);
+  if (unknownMembers.length > 0) {
+    throw bad(
+      "the agent_delegation detail carries members this verifier cannot evaluate " +
+        `and will not ignore: ${unknownMembers.map(pyStrRepr).join(", ")}`,
+    );
+  }
+  const scopes = d0["scopes"];
+  if (!Array.isArray(scopes) || scopes.some((sc) => typeof sc !== "string")) {
+    throw bad("scopes must be an array of strings");
+  }
+  try {
+    return Authority.fromWire(
+      {
+        scopes,
+        constraints: Object.prototype.hasOwnProperty.call(d0, "constraints") ? d0["constraints"]! : [],
+        ttl: (payload["exp"] as number) - (payload["iat"] as number),
+      } as CJson,
+      PROFILE_02,
+    );
+  } catch (e) {
+    // An invalid scope, a malformed or repeated constraint.
+    throw bad(`invalid authorization_details: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -552,6 +710,23 @@ export interface LoadOptions {
    * `Math.floor(Date.now() / 1000)` when verifying a live token.
    */
   now?: number;
+  /**
+   * The revision of the Internet-Draft whose rules apply: "01" (the default, the
+   * algorithm below, unchanged) or "02" (draft-asor-wimse-agent-delegation-chain-02).
+   */
+  draft?: Profile;
+  /**
+   * The algorithms this verifier accepts, checked in step 1 before the signature:
+   * a token whose `alg` is off the list is denied even where its signature
+   * verifies. Defaults to the signer's own under "02"; honoured under "01" only
+   * when given, never implied there.
+   */
+  acceptedAlgs?: readonly string[] | null;
+  /**
+   * Draft -02 step 8: the audience this Enforcement Point answers to. When given,
+   * DT_n's `aud` must name it (`audience_mismatch` otherwise).
+   */
+  audience?: string | null;
 }
 
 /**
@@ -590,17 +765,35 @@ export function load(
   options: LoadOptions = {},
 ): VerifiedChain {
   const { rootKeyIds = null, now = 0 } = options;
+  const draft = checkProfile(options.draft ?? PROFILE_01);
+  const audience = options.audience ?? null;
+  const given = options.acceptedAlgs ?? null;
+  if (given !== null && (!Array.isArray(given) || !given.every((a) => typeof a === "string"))) {
+    // A configuration error, not a chain outcome: a bare string would give substring membership
+    // ("S256" in "HS256"), so only an array of strings is a list.
+    throw new TypeError(`acceptedAlgs must be an array of algorithm names; got ${JSON.stringify(given)}`);
+  }
   if (tokens.length === 0) {
     throw new WireError(WireReasonCode.MALFORMED, "empty token chain");
   }
 
   const parsed = tokens.map((t) => parseToken(t));
 
+  const authorities02 = draft === PROFILE_02 ? parsed.map((p, i) => checkToken02(p.payload, i)) : null;
+
   // ---- step 1: signatures -------------------------------------------------
   const trustedRoots = rootKeyIds === null ? null : new Set(rootKeyIds);
+  const acceptedAlgs: readonly string[] | null = given ?? (draft === PROFILE_02 ? [signer.alg] : null);
   for (let i = 0; i < parsed.length; i++) {
     const { header, sig, signingInput } = parsed[i]!;
     const alg = header["alg"];
+    if (acceptedAlgs !== null && !acceptedAlgs.includes(alg as string)) {
+      throw new WireError(
+        WireReasonCode.SIGNATURE_INVALID,
+        `token[${i}] header alg ${JSON.stringify(alg ?? null)} is not on the verifier's accepted list ` +
+          JSON.stringify(acceptedAlgs),
+      );
+    }
     if (alg !== signer.alg) {
       throw new WireError(
         WireReasonCode.SIGNATURE_INVALID,
@@ -689,15 +882,66 @@ export function load(
     }
   }
 
+  // ---- step 3 (draft -02), after depth as the text orders it: principal invariance
+  // R5 of draft-reece-wimse-cross-org-delegation asks for two things: convey the
+  // on-behalf-of principal along the chain, AND let a relying party verify that
+  // intermediaries did not alter it. par_hash (step 2) stops re-parenting; this
+  // stops a child carrying a different `sub`. It runs under the -02 profile only:
+  // the default profile is the -01 algorithm unchanged, where `sub` is the agent id
+  // and differs per hop, whether or not a token also carries `client_id`. Kept in
+  // step with the Python port.
+  if (draft === PROFILE_02) {
+    const rootSub = ownClaim(parsed[0]!.payload, "sub");
+    for (let i = 0; i < parsed.length; i++) {
+      const sub = ownClaim(parsed[i]!.payload, "sub");
+      if (sub !== rootSub) {
+        throw new WireError(
+          WireReasonCode.PRINCIPAL_ALTERED,
+          `token[${i}] sub ${JSON.stringify(sub ?? null)} != DT_0 sub ${JSON.stringify(rootSub ?? null)}; ` +
+            "the accountable principal MUST be identical in every token of the chain",
+        );
+      }
+    }
+  }
+
   // ---- step 4: subsumption (reuse Authority.isNarrowerThan) ---------------
-  const authorities = parsed.map((p) => authorityFromPayload(p.payload));
-  for (let i = 1; i < authorities.length; i++) {
-    if (!authorities[i]!.isNarrowerThan(authorities[i - 1]!)) {
-      throw new WireError(
-        WireReasonCode.NOT_NARROWER,
-        `token[${i}] authority is not narrower than token[${i - 1}]'s ` +
-          "(widened scope, loosened/dropped ceiling, or looser ttl)",
-      );
+  const authorities = authorities02 ?? parsed.map((p) => authorityFromPayload(p.payload));
+  if (draft === PROFILE_02) {
+    // Rules 1, 2, 3 and 5 here; rule 4 (exp) is step 5, so a later child expiry is `expired`,
+    // never `not_narrower`. The library's ttl is a derived quantity (exp - iat) the -02 does not
+    // compare, so it is left out of this step.
+    let bound = delMaxDepth;
+    for (let i = 1; i < authorities.length; i++) {
+      if (!authorities[i]!.withTtl(null).isNarrowerThan(authorities[i - 1]!.withTtl(null))) {
+        throw new WireError(
+          WireReasonCode.NOT_NARROWER,
+          `token[${i}] authority is not narrower than token[${i - 1}]'s ` +
+            "(widened scope, or a loosened, dropped or re-typed constraint)",
+        );
+      }
+      const own = ownClaim(parsed[i]!.payload, "del_max_depth");
+      if (own !== undefined && own !== null) {
+        if (typeof own !== "number" || !isIntegerLiteral(parsed[i]!.payloadRaw["del_max_depth"]) || own <= 0) {
+          throw new WireError(WireReasonCode.MALFORMED, `token[${i}].del_max_depth must be a positive integer`);
+        }
+        if (own > bound) {
+          throw new WireError(
+            WireReasonCode.NOT_NARROWER,
+            `token[${i}] del_max_depth ${own} exceeds its parent's ${bound} (subsumption rule 5)`,
+          );
+        }
+        bound = own;
+      }
+    }
+  } else {
+    for (let i = 1; i < authorities.length; i++) {
+      if (!authorities[i]!.isNarrowerThan(authorities[i - 1]!)) {
+        throw new WireError(
+          WireReasonCode.NOT_NARROWER,
+          `token[${i}] authority is not narrower than token[${i - 1}]'s ` +
+            "(widened scope, loosened/dropped ceiling, or looser ttl)",
+        );
+      }
     }
   }
 
@@ -740,15 +984,31 @@ export function load(
   }
 
   // ---- steps 6-7: OUT OF SCOPE (see the doc comment) ----------------------
-  //   step 6: cnf/DPoP holder-binding proof — not checked.
+  //   step 6: cnf/DPoP holder-binding proof — not checked (the -02 profile
+  //           checks that `cnf` is present and shaped; a verifier that sees no
+  //           request cannot run step 6, draft -02 Table 1).
   //   step 7: Token Status List revocation — not checked.
 
+  const leafPayload = parsed[parsed.length - 1]!.payload;
+  // ---- step 8, the audience half (draft -02): DT_n's aud names this verifier
+  if (audience !== null && draft === PROFILE_02) {
+    const aud = ownClaim(leafPayload, "aud");
+    if (!namesAudience(aud, audience)) {
+      throw new WireError(
+        WireReasonCode.AUDIENCE_MISMATCH,
+        `DT_n aud ${JSON.stringify(aud ?? null)} does not identify this Enforcement Point ` +
+          `${JSON.stringify(audience)} (RFC 9068 Section 4)`,
+      );
+    }
+  }
   return new VerifiedChain(
     [...tokens],
     parsed.map((p) => p.payload),
     authorities[authorities.length - 1]!,
-    parsed[parsed.length - 1]!.payload["del_depth"] as number,
+    leafPayload["del_depth"] as number,
     delMaxDepth,
+    draft,
+    audience,
   );
 }
 

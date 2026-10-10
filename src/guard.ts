@@ -64,7 +64,8 @@ import type { Json } from "./canonical.js";
 import { Authority, AuthorityError } from "./authority.js";
 import { AuditLog, CommittedAuditError, type LedgerEntry, type Sink } from "./audit.js";
 import { Chain, MonotonicClock, type Clock, type Node } from "./chain.js";
-import { ctxFieldOf, isMetered, ownValue, type Ceiling, type Context } from "./ceilings.js";
+import { CallLimit, ctxFieldOf, isMetered, ownValue, type Ceiling, type Context } from "./ceilings.js";
+import { MaxLifetime, PROFILE_02 } from "./draft02.js";
 import {
   BODY_STATES,
   BodyState,
@@ -188,6 +189,13 @@ export interface CheckOptions {
   capture?: string | null;
   /** 0.9.0 execution binding: the adapter code path, required together with `capture`. */
   adapter?: AdapterInfo | null;
+  /**
+   * The -02 profile: the running totals this component holds for the node's cumulative
+   * constraints, keyed by total field (`spend_total`, `calls_subtree_total`). They are the only
+   * source of a total: a `*_total` key in `context` is ignored. A cumulative constraint with no
+   * total held denies.
+   */
+  totals?: Context | null;
 }
 
 export interface RecordDenialOptions {
@@ -438,7 +446,7 @@ export class Guard {
    * Node state (integrity, revocation, TTL) is checked before scope and
    * ceilings, because a compromised or revoked node's scope grants are moot.
    */
-  private evaluate(scope: string, context: Context, metered: boolean): Decision {
+  private evaluate(scope: string, context: Context, metered: boolean, totals: Context | null = null): Decision {
     const { node, chain } = this;
     const auth = node.authority;
     const nid = node.nodeId;
@@ -478,8 +486,16 @@ export class Guard {
     // (attenu-ops#110): counting it as declared let `{rows: null}` through, since every ceiling reads
     // null as absent.
     if (this.strict && metered) {
+      // Exactly what permits() reads: per-action ceilings the request context, cumulative ceilings
+      // (under the -02) the trusted totals; the two are never merged.
+      const declaredCtx = auth.effectiveContext(context);
+      const declaredTotals = auth.effectiveTotals(totals);
+      const is02 = auth.profile === PROFILE_02;
       const missing = auth.ceilings
-        .filter((c) => isMetered(c) && (ownValue(context, ctxFieldOf(c)) ?? null) === null)
+        .filter((c) => {
+          const declared = is02 && Authority.isCumulative(c) ? declaredTotals : declaredCtx;
+          return isMetered(c) && (ownValue(declared, ctxFieldOf(c)) ?? null) === null;
+        })
         .map((c) => c.key);
       if (missing.length > 0) {
         const held = auth.ceilings.filter(isMetered).map((c) => c.key);
@@ -495,7 +511,7 @@ export class Guard {
       }
     }
 
-    const decision = auth.permits(scope, context);
+    const decision = auth.permits(scope, context, { totals });
     if (decision.determiningNode === null) {
       return new Decision(decision.allowed, decision.reasons, nid);
     }
@@ -548,22 +564,42 @@ export class Guard {
 
   // ---- enforcement ------------------------------------------------------
 
+  /**
+   * The ceilings the guard's own per-(node, pattern) call meter feeds: a `CallLimit`, or its -02
+   * wire form, a `max_lifetime` on `max_calls`. Never a per-subtree bound: a subtree total spans
+   * nodes and no node meter holds it, so filling it from this node's count let three nodes make
+   * six calls under a bound of two. A subtree total arrives only through `check({ totals })`.
+   */
   private callLimits(): Ceiling[] {
-    return this.node.authority.ceilings.filter((c) => String(c.key).startsWith("max_calls"));
+    return this.node.authority.ceilings.filter(
+      (c) => c instanceof CallLimit || (c instanceof MaxLifetime && String(c.key).startsWith("max_calls")),
+    );
   }
 
   /**
    * Fill in `calls` / `calls[<pattern>]` for every held call ceiling the caller
    * left undeclared, reading the per-(node, pattern) meter. Returns the limits
    * that were auto-filled AND apply to this scope, to be counted on allow.
+   *
+   * Under the -02 profile the meter is the ONLY source: the count is written into
+   * `totals` (the trusted channel), overriding anything the caller put in the
+   * context or in `totals` for that field, and every applicable limit is counted
+   * on allow. The default profile keeps its documented behaviour: an explicit
+   * `calls` in the context wins.
    */
-  private autoMeter(scope: string, ctx: Context): Ceiling[] {
+  private autoMeter(scope: string, ctx: Context, totals: Context | null = null): Ceiling[] {
     const filled: Ceiling[] = [];
+    const is02 = this.node.authority.profile === PROFILE_02;
     for (const c of this.callLimits()) {
       const field = c.ctxField ?? "calls";
-      if ((ownValue(ctx, field) ?? null) !== null) continue; // an explicit count wins; null is no count
       const applies = c.appliesToScope ? c.appliesToScope(scope) : true;
-      ctx[field] = this.chain.callsSoFar(this.node.nodeId, c.meterKey ?? "*") + (applies ? 1 : 0);
+      const count = this.chain.callsSoFar(this.node.nodeId, c.meterKey ?? "*") + (applies ? 1 : 0);
+      if (is02) {
+        if (totals !== null) totals[field] = count;
+      } else {
+        if ((ownValue(ctx, field) ?? null) !== null) continue; // an explicit count wins; null is no count
+        ctx[field] = count;
+      }
       if (applies) filled.push(c);
     }
     return filled;
@@ -651,8 +687,9 @@ export class Guard {
       filled = [];
     } else {
       // 2. evaluate authority/ceilings; update meters on allow.
-      filled = this.autoMeter(scope, ctx);
-      decision = this.evaluate(scope, ctx, options.metered ?? false);
+      const totals: Context = { ...(options.totals ?? {}) };
+      filled = this.autoMeter(scope, ctx, totals);
+      decision = this.evaluate(scope, ctx, options.metered ?? false, totals);
       if (decision.allowed) {
         for (const c of filled) this.chain.countCall(nid, c.meterKey ?? "*");
       }
@@ -773,8 +810,9 @@ export class Guard {
    */
   wouldAllow(scope: string, options: CheckOptions = {}): Decision {
     const ctx: Context = { ...(options.context ?? {}) };
-    this.autoMeter(scope, ctx); // read the meters, never consume them
-    return this.evaluate(scope, ctx, options.metered ?? false);
+    const totals: Context = { ...(options.totals ?? {}) };
+    this.autoMeter(scope, ctx, totals); // read the meters, never consume them
+    return this.evaluate(scope, ctx, options.metered ?? false, totals);
   }
 
   /**
