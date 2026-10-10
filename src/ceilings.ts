@@ -111,7 +111,7 @@ const SCALAR = ["a string", "a number", "a boolean"];
  * this library's `parseJson` read, a `RawNumber`, is a number. The Python implementation names the
  * same values the same way.
  */
-function jsonKind(value: unknown): string {
+export function jsonKind(value: unknown): string {
   if (value === null) return "null";
   if (typeof value === "boolean") return "a boolean";
   if (typeof value === "number" || value instanceof RawNumber) return "a number";
