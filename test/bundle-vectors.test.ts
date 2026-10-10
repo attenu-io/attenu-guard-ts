@@ -58,6 +58,7 @@ import {
   type FailureDetail,
   type VerifyBundleOptions,
   type VerifyReport,
+  type WitnessKey,
 } from "../src/evidence.js";
 import * as api from "../src/index.js";
 import { Guard } from "../src/guard.js";
@@ -1608,7 +1609,7 @@ test("stateKey and integrityBreak read an entry, or entries, of any kind", () =>
   assert.equal(integrityBreak(null as unknown as LedgerEntry[]), null);
 });
 
-test("no public reader throws on a value of any kind anywhere", () => {
+test("no public reader throws on a value of any kind in any top-level field", () => {
   const readers: Record<string, (b: unknown) => unknown> = {
     verifyBundle: (b) => verifyBundle(b as Bundle),
     "verifyBundle(key)": (b) => verifyBundle(b as Bundle, VALID_V2_SIGNER),
@@ -1649,6 +1650,164 @@ test("no public reader throws on a value of any kind anywhere", () => {
         read(bundle);
       } catch (err) {
         assert.fail(`${name} threw ${(err as Error).name}: ${(err as Error).message} on ${JSON.stringify(bundle).slice(0, 200)}`);
+      }
+    }
+  }
+});
+
+// =============================================================================================
+// The root's authority and a spawn's granted are read whole, member by member
+// =============================================================================================
+//
+// A root's `authority.ttl` that was not a number was read as unbounded here, so a root `ttl: "x"`
+// verified; the Python implementation raised a TypeError on it. A member of either object that is
+// not the type the wire format gives it is now an unreadable authority, positioned on that entry,
+// in both implementations: `ttl` a number or null, `scopes` and `constraints` arrays, a scope a
+// string, and the object itself an object. The Python implementation's
+// tests/test_bundle_vectors.py (`TestAuthorityReadWhole`) asserts the same rows.
+
+const N0_UNKNOWN: [string, Json, Json, number | null] = ["containment: allow on unknown node vectors:n0", 2, "vectors:n0", 2];
+const N1_UNKNOWN: [string, Json, Json, number | null] = ["containment: allow on unknown node vectors:n1", 4, "vectors:n1", 4];
+const authorityOfEntry = (e: LedgerEntry, member: string): Record<string, CJson> => e[member] as Record<string, CJson>;
+
+const AUTHORITY_CASES: [string, (es: LedgerEntry[]) => void, [string, Json, Json, number | null][]][] = [
+  ["root ttl 'x'", (es) => void (authorityOfEntry(es[0]!, "authority")["ttl"] = "x"),
+    [["root vectors:n0: unreadable authority (ttl is a string, not a number)", 0, "vectors:n0", 0], N0_UNKNOWN]],
+  ["root ttl []", (es) => void (authorityOfEntry(es[0]!, "authority")["ttl"] = []),
+    [["root vectors:n0: unreadable authority (ttl is an array, not a number)", 0, "vectors:n0", 0], N0_UNKNOWN]],
+  ["spawn ttl true", (es) => void (authorityOfEntry(es[1]!, "granted")["ttl"] = true),
+    [["spawn vectors:n1: unreadable granted (ttl is a boolean, not a number)", 1, "vectors:n1", 1], N1_UNKNOWN]],
+  ["spawn ttl {}", (es) => void (authorityOfEntry(es[1]!, "granted")["ttl"] = {}),
+    [["spawn vectors:n1: unreadable granted (ttl is an object, not a number)", 1, "vectors:n1", 1], N1_UNKNOWN]],
+  ["root authority null", (es) => void (es[0]!["authority"] = null),
+    [["root vectors:n0: unreadable authority (authority is null, not an object)", 0, "vectors:n0", 0], N0_UNKNOWN]],
+  ["root authority absent", (es) => void delete es[0]!["authority"],
+    [["root vectors:n0: unreadable authority (authority is null, not an object)", 0, "vectors:n0", 0], N0_UNKNOWN]],
+  ["spawn granted 'x'", (es) => void (es[1]!["granted"] = "x"),
+    [["spawn vectors:n1: unreadable granted (granted is a string, not an object)", 1, "vectors:n1", 1], N1_UNKNOWN]],
+  ["root scopes 'crm.*'", (es) => void (authorityOfEntry(es[0]!, "authority")["scopes"] = "crm.*"),
+    [["root vectors:n0: unreadable authority (scopes is a string, not an array)", 0, "vectors:n0", 0], N0_UNKNOWN]],
+  ["spawn scopes null", (es) => void (authorityOfEntry(es[1]!, "granted")["scopes"] = null),
+    [["spawn vectors:n1: unreadable granted (scopes is null, not an array)", 1, "vectors:n1", 1], N1_UNKNOWN]],
+  ["root scope 5", (es) => void ((authorityOfEntry(es[0]!, "authority")["scopes"] as CJson[])[0] = 5),
+    [["root vectors:n0: unreadable authority (a scope is a number, not a string)", 0, "vectors:n0", 0], N0_UNKNOWN]],
+  ["root constraints null", (es) => void (authorityOfEntry(es[0]!, "authority")["constraints"] = null),
+    [["root vectors:n0: unreadable authority (constraints is null, not an array)", 0, "vectors:n0", 0], N0_UNKNOWN]],
+  ["spawn constraints {}", (es) => void (authorityOfEntry(es[1]!, "granted")["constraints"] = {}),
+    [["spawn vectors:n1: unreadable granted (constraints is an object, not an array)", 1, "vectors:n1", 1], N1_UNKNOWN]],
+];
+
+test("a member of the wrong type is an unreadable authority", () => {
+  for (const [label, edit, expected] of AUTHORITY_CASES) {
+    for (const signer of [VALID_V2_SIGNER, null]) {
+      const report = verifyBundle(parseBundle(JSON.stringify(rechained(edit))), signer);
+      assert.equal(report.ok, false, label);
+      assert.equal(report.checks.monotonicity, false, label);
+      assert.deepEqual(
+        report.failures.map((m, k) => [m, report.failure_details[k]!.seq, report.failure_details[k]!.node, report.failure_entries[k]]),
+        expected,
+        label,
+      );
+    }
+  }
+});
+
+test("a ttl that is not finite is an unreadable authority", () => {
+  // The parser refuses NaN and Infinity; a caller can still hand one over.
+  for (const value of [NaN, Infinity]) {
+    const bundle = validV2();
+    authorityOfEntry(bundle.entries[1]!, "granted")["ttl"] = value;
+    assert.ok(
+      verifyBundle(bundle, VALID_V2_SIGNER).failures.includes("spawn vectors:n1: unreadable granted (ttl is not a finite number)"),
+      String(value),
+    );
+  }
+});
+
+test("a readable authority still verifies", () => {
+  const cases: [string, (es: LedgerEntry[]) => void][] = [
+    ["root ttl null", (es) => void (authorityOfEntry(es[0]!, "authority")["ttl"] = null)],
+    ["root ttl 10**12", (es) => void (authorityOfEntry(es[0]!, "authority")["ttl"] = 10 ** 12)],
+    ["spawn ttl 1.5", (es) => void (authorityOfEntry(es[1]!, "granted")["ttl"] = 1.5)],
+    ["root constraints absent", (es) => void delete authorityOfEntry(es[0]!, "authority")["constraints"]],
+  ];
+  for (const [label, edit] of cases) {
+    const report = verifyBundle(parseBundle(JSON.stringify(rechained(edit))), VALID_V2_SIGNER);
+    assert.equal(report.ok, true, `${label}: ${JSON.stringify(report.failures)}`);
+  }
+});
+
+test("the views read an unreadable authority as none", () => {
+  const bundle = rechained((es) => void (authorityOfEntry(es[0]!, "authority")["ttl"] = "x"));
+  assert.deepEqual(delegationGraph(bundle).nodes["vectors:n0"]!.scopes, []);
+  assert.equal(denials(bundle).length, 1);
+});
+
+test("no public reader throws on a value of any kind in a nested member", () => {
+  // The members inside an entry or an envelope that a reader reads: the root's authority and a
+  // spawn's granted (scopes, constraints, ttl, a scope, a constraint and its members), an allow's
+  // context and adapter, an outcome's receipt, a kill's revoked and pending_at_kill, and every
+  // member of an envelope. The Python implementation raised on a ttl that was not a number.
+  const put = (bundle: unknown, path: (string | number)[], value: unknown): void => {
+    let target = bundle as Record<string | number, unknown>;
+    for (const key of path.slice(0, -1)) {
+      const next = target[key];
+      if (next === null || typeof next !== "object") {
+        target[key] = key === "receipt" ? { type: "t", ref: "r", digest: "0".repeat(64) } : {};
+      }
+      target = target[key] as Record<string | number, unknown>;
+    }
+    target[path[path.length - 1]!] = JSON.parse(JSON.stringify(value));
+  };
+  const envelopeCase = (fixtureJson("vectors/envelopes/envelope_vectors_v1.json") as {
+    cases: { name: string; bundle: Bundle; witness_keys: WitnessKey[] }[];
+  }).cases.find((c) => c.name === "valid_spawn_envelope")!;
+  const kill = killBundle();
+  const killAt = kill.entries.findIndex((e) => e["event"] === "kill");
+  const paths: [Bundle, WitnessKey[] | null, (string | number)[], boolean][] = [];
+  for (const [at, member] of [[0, "authority"], [1, "granted"]] as [number, string][]) {
+    for (const tail of [["scopes"], ["constraints"], ["ttl"], ["scopes", 0], ["constraints", 0],
+      ["constraints", 0, "key"], ["constraints", 0, "max"], ["constraints", 0, "zz"]] as (string | number)[][]) {
+      paths.push([VALID_V2_CASE.bundle, null, ["entries", at, member, ...tail], true]);
+    }
+  }
+  for (const tail of [["context", "rows"], ["context", "spend"], ["context", "egress"], ["adapter", "module"],
+    ["adapter", "version"], ["adapter", "hook_path"]]) {
+    paths.push([VALID_V2_CASE.bundle, null, ["entries", 2, ...tail], true]);
+  }
+  for (const tail of [["receipt"], ["receipt", "type"], ["receipt", "ref"], ["receipt", "digest"]]) {
+    paths.push([VALID_V2_CASE.bundle, null, ["entries", 3, ...tail], true]);
+  }
+  for (const tail of [["revoked"], ["revoked", 0], ["pending_at_kill"]] as (string | number)[][]) {
+    paths.push([kill, null, ["entries", killAt, ...tail], true]);
+  }
+  for (const tail of [["v"], ["typ"], ["subject"], ["observed"], ["witness"], ["sig"], ["subject", "chain_id"],
+    ["subject", "node"], ["subject", "seq"], ["subject", "entry_hash"], ["subject", "event"], ["observed", "result"],
+    ["observed", "at"], ["observed", "method"], ["witness", "kid"], ["witness", "alg"]]) {
+    paths.push([envelopeCase.bundle, envelopeCase.witness_keys, ["envelopes", 0, ...tail], false]);
+  }
+  const readers: Record<string, (b: Bundle, wk: WitnessKey[] | null) => unknown> = {
+    verifyBundle: (b) => verifyBundle(b),
+    "verifyBundle(key)": (b, wk) => verifyBundle(b, VALID_V2_SIGNER, { witnessKeys: wk }),
+    delegationGraph: (b) => delegationGraph(b),
+    denials: (b) => denials(b),
+    verifyEnvelopes: (b, wk) => verifyEnvelopes(b, { witnessKeys: wk }),
+    redactionReport: (b) => redactionReport(b.entries, ["rows"]),
+  };
+  for (const [base, witnessKeys, path, rechain] of paths) {
+    for (const value of KINDS) {
+      const bundle = clone(base);
+      put(bundle, path, value);
+      if (rechain) {
+        rehash(bundle);
+        reanchor(bundle);
+      }
+      for (const [name, read] of Object.entries(readers)) {
+        try {
+          read(bundle, witnessKeys);
+        } catch (err) {
+          assert.fail(`${name} threw ${(err as Error).name}: ${(err as Error).message} at ${JSON.stringify(path)} = ${JSON.stringify(value)}`);
+        }
       }
     }
   }

@@ -564,6 +564,41 @@ function monotonicityDetail(child: Authority, parent: Authority): string {
  * member as written, whatever its type; whether that names a node defined earlier is judged there
  * too. The Python implementation's `_node_authorities`.
  */
+/**
+ * Why `value`, a root's `authority` or a spawn's `granted`, cannot be read as an authority by the
+ * type of one of its members, or null. The object itself is an object; `scopes` and `constraints`,
+ * when present, arrays, and a scope a string; `ttl`, when present and not null, a finite number.
+ * `Authority.fromWire` reports the rest, as before: a member it does not read, a scope outside the
+ * grammar, a constraint of the wrong shape.
+ *
+ * `fromWire` read a `ttl` that was not a number as unbounded, so a root `ttl: "x"` verified, and a
+ * null `scopes` or `constraints` as empty; the Python implementation raised on the first and on
+ * the null ones. The Python implementation's `_authority_wire_error`, message for message.
+ */
+function authorityWireError(value: unknown, member: string): string | null {
+  if (!isLedgerObject(value)) return `${member} is ${jsonKind(value)}, not an object`;
+  if (Object.keys(value).some((k) => k !== "scopes" && k !== "constraints" && k !== "ttl")) {
+    return null; // fromWire names the members it does not read
+  }
+  if (Object.hasOwn(value, "scopes")) {
+    const scopes: unknown = value["scopes"];
+    if (!Array.isArray(scopes)) return `scopes is ${jsonKind(scopes)}, not an array`;
+    for (const scope of scopes as unknown[]) {
+      if (typeof scope !== "string") return `a scope is ${jsonKind(scope)}, not a string`;
+    }
+  }
+  if (Object.hasOwn(value, "constraints") && !Array.isArray(value["constraints"])) {
+    return `constraints is ${jsonKind(value["constraints"])}, not an array`;
+  }
+  const ttl: unknown = value["ttl"];
+  if (ttl !== undefined && ttl !== null) {
+    const plain = toPlain(ttl as CJson);
+    if (typeof plain !== "number") return `ttl is ${jsonKind(ttl)}, not a number`;
+    if (!Number.isFinite(plain)) return "ttl is not a finite number";
+  }
+  return null;
+}
+
 function nodeAuthorities(entries: readonly LedgerEntry[]): NodeAuthorities {
   const auth = new Map<string, Authority>();
   const parent = new Map<string, Json>();
@@ -588,6 +623,8 @@ function nodeAuthorities(entries: readonly LedgerEntry[]): NodeAuthorities {
     definedBy.set(node, e);
     if (ev === "root") {
       try {
+        const wrong = authorityWireError(e["authority"] ?? null, "authority");
+        if (wrong !== null) throw new Error(wrong);
         auth.set(node, Authority.fromWire(e["authority"] ?? null));
       } catch (exc) {
         failures.add("unreadable_authority", `root ${shown(e["node"])}: unreadable authority (${(exc as Error).message})`, position);
@@ -595,6 +632,8 @@ function nodeAuthorities(entries: readonly LedgerEntry[]): NodeAuthorities {
     } else {
       parent.set(node, orNull(e["parent"]));
       try {
+        const wrong = authorityWireError(e["granted"] ?? null, "granted");
+        if (wrong !== null) throw new Error(wrong);
         auth.set(node, Authority.fromWire(e["granted"] ?? null));
       } catch (exc) {
         failures.add("unreadable_granted", `spawn ${shown(e["node"])}: unreadable granted (${(exc as Error).message})`, position);

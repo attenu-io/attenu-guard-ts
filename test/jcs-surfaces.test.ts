@@ -8,9 +8,13 @@ import { HS256TestSigner } from "../src/wire.js";
 
 const signer = new HS256TestSigner(Buffer.from("jcs-surface-test"), "jcs-test");
 
+// A root carries its authority, as the Python implementation's tests/test_jcs_surfaces.py builds it
+// (`Authority({"crm.read"}, [], ttl=60)`): a root with none is an unreadable authority in both.
+const ROOT_AUTHORITY = { scopes: ["crm.read"], constraints: [], ttl: 60 };
+
 test("ledger entries, anchors, and bundles declare JCS", () => {
   const log = new AuditLog();
-  const entry = log.append("root", 0, { chain_id: "jcs", node: "root" });
+  const entry = log.append("root", 0, { chain_id: "jcs", node: "root", authority: ROOT_AUTHORITY });
   assert.equal(entry["c14n"], "JCS");
   const anchor = log.anchor(signer);
   assert.equal(anchor.c14n, "JCS");
@@ -22,7 +26,7 @@ test("ledger entries, anchors, and bundles declare JCS", () => {
 
 test("c14n is informational on ledger, anchor, and bundle verification", () => {
   const log = new AuditLog();
-  const original = log.append("root", 0, { chain_id: "jcs", node: "root" });
+  const original = log.append("root", 0, { chain_id: "jcs", node: "root", authority: ROOT_AUTHORITY });
 
   for (const marker of [undefined, "private-label-v2"] as const) {
     const entry: any = structuredClone(original);

@@ -1353,3 +1353,34 @@ test("no witness-key hint for envelopes that are not an array", () => {
     }
   });
 });
+
+test("a ttl that is not a number is a verdict", () => {
+  // The Python CLI ended in a traceback here, and this one read the ttl as unbounded.
+  inTempDir((dir) => {
+    const bundle = validV2Unanchored();
+    const entries = bundle["entries"] as LedgerEntry[];
+    (entries[0]!["authority"] as Record<string, CJson>)["ttl"] = "x";
+    let prev = "0".repeat(64);
+    for (const e of entries) {
+      e["prev_hash"] = prev;
+      delete e["hash"];
+      e["hash"] = hashEntry(prev, e);
+      prev = e["hash"] as string;
+    }
+    const file = join(dir, "bundle.json");
+    writeFileSync(file, JSON.stringify(bundle));
+    const { stdout, status, stderr } = run(["verify", file]);
+    assert.equal(
+      stdout,
+      [
+        "integrity=True monotonicity=False containment=False anchor=not checked nodes=1 actions_checked=2",
+        "  - root vectors:n0: unreadable authority (ttl is a string, not a number)",
+        "  - containment: allow on unknown node vectors:n0",
+        "FAILED",
+        "",
+      ].join("\n"),
+    );
+    assert.equal(status, 2);
+    assert.equal(stderr, "");
+  });
+});
