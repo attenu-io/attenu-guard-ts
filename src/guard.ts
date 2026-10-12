@@ -102,9 +102,7 @@ const TERMINAL_CAPTURES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Thrown by `enforce`, and by `check` for the one deny it throws rather than returns: a context
- * the ledger cannot hold (a number of 2^53 or more), which is recorded first. Carries the full
- * `Decision`, so a caller can branch
+ * Thrown by `enforce` when the decision is a deny. Carries the full `Decision`, so a caller can branch
  * on `err.decision.reasons[0].code` instead of parsing a message string.
  */
 export class AuthorityDenied extends Error {
@@ -750,7 +748,7 @@ export class Guard {
     //    re-thrown as-is (not swallowed into a Decision — unlike CSPRNG exhaustion, a malformed
     //    context/authorizedParams value is the caller's error, and this library's convention
     //    elsewhere is to throw on malformed input, not silently deny). The one exception is a
-    //    context the ledger cannot hold: that is recorded as a deny and thrown as AuthorityDenied.
+    //    context the ledger cannot hold: that is recorded as a deny and returned like any deny.
     try {
       this.logDecision(decision, scope, options.tool ?? null, ctx, disposition, extra);
     } catch (exc) {
@@ -769,14 +767,14 @@ export class Guard {
           // A context value the ledger cannot hold (a number of 2^53 or more: `spend: 1e21`, a
           // nanosecond timestamp) is a recorded deny, not a bare throw: adapters fill the context
           // from tool arguments, so a model-sent value must not become a refusal nobody can see.
-          // The row leaves the context out, the meters are as they were, and the deny throws as
-          // `enforce` does (attenu-ops #127, review M1). Same as the Python implementation.
-          const denied = this.recordDenial(unrepresentable, "", {
+          // The row leaves the context out, the meters are as they were, and the deny is returned
+          // as every deny is; `enforce` throws it (attenu-ops #127, review M1). Same as the Python
+          // implementation.
+          return this.recordDenial(unrepresentable, "", {
             scope,
             tool: options.tool ?? null,
             disposition: Disposition.UNRESOLVED,
           });
-          throw new AuthorityDenied(denied);
         }
       }
       throw exc;
@@ -835,7 +833,7 @@ export class Guard {
     const totals: Context = { ...(options.totals ?? {}) };
     this.autoMeter(scope, ctx, totals); // read the meters, never consume them
     const unrepresentable = Guard.unrepresentableContext(ctx, scope);
-    if (unrepresentable !== null) return Decision.deny(unrepresentable, this.node.nodeId); // what check() records and throws
+    if (unrepresentable !== null) return Decision.deny(unrepresentable, this.node.nodeId); // what check() records and returns
     return this.evaluate(scope, ctx, options.metered ?? false, totals);
   }
 

@@ -23,7 +23,7 @@ import { Authority } from "../src/authority.js";
 import { CanonicalizationError, canonicalJson, type CJson } from "../src/canonical.js";
 import { CallLimit, SpendCap } from "../src/ceilings.js";
 import { AuthorityDenied, Guard } from "../src/guard.js";
-import { Disposition, ReasonCode } from "../src/reasons.js";
+import { Disposition, ReasonCode, type Decision } from "../src/reasons.js";
 import { HS256TestSigner, WireError, WireReasonCode, b64urlEncode, load } from "../src/wire.js";
 import { fixtureJson } from "./helpers.js";
 import { payloadOf, resign, signParts } from "./mint02.js";
@@ -165,10 +165,9 @@ test("#127 review m4: a non-string scope member is malformed with the Python mes
 const payer = (...ceilings: any[]) =>
   Guard.issue("payer", new Authority({ scopes: ["pay.send"], ceilings, ttl: 60 }), { chainId: "t" });
 
-function assertRecordedDeny(g: Guard, before: number, e: unknown): string {
-  assert.ok(e instanceof AuthorityDenied, `expected AuthorityDenied, got ${String(e)}`);
-  const r = e.decision.reasons[0]!;
-  assert.equal(e.decision.allowed, false);
+function assertRecordedDeny(g: Guard, before: number, decision: Decision): string {
+  const r = decision.reasons[0]!;
+  assert.equal(decision.allowed, false);
   assert.deepEqual([r.code, r.constraint, r.requested], [ReasonCode.NO_AUTHORITY, "context", "pay.send"]);
   assert.match(r.message, /^context not representable: integer /);
   const entries = g.auditLog().entries;
@@ -190,10 +189,10 @@ function thrown(f: () => unknown): unknown {
   return assert.fail("did not throw");
 }
 
-test("#127 M1: spend past the range is a recorded deny, raised as AuthorityDenied", () => {
+test("#127 M1: spend past the range is a recorded deny, returned as every deny is", () => {
   const g = payer(new SpendCap(100));
   const before = g.auditLog().entries.length;
-  const message = assertRecordedDeny(g, before, thrown(() => g.check("pay.send", { context: { spend: 1e21 } })));
+  const message = assertRecordedDeny(g, before, g.check("pay.send", { context: { spend: 1e21 } }));
   assert.equal(message, "context not representable: integer 1e+21 exceeds the safe range " +
     "±9007199254740991 for a binary64 signing surface (RFC 8785 numbers are IEEE 754 doubles)");
 });
@@ -201,7 +200,7 @@ test("#127 M1: spend past the range is a recorded deny, raised as AuthorityDenie
 test("#127 M1: an allowed call with a nanosecond timestamp leaves the meter as it was", () => {
   const g = payer(new CallLimit(2));
   const before = g.auditLog().entries.length;
-  assertRecordedDeny(g, before, thrown(() => g.check("pay.send", { context: { ts_ns: 1.76e18 } })));
+  assertRecordedDeny(g, before, g.check("pay.send", { context: { ts_ns: 1.76e18 } }));
   assert.equal(g.check("pay.send").allowed, true);
   assert.equal(g.check("pay.send").allowed, true);
   assert.equal(g.check("pay.send").allowed, false);
@@ -210,7 +209,9 @@ test("#127 M1: an allowed call with a nanosecond timestamp leaves the meter as i
 test("#127 M1: enforce raises the same deny", () => {
   const g = payer(new SpendCap(100));
   const before = g.auditLog().entries.length;
-  assertRecordedDeny(g, before, thrown(() => g.enforce("pay.send", { context: { spend: 1e21 } })));
+  const e = thrown(() => g.enforce("pay.send", { context: { spend: 1e21 } }));
+  assert.ok(e instanceof AuthorityDenied, `expected AuthorityDenied, got ${String(e)}`);
+  assertRecordedDeny(g, before, e.decision);
 });
 
 test("#127 M1: wouldAllow reports the deny and writes nothing", () => {
