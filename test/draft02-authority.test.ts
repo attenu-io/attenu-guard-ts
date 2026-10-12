@@ -251,9 +251,9 @@ test("-02 constraints: the default profile wire form is unchanged", () => {
   assert.deepEqual(new Authority({ scopes: ["a.b"], ceilings: [new EgressRank("none")] }).toWire().constraints, [{ key: "egress", rank: "none" }]);
 });
 
-test("-02 constraints: a null constraint list is refused under -02 and empty under -01, as before", () => {
+test("-02 constraints: a null constraint list is refused under both profiles, as in Python (attenu-ops #127)", () => {
   assert.throws(() => Authority.fromWire({ scopes: ["a.b"], constraints: null, ttl: 1 }, "02"), { message: "constraints is null, not an array" });
-  assert.equal(Authority.fromWire({ scopes: ["a.b"], constraints: null, ttl: 1 }).ceilings.length, 0);
+  assert.throws(() => Authority.fromWire({ scopes: ["a.b"], constraints: null, ttl: 1 }), { message: "constraints is null, not an array" });
   assert.throws(() => Authority.fromWire({ scopes: ["a.b"], constraints: "x", ttl: 1 }), { message: "constraints is a string, not an array" });
 });
 
