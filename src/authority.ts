@@ -605,6 +605,9 @@ export class Authority {
     if (!Array.isArray(scopes)) {
       throw new TypeError(`scopes is ${jsonKind(scopes)}, not an array`);
     }
+    if (scopes.some((x) => typeof x !== "string")) {
+      throw new TypeError("scopes must be an array of strings");
+    }
     const listed = d["constraints"];
     const constraints = (listed === undefined ? [] : listed) as Record<string, Json>[];
     if (!Array.isArray(constraints)) {

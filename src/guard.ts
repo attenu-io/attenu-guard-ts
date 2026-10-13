@@ -60,7 +60,7 @@
  * own doc comment in reasons.ts for exactly what IS and is not bridged.
  */
 
-import type { Json } from "./canonical.js";
+import { CanonicalizationError, canonicalJson, type CJson, type Json } from "./canonical.js";
 import { Authority, AuthorityError } from "./authority.js";
 import { AuditLog, CommittedAuditError, type LedgerEntry, type Sink } from "./audit.js";
 import { Chain, MonotonicClock, type Clock, type Node } from "./chain.js";
@@ -102,7 +102,9 @@ const TERMINAL_CAPTURES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Thrown only by `enforce`. Carries the full `Decision`, so a caller can branch
+ * Thrown by `enforce`, and by `check` for the one deny it throws rather than returns: a context
+ * the ledger cannot hold (a number of 2^53 or more), which is recorded first. Carries the full
+ * `Decision`, so a caller can branch
  * on `err.decision.reasons[0].code` instead of parsing a message string.
  */
 export class AuthorityDenied extends Error {
@@ -646,6 +648,9 @@ export class Guard {
   /**
    * Authorize an action. Returns a `Decision`; it does not throw on a denial.
    * Every call — allow or deny — is appended to the audit log.
+   * One exception: a context the ledger cannot hold in RFC 8785 (a number of 2^53 or more, such
+   * as `spend: 1e21`) is recorded as a `no_authority` deny on `context`, with the context left
+   * out of the row, and thrown as `AuthorityDenied`.
    *
    * Auto-metering: when this node holds a `CallLimit` and the caller did not
    * supply `calls`, the guard supplies the running count for (node, pattern)
@@ -744,7 +749,8 @@ export class Guard {
     //    CSPRNG case above: meters are restored, nothing is pending, and the exception is
     //    re-thrown as-is (not swallowed into a Decision — unlike CSPRNG exhaustion, a malformed
     //    context/authorizedParams value is the caller's error, and this library's convention
-    //    elsewhere is to throw on malformed input, not silently deny).
+    //    elsewhere is to throw on malformed input, not silently deny). The one exception is a
+    //    context the ledger cannot hold: that is recorded as a deny and thrown as AuthorityDenied.
     try {
       this.logDecision(decision, scope, options.tool ?? null, ctx, disposition, extra);
     } catch (exc) {
@@ -754,8 +760,24 @@ export class Guard {
           this.chain.registerPending(nid, callId!);
         }
         exc.decision = decisionWithId;
-      } else if (decision.allowed) {
-        for (const c of filled) this.chain.uncountCall(nid, c.meterKey ?? "*");
+      } else {
+        if (decision.allowed) {
+          for (const c of filled) this.chain.uncountCall(nid, c.meterKey ?? "*");
+        }
+        const unrepresentable = exc instanceof CanonicalizationError ? Guard.unrepresentableContext(ctx, scope) : null;
+        if (unrepresentable !== null) {
+          // A context value the ledger cannot hold (a number of 2^53 or more: `spend: 1e21`, a
+          // nanosecond timestamp) is a recorded deny, not a bare throw: adapters fill the context
+          // from tool arguments, so a model-sent value must not become a refusal nobody can see.
+          // The row leaves the context out, the meters are as they were, and the deny throws as
+          // `enforce` does (attenu-ops #127, review M1). Same as the Python implementation.
+          const denied = this.recordDenial(unrepresentable, "", {
+            scope,
+            tool: options.tool ?? null,
+            disposition: Disposition.UNRESOLVED,
+          });
+          throw new AuthorityDenied(denied);
+        }
       }
       throw exc;
     }
@@ -812,7 +834,24 @@ export class Guard {
     const ctx: Context = { ...(options.context ?? {}) };
     const totals: Context = { ...(options.totals ?? {}) };
     this.autoMeter(scope, ctx, totals); // read the meters, never consume them
+    const unrepresentable = Guard.unrepresentableContext(ctx, scope);
+    if (unrepresentable !== null) return Decision.deny(unrepresentable, this.node.nodeId); // what check() records and throws
     return this.evaluate(scope, ctx, options.metered ?? false, totals);
+  }
+
+  /** The deny reason for a context the ledger cannot hold in RFC 8785, or null. */
+  private static unrepresentableContext(ctx: Context, scope: string): Reason | null {
+    try {
+      canonicalJson(ctx as unknown as CJson);
+    } catch (exc) {
+      if (!(exc instanceof CanonicalizationError)) throw exc;
+      return new Reason(ReasonCode.NO_AUTHORITY, {
+        constraint: "context",
+        requested: scope,
+        message: `context not representable: ${exc.message}`,
+      });
+    }
+    return null;
   }
 
   /**

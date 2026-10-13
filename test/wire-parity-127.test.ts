@@ -20,7 +20,10 @@ import test from "node:test";
 
 import { AuditLog, GENESIS } from "../src/audit.js";
 import { Authority } from "../src/authority.js";
-import { canonicalJson, type CJson } from "../src/canonical.js";
+import { CanonicalizationError, canonicalJson, type CJson } from "../src/canonical.js";
+import { CallLimit, SpendCap } from "../src/ceilings.js";
+import { AuthorityDenied, Guard } from "../src/guard.js";
+import { Disposition, ReasonCode } from "../src/reasons.js";
 import { HS256TestSigner, WireError, WireReasonCode, b64urlEncode, load } from "../src/wire.js";
 import { fixtureJson } from "./helpers.js";
 import { payloadOf, resign, signParts } from "./mint02.js";
@@ -145,4 +148,92 @@ test("#127 a ledger entry carrying such a number has no hash to reproduce: hash 
     authority: { scopes: ["crm.read"], constraints: [], ttl: 1e308 }, prev_hash: GENESIS,
   };
   assert.deepEqual(AuditLog.verify([{ ...payload, hash: "0".repeat(64) }]), [false, "hash mismatch at seq 0"]);
+});
+
+test("#127 review m4: a non-string scope member is malformed with the Python message", () => {
+  for (const value of [[["crm.read"]], [1], [null], [{ x: 1 }], ["crm.read", 1]]) {
+    assert.throws(() => Authority.fromWire({ scopes: value as CJson, constraints: [], ttl: 60 }),
+      { message: "scopes must be an array of strings" }, JSON.stringify(value));
+    const e = refusal(V01, edited(V01, 0, setScopes(value), true));
+    assert.equal(e.reason, WireReasonCode.MALFORMED);
+    assert.equal(e.message, "invalid authorization_details: scopes must be an array of strings");
+  }
+});
+
+// ---- review M1: a context the ledger cannot hold is a recorded deny ------------------------------
+
+const payer = (...ceilings: any[]) =>
+  Guard.issue("payer", new Authority({ scopes: ["pay.send"], ceilings, ttl: 60 }), { chainId: "t" });
+
+function assertRecordedDeny(g: Guard, before: number, e: unknown): string {
+  assert.ok(e instanceof AuthorityDenied, `expected AuthorityDenied, got ${String(e)}`);
+  const r = e.decision.reasons[0]!;
+  assert.equal(e.decision.allowed, false);
+  assert.deepEqual([r.code, r.constraint, r.requested], [ReasonCode.NO_AUTHORITY, "context", "pay.send"]);
+  assert.match(r.message, /^context not representable: integer /);
+  const entries = g.auditLog().entries;
+  assert.equal(entries.length, before + 1);
+  const row = entries[entries.length - 1]!;
+  assert.deepEqual([row["event"], row["reason"], row["disposition"], row["scope"]],
+    ["deny", ReasonCode.NO_AUTHORITY, Disposition.UNRESOLVED, "pay.send"]);
+  assert.deepEqual(row["context"], {});
+  assert.deepEqual(AuditLog.verify(entries), [true, null]);
+  return r.message;
+}
+
+function thrown(f: () => unknown): unknown {
+  try {
+    f();
+  } catch (e) {
+    return e;
+  }
+  return assert.fail("did not throw");
+}
+
+test("#127 M1: spend past the range is a recorded deny, raised as AuthorityDenied", () => {
+  const g = payer(new SpendCap(100));
+  const before = g.auditLog().entries.length;
+  const message = assertRecordedDeny(g, before, thrown(() => g.check("pay.send", { context: { spend: 1e21 } })));
+  assert.equal(message, "context not representable: integer 1e+21 exceeds the safe range " +
+    "±9007199254740991 for a binary64 signing surface (RFC 8785 numbers are IEEE 754 doubles)");
+});
+
+test("#127 M1: an allowed call with a nanosecond timestamp leaves the meter as it was", () => {
+  const g = payer(new CallLimit(2));
+  const before = g.auditLog().entries.length;
+  assertRecordedDeny(g, before, thrown(() => g.check("pay.send", { context: { ts_ns: 1.76e18 } })));
+  assert.equal(g.check("pay.send").allowed, true);
+  assert.equal(g.check("pay.send").allowed, true);
+  assert.equal(g.check("pay.send").allowed, false);
+});
+
+test("#127 M1: enforce raises the same deny", () => {
+  const g = payer(new SpendCap(100));
+  const before = g.auditLog().entries.length;
+  assertRecordedDeny(g, before, thrown(() => g.enforce("pay.send", { context: { spend: 1e21 } })));
+});
+
+test("#127 M1: wouldAllow reports the deny and writes nothing", () => {
+  const g = payer(new CallLimit(2));
+  const before = g.auditLog().entries.length;
+  const d = g.wouldAllow("pay.send", { context: { ts_ns: 1.76e18 } });
+  assert.equal(d.allowed, false);
+  const r = d.reasons[0]!;
+  assert.deepEqual([r.code, r.constraint, r.requested], [ReasonCode.NO_AUTHORITY, "context", "pay.send"]);
+  assert.match(r.message, /^context not representable: integer 1760000000000000000 exceeds/);
+  assert.equal(g.auditLog().entries.length, before);
+  assert.equal(g.wouldAllow("pay.send", { context: { ts_ns: 1.76e15 } }).allowed, true);
+});
+
+test("#127 M1: a representable context is untouched", () => {
+  const g = payer(new SpendCap(100));
+  assert.equal(g.check("pay.send", { context: { spend: 1e15 } }).allowed, false); // an ordinary deny, returned
+  const entries = g.auditLog().entries;
+  assert.deepEqual(entries[entries.length - 1]!["context"], { spend: 1e15 });
+  assert.equal(g.check("pay.send", { context: { spend: 5 } }).allowed, true);
+});
+
+test("#127 M1: a failure outside the context still throws", () => {
+  const g = payer();
+  assert.throws(() => g.check("pay.send", { tool: "\ud800" }), CanonicalizationError);
 });
