@@ -228,6 +228,14 @@ when it is not given. A row is read whole: a member other than `kid`, `alg`,
 trust file the CLI cannot use is one line naming the file and, for a bad row,
 the kid, with exit code 2.
 
+The trust set may also be a document, `{"witness_keys": [rows], "not_after": ...}`,
+whose `not_after` bounds every row: at or after it no row is trusted, a row
+without its own `not_after` included. The document is read whole, so a member
+other than those two is refused. A JSON object that names a member twice keeps
+the last value, in this parser and in Python's. Design and limits:
+[docs/TRUST-SET-FRESHNESS.md](https://github.com/attenu-io/attenu-guard/blob/main/docs/TRUST-SET-FRESHNESS.md)
+in the Python repository.
+
 No value from a bundle can add a line to `attenu-guard verify` output. A value
 printed without quotes prints as it is only when it is printable ASCII with no
 space, `"` or `\`, and as escaped JSON otherwise; a quoted value is escaped the

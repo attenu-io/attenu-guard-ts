@@ -16,8 +16,11 @@
  * sharing a seq with the witness's signature on the later copy, which alone reads witness-signed;
  * an envelope naming seq 1 that binds an entry whose seq is `true`, which no envelope covers; a
  * trust row past its `not_after`; a row carrying a member it does not define (`notAfter`); a kid
- * named twice; and a node name carrying line breaks, which must not add a line to either CLI's
- * output.
+ * named twice; a node name carrying line breaks, which must not add a line to either CLI's
+ * output; and trust-set documents (attenu-io/attenu-guard#35): fresh, expired, carrying a
+ * misspelled member, a vector case read as one, and the two objects carrying both `bundle` and
+ * `not_after`, which both CLIs once read as a vector case, dropping the set's expiry, and now
+ * refuse.
  *
  * The generator writes these only when the installed Python has that verifier, so CI's fixture
  * drift check compares them once its pinned release does, and until then this test holds the
@@ -96,6 +99,13 @@ test("the parity set covers every case the release gate names", () => {
     "forged_allow",
     "forged_node_newline",
     "forged_node_newline_entries",
+    "document_fresh",
+    "document_expired",
+    "document_expired_entries",
+    "document_unknown_member",
+    "document_expired_with_bundle",
+    "case",
+    "case_expired_not_after",
   ]) {
     assert.ok(name in CASES, name);
   }

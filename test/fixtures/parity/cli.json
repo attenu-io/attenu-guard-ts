@@ -152,6 +152,48 @@
   "exit": 2,
   "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - unsupported_version: bundle v=True not in [1, 2]\n  - anchor_version_mismatch: anchor v=1 != bundle v=True\n  - root_version_mismatch: root v=1 != bundle v=True\n  - mixed_entry_versions: entries declare v in [1], bundle v=True\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted failed=root_version_mismatch,mixed_entry_versions\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
  },
+ "case": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_case.json"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\n"
+ },
+ "case_entries": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_case.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
+ },
+ "case_expired_not_after": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_case_expired_not_after.json"
+  ],
+  "exit": 2,
+  "stdout": "cannot use --witness-keys keys_case_expired_not_after.json: a vector case carries no not_after; a trust-set document carries no bundle\n"
+ },
+ "case_expired_not_after_entries": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_case_expired_not_after.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "cannot use --witness-keys keys_case_expired_not_after.json: a vector case carries no not_after; a trust-set document carries no bundle\n"
+ },
  "deny_node_int": {
   "args": [
    "verify",
@@ -160,6 +202,90 @@
   ],
   "exit": 2,
   "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - invalid_node: seq=3 event='deny' carries node 5, which is not a string\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=process-asserted\n  seq=2 event=allow node=parity:n1 scope=docs.write state=process-asserted\n  seq=3 event=deny node=5 scope=web.search state=process-asserted failed=invalid_node\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=containment\n"
+ },
+ "document_expired": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_document_expired.json"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_unknown_witness: witness kid='witness-parity' alg='EdDSA' is not in the trusted witness keys ([]): the trust set expired at not_after='2000-01-01T00:00:00Z'\n  - envelope_unknown_witness: witness kid='witness-parity' alg='EdDSA' is not in the trusted witness keys ([]): the trust set expired at not_after='2000-01-01T00:00:00Z'\n  - envelope_unknown_witness: witness kid='witness-parity' alg='EdDSA' is not in the trusted witness keys ([]): the trust set expired at not_after='2000-01-01T00:00:00Z'\nFAILED\n"
+ },
+ "document_expired_entries": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_document_expired.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\n  - envelope_unknown_witness: witness kid='witness-parity' alg='EdDSA' is not in the trusted witness keys ([]): the trust set expired at not_after='2000-01-01T00:00:00Z'\n  - envelope_unknown_witness: witness kid='witness-parity' alg='EdDSA' is not in the trusted witness keys ([]): the trust set expired at not_after='2000-01-01T00:00:00Z'\n  - envelope_unknown_witness: witness kid='witness-parity' alg='EdDSA' is not in the trusted witness keys ([]): the trust set expired at not_after='2000-01-01T00:00:00Z'\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=process-asserted failed=envelope_unknown_witness\n  seq=2 event=allow node=parity:n1 scope=docs.write state=process-asserted failed=envelope_unknown_witness\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=process-asserted failed=containment,envelope_unknown_witness\n"
+ },
+ "document_expired_with_bundle": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_document_expired_with_bundle.json"
+  ],
+  "exit": 2,
+  "stdout": "cannot use --witness-keys keys_document_expired_with_bundle.json: a vector case carries no not_after; a trust-set document carries no bundle\n"
+ },
+ "document_expired_with_bundle_entries": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_document_expired_with_bundle.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "cannot use --witness-keys keys_document_expired_with_bundle.json: a vector case carries no not_after; a trust-set document carries no bundle\n"
+ },
+ "document_fresh": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_document_fresh.json"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\n"
+ },
+ "document_fresh_entries": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_document_fresh.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "integrity=True monotonicity=True containment=False anchor=not checked nodes=2 actions_checked=2\n  - containment: allow of 'web.search' on parity:n1 outside its authority ['docs.write']\nFAILED\nentries:\n  seq=0 event=root node=parity:n0 state=process-asserted\n  seq=1 event=spawn node=parity:n1 state=witness-signed observed=indeterminate witness=witness-parity\n  seq=2 event=allow node=parity:n1 scope=docs.write state=witness-signed observed=indeterminate witness=witness-parity\n  seq=3 event=deny node=parity:n1 scope=web.search state=process-asserted\n  seq=4 event=allow node=parity:n1 scope=web.search state=witness-signed observed=indeterminate witness=witness-parity failed=containment\n"
+ },
+ "document_unknown_member": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_document_unknown_member.json"
+  ],
+  "exit": 2,
+  "stdout": "cannot use --witness-keys keys_document_unknown_member.json: trust set: the document carries members this build does not evaluate and will not ignore: 'notAfter'\n"
+ },
+ "document_unknown_member_entries": {
+  "args": [
+   "verify",
+   "forged_allow.bundle.json",
+   "--witness-keys",
+   "keys_document_unknown_member.json",
+   "--entries"
+  ],
+  "exit": 2,
+  "stdout": "cannot use --witness-keys keys_document_unknown_member.json: trust set: the document carries members this build does not evaluate and will not ignore: 'notAfter'\n"
  },
  "duplicate_kid": {
   "args": [

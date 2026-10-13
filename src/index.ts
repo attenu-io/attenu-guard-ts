@@ -148,6 +148,8 @@ export type {
   VerifyEnvelopesOptions,
   VerifyReport,
   WitnessKey,
+  WitnessKeySet,
+  WitnessKeys,
 } from "./evidence.js";
 
 export {

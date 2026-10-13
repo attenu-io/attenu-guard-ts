@@ -52,7 +52,10 @@ What lands in `test/fixtures/`:
                            that directory so every path it prints is relative. The TypeScript
                            CLI must print the same bytes. Written only when the installed
                            attenu-guard has that verifier (`failure_entries` in a report); an
-                           older release leaves the committed copies alone, as above.
+                           older release leaves the committed copies alone, as above. The
+                           trust-set document cases (#35: fresh, expired, a misspelled member,
+                           and the two objects that carry both `bundle` and `not_after`) are
+                           recorded only from a release that reads the document form.
 """
 from __future__ import annotations
 
@@ -529,6 +532,19 @@ def parity_supported() -> bool:
     return "failure_entries" in report
 
 
+def trust_set_document_supported() -> bool:
+    """True when the installed attenu-guard reads a trust-set document, `{"witness_keys": [rows],
+    "not_after": ...}` (attenu-io/attenu-guard#35). An older release reads it as a `{kid: key}`
+    mapping and refuses it, and its CLI reads it as a vector case and drops the set's `not_after`,
+    so its output is not one to record: the document cases are written only from a release that
+    has them."""
+    try:
+        evidence._trusted_witnesses({"witness_keys": []})
+    except Exception:  # noqa: BLE001 - an older release refuses the document
+        return False
+    return True
+
+
 def _rehashed(entries: list) -> list:
     """Re-hash a ledger from genesis, as a forger who edited an entry would."""
     prev = PARITY_GENESIS
@@ -738,6 +754,26 @@ def parity_fixtures() -> None:
         "keys_unknown_member.json": [dict(row, notAfter="2000-01-01T00:00:00Z")],
         "keys_duplicate_kid.json": [row, dict(row)],
     }
+    # Trust-set documents (#35), and the two objects code review M1 found dropping the set's expiry
+    # in both CLIs: a document that also carries `bundle`, and a vector case that also carries
+    # `not_after`. Both are refused now.
+    documents = {}
+    if trust_set_document_supported():
+        documents = {
+            "keys_document_fresh.json": {"witness_keys": [row], "not_after": "9999-12-31T23:59:59Z"},
+            "keys_document_expired.json": {"witness_keys": [row], "not_after": "2000-01-01T00:00:00Z"},
+            "keys_document_unknown_member.json": {"witness_keys": [row],
+                                                  "notAfter": "2000-01-01T00:00:00Z"},
+            "keys_document_expired_with_bundle.json": {"witness_keys": [row],
+                                                       "not_after": "2000-01-01T00:00:00Z",
+                                                       "bundle": None},
+            "keys_case.json": {"name": "parity", "bundle": {}, "witness_keys": [row],
+                               "expect": "reject"},
+            "keys_case_expired_not_after.json": {"name": "parity", "bundle": {}, "witness_keys": [row],
+                                                 "expect": "reject",
+                                                 "not_after": "2000-01-01T00:00:00Z"},
+        }
+        files.update(documents)
     # A value of the wrong type is the existing finding, never a crash. An allow scope that is not
     # a string, against a wildcard, is the containment failure at that allow; an anchor sig that is
     # not a string is not hex, and a null one reads as an absent one.
@@ -858,6 +894,10 @@ def parity_fixtures() -> None:
         "unknown_member_row": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_unknown_member.json"],
         "duplicate_kid": ["verify", "forged_allow.bundle.json", "--witness-keys", "keys_duplicate_kid.json"],
     }
+    for name in documents:
+        label = name[len("keys_"):-len(".json")]
+        runs[label] = ["verify", "forged_allow.bundle.json", "--witness-keys", name]
+        runs[f"{label}_entries"] = ["verify", "forged_allow.bundle.json", "--witness-keys", name, "--entries"]
     for label in scope_values:
         runs[f"scope_{label}"] = ["verify", f"scope_{label}.bundle.json", "--entries"]
     for label in sig_values:

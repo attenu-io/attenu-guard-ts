@@ -22,6 +22,7 @@ import {
   verifyEnvelopes,
   type Bundle,
   type WitnessKey,
+  type WitnessKeySet,
 } from "../src/evidence.js";
 import { HS256TestSigner } from "../src/wire.js";
 import { fixtureText } from "./helpers.js";
@@ -300,4 +301,117 @@ test("an entry two envelopes dispute keeps the first result and leaves witnesses
   assert.equal(report.envelopes.states[seq], PROCESS_ASSERTED);
   assert.ok(Object.hasOwn(report.envelopes.results, seq), "the first envelope's result stands");
   assert.deepEqual(report.envelopes.witnesses, {});
+});
+
+// ---- a trust-set document (attenu-io/attenu-guard#35) -----------------------------------------
+//
+// `{witness_keys: [rows], not_after}`: the document's `not_after` bounds the whole set. At or after
+// it no row is trusted, and every envelope fails `envelope_unknown_witness`, saying the trust set
+// expired. The document is read whole. Messages are Python's, word for word.
+
+const SET_NOT_AFTER = "2026-11-01T00:00:00Z";
+
+function documentOf(members: Record<string, unknown>, rows: WitnessKey[] = BASE.witness_keys): WitnessKeySet {
+  return { witness_keys: rows, ...members } as WitnessKeySet;
+}
+
+function verifyDocumentAt(document: unknown, now: Date | string | undefined) {
+  return verifyBundle(BASE.bundle, SIGNER, { witnessKeys: document as WitnessKeySet, now });
+}
+
+test("#35: a document without not_after reads as its rows", () => {
+  for (const now of [undefined, "1970-01-01T00:00:00Z", "9999-12-31T23:59:59Z"]) {
+    assertTrusted(verifyDocumentAt(documentOf({}), now), String(now));
+  }
+});
+
+test("#35: inside the set's validity every row is trusted", () => {
+  assertTrusted(verifyDocumentAt(documentOf({ not_after: SET_NOT_AFTER }), "2026-10-31T23:59:59Z"), "inside");
+});
+
+test("#35: at or after the set's not_after no row is trusted, and the message says so", () => {
+  for (const now of [SET_NOT_AFTER, "2026-11-01T00:00:01Z"]) {
+    const report = verifyDocumentAt(documentOf({ not_after: SET_NOT_AFTER }), now);
+    assert.equal(report.ok, false, now);
+    assert.deepEqual(
+      report.failure_details.map((d) => [d.reason, d.seq, d.node]),
+      [["envelope_unknown_witness", SPAWN_SEQ, SPAWN_NODE]],
+    );
+    assert.deepEqual(report.failures, [
+      `envelope_unknown_witness: witness kid='${KID}' alg='EdDSA' is not in the trusted witness keys ` +
+        `([]): the trust set expired at not_after='${SET_NOT_AFTER}'`,
+    ]);
+    assert.equal(report.envelopes.states[String(SPAWN_SEQ)], PROCESS_ASSERTED, now);
+  }
+});
+
+test("#35: a row without not_after is bounded by the set", () => {
+  const document = documentOf({ not_after: SET_NOT_AFTER });
+  assert.ok(document.witness_keys.every((row) => row.not_after === undefined));
+  assert.equal(verifyDocumentAt(document, "2030-01-01T00:00:00Z").ok, false);
+});
+
+test("#35: the earlier of row and set decides, and names itself", () => {
+  const rowFirst = documentOf({ not_after: SET_NOT_AFTER }, keys("2026-10-05T00:00:00Z"));
+  for (const now of ["2026-10-06T00:00:00Z", "2026-12-01T00:00:00Z"]) {
+    assert.ok(
+      verifyDocumentAt(rowFirst, now).failures[0]!.endsWith("the key expired at not_after='2026-10-05T00:00:00Z'"),
+      now,
+    );
+  }
+  const setFirst = documentOf({ not_after: SET_NOT_AFTER }, keys("2027-01-01T00:00:00Z"));
+  assert.ok(
+    verifyDocumentAt(setFirst, "2026-12-01T00:00:00Z").failures[0]!.endsWith(
+      "the trust set expired at not_after='2026-11-01T00:00:00Z'",
+    ),
+  );
+});
+
+test("#35: verifyEnvelopes takes the document too, and the default now is the current time", () => {
+  const stale = verifyEnvelopes(BASE.bundle, { witnessKeys: documentOf({ not_after: "2000-01-01T00:00:00Z" }) });
+  assert.equal(stale.ok, false);
+  const fresh = verifyEnvelopes(BASE.bundle, { witnessKeys: documentOf({ not_after: "9999-12-31T23:59:59Z" }) });
+  assert.equal(fresh.ok, true, fresh.failures.join("; "));
+});
+
+test("#35: the document is read whole", () => {
+  for (const member of ["notAfter", "not_before", "comment", "bundle"]) {
+    assert.throws(() => verifyDocumentAt(documentOf({ [member]: "x" }), undefined), {
+      message:
+        "trust set: the document carries members this build does not evaluate and will not ignore: " +
+        `'${member}'`,
+    });
+  }
+});
+
+test("#35: a malformed set not_after throws, with Python's message", () => {
+  const cases: [unknown, string][] = [
+    ["2026-11-01", "'2026-11-01'"],
+    ["2026-11-01T00:00:00+00:00", "'2026-11-01T00:00:00+00:00'"],
+    ["", "''"],
+    [null, "None"],
+    [1793491200, "1793491200"],
+    [true, "True"],
+    [["2026-11-01T00:00:00Z"], "['2026-11-01T00:00:00Z']"],
+  ];
+  for (const [bad, repr] of cases) {
+    assert.throws(() => verifyDocumentAt(documentOf({ not_after: bad }), undefined), {
+      message: `trust set: not_after must be an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z', got ${repr}`,
+    });
+  }
+});
+
+test("#35: rows that are not an array are refused", () => {
+  for (const rows of [{}, "rows", null, 5]) {
+    assert.throws(() => verifyDocumentAt({ witness_keys: rows }, undefined), {
+      message: "trust set: witness_keys must be an array of rows",
+    });
+  }
+});
+
+test("#35: an expired set never excuses a bad row", () => {
+  for (const fields of [{ public_key_hex: "zz".repeat(32) }, { alg: "none" }, { notAfter: "x" }]) {
+    const rows = BASE.witness_keys.map((row) => (row.kid === KID ? ({ ...row, ...fields } as WitnessKey) : row));
+    assert.throws(() => verifyDocumentAt(documentOf({ not_after: "2000-01-01T00:00:00Z" }, rows), undefined));
+  }
 });
