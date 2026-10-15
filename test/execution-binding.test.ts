@@ -30,7 +30,7 @@ import { join } from "node:path";
 import { Authority } from "../src/authority.js";
 import { RowLimit } from "../src/ceilings.js";
 import { AuditLog, CommittedAuditError, GENESIS, hashEntry, type LedgerEntry, type Sink } from "../src/audit.js";
-import { AuthorityDenied, DuplicateOutcomeError, Guard, type AdapterInfo, type IssueOptions } from "../src/guard.js";
+import { DuplicateOutcomeError, Guard, type AdapterInfo, type IssueOptions } from "../src/guard.js";
 import { BodyState, Capture, CompletionResult, Decision, ReasonCode } from "../src/reasons.js";
 import * as paramsMod from "../src/params.js";
 import { CanonicalizationError, MAX_SAFE_INTEGER, type CJson, type Json } from "../src/canonical.js";
@@ -269,12 +269,25 @@ test("a pre-commit canonicalization failure in check() restores meters and propa
   const chain = (g as any).chain;
   const before = chain.callsSoFar(g.nodeId, "*");
   assert.throws(
-    () => g.check("crm.read", { context: { rows: 1, note: "\ud800" } }), // a lone surrogate: fails hashEntry pre-commit
+    () => g.check("crm.read", { tool: "\ud800", context: { rows: 1 } }), // a lone surrogate: fails hashEntry pre-commit
     CanonicalizationError,
   );
   const after = chain.callsSoFar(g.nodeId, "*");
   assert.equal(before, after, "meters must be restored on ANY pre-commit failure, not only CSPRNG");
   assert.equal(g.auditLog().entries.length, 1); // just the root — nothing was appended
+});
+
+test("an unrepresentable context in check() restores meters and is a recorded deny (0.14, attenu-ops #127)", () => {
+  const g = v2Root();
+  const chain = (g as any).chain;
+  const before = chain.callsSoFar(g.nodeId, "*");
+  const d = g.check("crm.read", { context: { rows: 1, note: "\ud800" } });
+  assert.equal(d.allowed, false);
+  assert.equal(d.reasons[0]!.constraint, "context");
+  assert.equal(chain.callsSoFar(g.nodeId, "*"), before);
+  const entries = g.auditLog().entries;
+  assert.equal(entries.length, 2);
+  assert.deepEqual([entries[1]!["event"], entries[1]!["context"]], ["deny", {}]);
 });
 
 test("a recordOutcome pre-commit failure leaves the callId unresolved", () => {

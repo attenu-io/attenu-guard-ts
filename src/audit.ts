@@ -329,9 +329,9 @@ export class AuditLog {
         // A member JCS cannot represent here, such as a number past ±(2^53 - 1), leaves no hash to
         // reproduce the recorded one with: the existing integrity failure at this entry, reported
         // and never thrown, since a ledger is attacker-supplied. The Python implementation reports
-        // an integer past that range the same way. A float past it hashes there, so a chain carrying
-        // `1e300` verifies in Python and fails here: this JCS refuses an integral number past that
-        // range, where RFC 8785 serializes any finite double.
+        // it the same way: both refuse a number whose value is an integer past that range, whatever
+        // its lexical form (`1e300` included), since the JCS form of such an integer is the exponent
+        // form (attenu-ops #127; through Python 0.19 a float past the range hashed there).
         reproduced = false;
       }
       if (!reproduced) {

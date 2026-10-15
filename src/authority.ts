@@ -596,12 +596,20 @@ export class Authority {
         "malformed_authority",
       );
     }
-    const scopes = (d["scopes"] as string[] | undefined) ?? [];
-    // An absent list is empty. A null one is empty under the -01 as it always was here, and is
-    // refused under the -02 as the Python port refuses it on both.
+    // Both lists are arrays, read whole, on both profiles (attenu-ops #127). An absent list is
+    // empty; null, an object or a string is refused, as the Python port refuses them. A null list
+    // used to be read as empty here under the -01, and an object `scopes` was refused only because
+    // a Set cannot iterate it, with a message about iteration.
+    const rawScopes = d["scopes"];
+    const scopes = (rawScopes === undefined ? [] : rawScopes) as string[];
+    if (!Array.isArray(scopes)) {
+      throw new TypeError(`scopes is ${jsonKind(scopes)}, not an array`);
+    }
+    if (scopes.some((x) => typeof x !== "string")) {
+      throw new TypeError("scopes must be an array of strings");
+    }
     const listed = d["constraints"];
-    const constraints = (listed === undefined || (listed === null && profile === PROFILE_01) ? [] : listed) as
-      Record<string, Json>[];
+    const constraints = (listed === undefined ? [] : listed) as Record<string, Json>[];
     if (!Array.isArray(constraints)) {
       throw new TypeError(`constraints is ${jsonKind(constraints)}, not an array`);
     }

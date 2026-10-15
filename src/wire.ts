@@ -495,9 +495,11 @@ function authorityFromPayload(payload: Record<string, Json>): Authority {
   if (typeof iat !== "number" || typeof exp !== "number") {
     throw new WireError(WireReasonCode.MALFORMED, "iat/exp missing or not numeric");
   }
+  // Absent is empty; null is not, so it reaches `Authority.fromWire` and is refused there, as the
+  // Python implementation refuses it (attenu-ops #127: `??` read a null list as empty here).
   const wire = {
-    scopes: d0["scopes"] ?? [],
-    constraints: d0["constraints"] ?? [],
+    scopes: d0["scopes"] === undefined ? [] : d0["scopes"],
+    constraints: d0["constraints"] === undefined ? [] : d0["constraints"],
     ttl: exp - iat,
   };
   try {
