@@ -11,7 +11,9 @@
  * as "not checked" otherwise. `--witness-keys FILE` supplies the trusted witness
  * keys for a bundle carrying observer envelopes; without it every envelope fails
  * `envelope_unknown_witness`, and the output says which flag to pass. A trust-set row may carry
- * `not_after`; a row expired at the time of the run is not trusted. A trust file that is not one
+ * `not_after`; a row expired at the time of the run is not trusted. The file may also be a document
+ * `{witness_keys, not_after}` whose `not_after` bounds every row. Both are compared with this
+ * machine's clock: no `now` is passed. A trust file that is not one
  * (not JSON, not an array of rows, or a row the verifier refuses) is one line naming the file and,
  * for a bad row, the kid.
  *
@@ -45,6 +47,7 @@ import {
   type FailureDetail,
   type VerifyReport,
   type WitnessKey,
+  type WitnessKeySet,
 } from "./evidence.js";
 import { Ed25519Verifier, HS256TestSigner, type Signer } from "./wire.js";
 
@@ -71,8 +74,13 @@ class NotATrustSet extends Error {}
  * The trust set for a bundle's observer envelopes, read from `--witness-keys FILE`.
  *
  * The file is the `witness_keys` array the interop vectors carry — `[{kid, alg,
- * public_key_hex}]`, each row optionally with `not_after` — or one whole vector case, in which case
- * its `witness_keys` member is used. Without a trust set every envelope in a bundle fails
+ * public_key_hex}]`, each row optionally with `not_after` — or a trust-set document
+ * `{witness_keys: [rows], not_after}` whose `not_after` bounds the whole set, or one whole vector
+ * case, in which case its `witness_keys` member is used. An object with `bundle` and
+ * `witness_keys` members is a vector case; any other object with `witness_keys` is a document,
+ * read whole, so a misspelled member is refused rather than skipped. An object with both `bundle`
+ * and `not_after` is neither, and is refused: read as a vector case it would drop the set's
+ * expiry. Without a trust set every envelope in a bundle fails
  * `envelope_unknown_witness`, which is correct (an unknown key is not a trusted one) and useless as
  * a default, so this is how a bundle carrying envelopes is verified from the command line.
  *
@@ -82,7 +90,7 @@ class NotATrustSet extends Error {}
  * that are not UTF-8 are not JSON either), not an array of rows, or a row the verifier refuses,
  * whose message names the kid. The messages are the Python CLI's, word for word.
  */
-function readWitnessKeys(path: string): readonly WitnessKey[] {
+function readWitnessKeys(path: string): readonly WitnessKey[] | WitnessKeySet {
   const bytes = readFileSync(path);
   let parsed: unknown;
   try {
@@ -91,20 +99,27 @@ function readWitnessKeys(path: string): readonly WitnessKey[] {
   } catch {
     throw new NotATrustSet("the file is not valid JSON");
   }
-  if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) && "witness_keys" in parsed) {
-    parsed = (parsed as Record<string, unknown>)["witness_keys"];
+  const isObject = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === "object" && !Array.isArray(v);
+  if (isObject(parsed) && Object.hasOwn(parsed, "bundle")) {
+    // Read as a vector case, the set's not_after would be dropped: an expired set verified.
+    if (Object.hasOwn(parsed, "not_after")) {
+      throw new NotATrustSet("a vector case carries no not_after; a trust-set document carries no bundle");
+    }
+    if (Object.hasOwn(parsed, "witness_keys")) parsed = parsed["witness_keys"]; // a vector case
   }
-  if (!Array.isArray(parsed)) {
+  if (!Array.isArray(parsed) && !(isObject(parsed) && Object.hasOwn(parsed, "witness_keys"))) {
     throw new NotATrustSet(
-      "expected a JSON array of {kid, alg, public_key_hex} rows, or a vector case carrying one as witness_keys",
+      "expected a JSON array of {kid, alg, public_key_hex} rows, or an object carrying one as witness_keys",
     );
   }
+  const trustSet = parsed as readonly WitnessKey[] | WitnessKeySet;
   try {
-    validateWitnessKeys(parsed as readonly WitnessKey[]);
+    validateWitnessKeys(trustSet);
   } catch (err) {
     throw new NotATrustSet((err as Error).message);
   }
-  return parsed as readonly WitnessKey[];
+  return trustSet;
 }
 
 /**
@@ -330,7 +345,7 @@ function verify(args: string[]): number {
     else if (pubHex) {
       signer = new Ed25519Verifier(Buffer.from(pubHex, "hex"), kid ?? anchorKid ?? "k1");
     }
-    let witnessKeys: readonly WitnessKey[] | null = null;
+    let witnessKeys: readonly WitnessKey[] | WitnessKeySet | null = null;
     if (witnessPath) {
       try {
         witnessKeys = readWitnessKeys(witnessPath);

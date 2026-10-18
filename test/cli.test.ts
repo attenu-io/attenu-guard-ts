@@ -503,6 +503,34 @@ test("verify honours not_after on a --witness-keys row", () => {
   });
 });
 
+// ---- a trust-set document bounds every row (attenu-io/attenu-guard#35) ------------------------
+
+test("verify honours the not_after of a --witness-keys document, against this machine's clock", () => {
+  inTempDir((dir) => {
+    const bundle = writeBundle(dir, "clean.bundle.json", custodyRun(), [1, 2]);
+    const rows = [{ kid: WITNESS_KID, alg: "EdDSA", public_key_hex: WITNESS_PUBLIC_HEX }];
+    const fresh = join(dir, "fresh.json");
+    writeFileSync(fresh, JSON.stringify({ witness_keys: rows, not_after: "9999-12-31T23:59:59Z" }));
+    const current = run(["verify", bundle, "--witness-keys", fresh]);
+    assert.deepEqual([current.status, current.stdout.trimEnd().split("\n").at(-1)], [0, "OK"]);
+
+    const stale = join(dir, "stale.json");
+    writeFileSync(stale, JSON.stringify({ witness_keys: rows, not_after: "2000-01-01T00:00:00Z" }));
+    const expired = run(["verify", bundle, "--witness-keys", stale]);
+    const line =
+      "  - envelope_unknown_witness: witness kid='witness-custody' alg='EdDSA' is not in the trusted " +
+      "witness keys ([]): the trust set expired at not_after='2000-01-01T00:00:00Z'";
+    assert.deepEqual(expired.stdout.split("\n").filter((l) => l.startsWith("  - ")), [line, line]);
+    assert.equal(expired.status, 2);
+
+    // An object with a `bundle` member is still a vector case: its witness_keys are used.
+    const vectorCase = join(dir, "case.json");
+    writeFileSync(vectorCase, JSON.stringify({ name: "x", bundle: {}, witness_keys: rows, expect: "accept" }));
+    const asCase = run(["verify", bundle, "--witness-keys", vectorCase]);
+    assert.deepEqual([asCase.status, asCase.stdout.trimEnd().split("\n").at(-1)], [0, "OK"]);
+  });
+});
+
 // ---- a bundle value cannot add a line to the default output ----------------------------------
 
 test("a forged node name cannot add a line to the default output", () => {
@@ -1181,6 +1209,19 @@ test("a bad --witness-keys row is one line naming the file and the kid, exit 2",
       [badRow({ public_key_hex: "zz".repeat(32) }), `witness key '${WITNESS_KID}': public_key_hex is not hexadecimal`],
       [badRow({ alg: "none" }), `witness key '${WITNESS_KID}': alg must be 'EdDSA', got 'none'`],
       [[{ alg: "EdDSA" }], "witness key kid must be a string"],
+      // A trust-set document (#35) is read whole: an object without a `bundle` member is a
+      // document, so a misspelled `notAfter` is refused, never skipped.
+      [{ witness_keys: badRow({}), notAfter: "2000-01-01T00:00:00Z" },
+        "trust set: the document carries members this build does not evaluate and will not ignore: 'notAfter'"],
+      [{ witness_keys: badRow({}), not_after: "2000-01-01" },
+        "trust set: not_after must be an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z', got '2000-01-01'"],
+      [{ witness_keys: { kid: WITNESS_KID } }, "trust set: witness_keys must be an array of rows"],
+      // An object with both `bundle` and `not_after` is refused: read as a vector case, its expiry
+      // was dropped and an expired set verified OK (review M1, c09 and c10).
+      [{ witness_keys: badRow({}), not_after: "2000-01-01T00:00:00Z", bundle: null },
+        "a vector case carries no not_after; a trust-set document carries no bundle"],
+      [{ name: "x", bundle: {}, witness_keys: badRow({}), expect: "reject", not_after: "2000-01-01T00:00:00Z" },
+        "a vector case carries no not_after; a trust-set document carries no bundle"],
     ];
     for (const [rows, reason] of cases) {
       writeFileSync(keys, JSON.stringify(rows));
@@ -1202,7 +1243,7 @@ test("a --witness-keys file that is not a trust set says so in one line, exit 2"
       [Buffer.from([0x5b, 0xff, 0x5d]), "the file is not valid JSON"],
       [Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(valid)]), "the file is not valid JSON"],
       [JSON.stringify({ kid: WITNESS_KID }),
-        "expected a JSON array of {kid, alg, public_key_hex} rows, or a vector case carrying one as witness_keys"],
+        "expected a JSON array of {kid, alg, public_key_hex} rows, or an object carrying one as witness_keys"],
     ];
     for (const [content, reason] of cases) {
       writeFileSync(keys, content);

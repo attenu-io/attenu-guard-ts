@@ -961,6 +961,21 @@ export interface WitnessKey {
 }
 
 /**
+ * A trust set given as a document rather than a bare array (attenu-io/attenu-guard#35,
+ * docs/TRUST-SET-FRESHNESS.md in the Python repository). `not_after` is the whole set's validity,
+ * in the row grammar, compared with the same verification time as a row's: at or after it no row
+ * is trusted, and every envelope fails `envelope_unknown_witness`, saying the trust set expired.
+ * The document is read whole: a member other than these two is refused.
+ */
+export interface WitnessKeySet {
+  witness_keys: readonly WitnessKey[];
+  not_after?: string;
+}
+
+/** Every shape a trust set may take. */
+export type WitnessKeys = readonly WitnessKey[] | WitnessKeySet | Record<string, Buffer | string>;
+
+/**
  * The bytes a witness signs: `JCS(envelope minus its "sig" member)`.
  *
  * The same RFC 8785 canonicalization the ledger has signed with since 0.7.0 — one
@@ -1227,9 +1242,54 @@ function witnessPublicKey(kid: string, value: unknown): Buffer {
   throw new Error(`witness key ${pyStrRepr(kid)}: expected 64 hex characters or 32 bytes`);
 }
 
+/** A trust-set document's members. Read whole, like a row. */
+const TRUST_SET_MEMBERS: ReadonlySet<string> = new Set(["witness_keys", "not_after"]);
+
 /**
- * kid -> `[alg, raw public key]`, from the vector file's own `witness_keys` shape or from a plain
- * `{kid: publicKeyBytes}` record.
+ * A trust set given as `{witness_keys: [rows], not_after}` rather than as the bare array or the
+ * `{kid: key}` record. A record with a `witness_keys` member is a document, so the record form
+ * cannot name a kid `witness_keys`.
+ */
+function isTrustSetDocument(witnessKeys: unknown): witnessKeys is Record<string, unknown> {
+  return isRecordLike(witnessKeys) && Object.hasOwn(witnessKeys, "witness_keys");
+}
+
+/**
+ * The rows of a trust-set document, its `not_after` as written and as an instant, read whole.
+ * Throws for a member outside `witness_keys` and `not_after`, rows that are not an array, or a
+ * `not_after` outside the row grammar (`null` included). The messages are Python's.
+ */
+function trustSetDocument(document: Record<string, unknown>): {
+  rows: unknown[];
+  notAfter: string | null;
+  until: Instant | null;
+} {
+  const unknown = Object.keys(document)
+    .filter((m) => !TRUST_SET_MEMBERS.has(m))
+    .sort(compareCodePoints);
+  if (unknown.length > 0) {
+    throw new Error(
+      "trust set: the document carries members this build does not evaluate and will not ignore: " +
+        unknown.map(pyStrRepr).join(", "),
+    );
+  }
+  const rows = document["witness_keys"];
+  if (!Array.isArray(rows)) throw new Error("trust set: witness_keys must be an array of rows");
+  if (document["not_after"] === undefined) return { rows, notAfter: null, until: null };
+  const until = rfc3339Utc(document["not_after"]);
+  if (until === null) {
+    throw new Error(
+      "trust set: not_after must be an RFC 3339 UTC date-time such as '2026-10-05T00:00:00Z', got " +
+        pyRepr(document["not_after"] as Json),
+    );
+  }
+  return { rows, notAfter: document["not_after"] as string, until };
+}
+
+/**
+ * kid -> `[alg, raw public key]`, from the vector file's own `witness_keys` shape, from a plain
+ * `{kid: publicKeyBytes}` record, or from a trust-set document `{witness_keys, not_after}` whose
+ * `not_after` bounds every row: at or after it no row is trusted.
  *
  * `null`/absent means no trust anchor is configured, which is an EMPTY set, not an absent check:
  * an envelope naming a kid nobody trusts is `envelope_unknown_witness`, and that is the honest
@@ -1240,14 +1300,19 @@ function witnessPublicKey(kid: string, value: unknown): Buffer {
  * reported to the caller rather than folded into a finding about the bundle. v1 defines Ed25519
  * and no other algorithm, so a row declaring anything else is refused too.
  */
-function trustedWitnesses(
-  witnessKeys: readonly WitnessKey[] | Record<string, Buffer | string> | null | undefined,
-  now: Instant,
-): TrustSet {
+function trustedWitnesses(witnessKeys: WitnessKeys | null | undefined, now: Instant): TrustSet {
   const trusted = new Map<string, [string, Buffer]>();
-  const expired = new Map<string, string>();
+  const expired = new Map<string, [string, string]>();
   const seen = new Set<string>();
   if (witnessKeys === null || witnessKeys === undefined) return { trusted, expired };
+  let setNotAfter: string | null = null;
+  let setUntil: Instant | null = null;
+  if (isTrustSetDocument(witnessKeys)) {
+    const document = trustSetDocument(witnessKeys);
+    witnessKeys = document.rows as readonly WitnessKey[];
+    setNotAfter = document.notAfter;
+    setUntil = document.until;
+  }
   const rows: [unknown, unknown][] = Array.isArray(witnessKeys)
     ? witnessKeys.map((k) => [isRecordLike(k) ? k["kid"] : undefined, k])
     : Object.entries(witnessKeys);
@@ -1299,10 +1364,16 @@ function trustedWitnesses(
       // Validated in full, then left out. An expired row neither adds its kid nor removes one
       // that another row trusts; it is remembered so the failure can say the key expired, and
       // when, instead of reading as a key nobody ever configured.
-      expired.set(kid, notAfter!);
+      expired.set(kid, ["key", notAfter!]);
       continue;
     }
     trusted.set(kid, [ENVELOPE_ALG, publicKey]);
+  }
+  if (setUntil !== null && atOrBefore(setUntil, now)) {
+    // Validated in full above, then left out: the set's expiry, like a row's, never excuses a bad
+    // row. A row that had expired on its own keeps its own message.
+    for (const kid of trusted.keys()) expired.set(kid, ["trust set", setNotAfter!]);
+    trusted.clear();
   }
   return { trusted, expired };
 }
@@ -1313,7 +1384,7 @@ function trustedWitnesses(
  * `--witness-keys` file, so a bad row is reported against that file before any bundle is read.
  * Expiry is not an error: an expired row is a row the verifier leaves out, not a malformed one.
  */
-export function validateWitnessKeys(witnessKeys: readonly WitnessKey[]): void {
+export function validateWitnessKeys(witnessKeys: readonly WitnessKey[] | WitnessKeySet): void {
   trustedWitnesses(witnessKeys, verificationTime(null));
 }
 
@@ -1328,10 +1399,11 @@ interface TrustSet {
   /** kid -> `[alg, raw public key]`, for every row still valid at the verification time. */
   trusted: Map<string, [string, Buffer]>;
   /**
-   * kid -> the `not_after` of an expired row naming it, exactly as the row wrote it. When several
-   * rows for one kid have expired, the last one is named.
+   * kid -> `[what, not_after]` for a row left out because it had expired, the `not_after` exactly
+   * as written: `what` is "key" when the row's own `not_after` had passed, and "trust set" when
+   * only the document's had.
    */
-  expired: Map<string, string>;
+  expired: Map<string, [string, string]>;
 }
 
 /**
@@ -1497,8 +1569,11 @@ export interface EnvelopeSummary {
 }
 
 export interface VerifyEnvelopesOptions {
-  /** The trust set: the vector file's `witness_keys`, or a `{kid: publicKey}` record. */
-  witnessKeys?: readonly WitnessKey[] | Record<string, Buffer | string> | null;
+  /**
+   * The trust set: the vector file's `witness_keys`, a `{kid: publicKey}` record, or a trust-set
+   * document `{witness_keys, not_after}` whose `not_after` bounds every row.
+   */
+  witnessKeys?: WitnessKeys | null;
   /**
    * The envelope bytes AS RECEIVED, positionally aligned with `bundle.envelopes` (entries may be
    * null). Only `envelope_non_canonical` needs them, and only where a deployment kept them.
@@ -1842,7 +1917,7 @@ function scoreEnvelope(
       "envelope_unknown_witness",
       `witness kid=${pyRepr(kid)} alg=${pyRepr(alg)} is not in the trusted witness keys ` +
         `(${reprList(sortedStrings(trust.trusted.keys()))})` +
-        (lapsed === undefined ? "" : `: the key expired at not_after=${pyRepr(lapsed)}`),
+        (lapsed === undefined ? "" : `: the ${lapsed[0]} expired at not_after=${pyRepr(lapsed[1])}`),
     );
   }
 
@@ -2604,11 +2679,12 @@ export interface VerifyBundleOptions {
   expectedHead?: readonly [number, string] | null;
   /**
    * The trust set for the bundle's observer envelopes, if it carries any: the vector file's
-   * `[{kid, alg, public_key_hex}]` shape, or a `{kid: publicKey}` record. Absent is an EMPTY
-   * trust set, not a skipped check — an envelope naming a key nobody trusts is
-   * `envelope_unknown_witness`.
+   * `[{kid, alg, public_key_hex}]` shape, a `{kid: publicKey}` record, or a trust-set document
+   * `{witness_keys, not_after}` whose `not_after` bounds every row: at or after it no row is
+   * trusted. Absent is an EMPTY trust set, not a skipped check — an envelope naming a key nobody
+   * trusts is `envelope_unknown_witness`.
    */
-  witnessKeys?: readonly WitnessKey[] | Record<string, Buffer | string> | null;
+  witnessKeys?: WitnessKeys | null;
   /**
    * The envelope bytes AS RECEIVED, positionally aligned with `bundle.envelopes`. Only
    * `envelope_non_canonical` needs them, and only where a deployment kept them.

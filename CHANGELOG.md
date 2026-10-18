@@ -4,7 +4,14 @@ One line per change. The long-form notes for each version (reasoning, review fin
 
 Versions follow semantic versioning.
 
-## [Unreleased]
+## [0.15.0] - 2026-10-18
+
+### Added
+- **Bundle corpus revision `bundle_vectors_v1.5`, vendored.** `test/fixtures/vectors/bundles/bundle_vectors_v1.json` (twenty-nine cases) is copied byte for byte from the Python repository by `tools/gen_fixtures.py`: entry validation and the first `schema_version=1` chains (`valid_bundle_v1`, `reject_unknown_ledger_fields`, `reject_v2_field_on_v1`, `reject_unknown_ledger_event`, `reject_outcome_event_on_v1`, `reject_invalid_ledger_entry`, `reject_invalid_ledger_entry_array`, `valid_bundle_v1_ungated_allow`, `reject_unknown_policy_value_v1_chain`). Every case scores to its declared outcome; scored by side against the Python verifier, no case is accepted by one and rejected by the other, neither side raises, and the failure lists are identical. The interop job's fixture-drift check needs its Python pin moved to the release that ships v1.5
+- **A trust set may be a `WitnessKeySet` whose `not_after` bounds every row** (attenu-io/attenu-guard#35). `witnessKeys` (and `--witness-keys FILE`) may be `{witness_keys: [rows], not_after}`; at or after the set's `not_after`, compared with the same verification time as a row's, no row is trusted and every envelope fails the existing `envelope_unknown_witness`; for a key the set held, the message says the trust set expired. The document is read whole: another member, rows that are not an array, or a `not_after` outside the row grammar throw, with the Python messages; a numeric `not_after` prints as JavaScript writes the number (`1` for `1.0`), as the row check already does. New exported types `WitnessKeySet` and `WitnessKeys`
+
+### Changed
+- `--witness-keys FILE`: a JSON object with `bundle` and `witness_keys` members is a vector case, as before; any other object with `witness_keys` is now a trust-set document, read whole, so an object with `witness_keys` and a misspelled `notAfter` is refused instead of read for its rows. An object with both `bundle` and `not_after` is refused ("a vector case carries no not_after; a trust-set document carries no bundle"), since read as a vector case its expiry would be dropped. A vector case is not read whole: a misspelled `notAfter` on a vector case is ignored and the case still verifies; "is refused" applies to the document form only. `test/fixtures/parity/` records the Python CLI on the document cases, those two objects included. The not-a-trust-set message now ends "or an object carrying one as witness_keys", as Python's does. A record passed to the library with a `witness_keys` member is a document, so the `{kid: key}` form cannot name a kid `witness_keys`
 
 ## [0.14.0] - 2026-10-15
 

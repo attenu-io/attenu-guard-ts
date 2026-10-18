@@ -133,7 +133,7 @@ test("the vector file declares its version and every expected case, in order", (
   // implementation that scored bundle_vectors_v1 still scores it. `revision` is the additive
   // counter that does move. Cases are appended, never inserted: a position is stable for life.
   assert.equal(DOCUMENT.version, "bundle_vectors_v1");
-  assert.equal(DOCUMENT.revision, "bundle_vectors_v1.4");
+  assert.equal(DOCUMENT.revision, "bundle_vectors_v1.5");
   assert.deepEqual(
     DOCUMENT.cases.map((c) => c.name),
     [
@@ -166,24 +166,60 @@ test("the vector file declares its version and every expected case, in order", (
       // v1.4: the two rows that pin the policy rule an implementer could get wrong.
       "reject_unknown_policy_value",
       "reject_policy_on_spawn",
+      // v1.5: entry validation, and the first schema_version=1 chains: an accepting v1 base with
+      // no outcome entries, one rejecting row per entry-validation reason, and the v1.4 policy
+      // rule on a v1 chain.
+      "valid_bundle_v1",
+      "reject_unknown_ledger_fields",
+      "reject_v2_field_on_v1",
+      "reject_unknown_ledger_event",
+      "reject_outcome_event_on_v1",
+      "reject_invalid_ledger_entry",
+      "reject_invalid_ledger_entry_array",
+      "valid_bundle_v1_ungated_allow",
+      "reject_unknown_policy_value_v1_chain",
     ],
   );
 });
 
-test("every case is a complete v2 bundle with execution binding", () => {
+// Revision v1.5 adds schema_version=1 cases. Every other case is a v2 bundle.
+const V1_CASES: ReadonlySet<string> = new Set([
+  "valid_bundle_v1",
+  "reject_v2_field_on_v1",
+  "reject_outcome_event_on_v1",
+  "valid_bundle_v1_ungated_allow",
+  "reject_unknown_policy_value_v1_chain",
+]);
+
+/** The entries that are JSON objects: the two invalid_ledger_entry rows hold one that is not. */
+function objectEntries(bundle: Bundle): Record<string, CJson>[] {
+  return (bundle.entries as unknown[]).filter(
+    (e): e is Record<string, CJson> => e !== null && typeof e === "object" && !Array.isArray(e),
+  );
+}
+
+test("every v2 case is a complete v2 bundle with execution binding; every v1 case is all v1", () => {
   for (const c of DOCUMENT.cases) {
     const bundle = c.bundle;
-    assert.equal(bundle.v, 2, c.name);
     assert.ok((bundle.anchor as Record<string, CJson>)["sig"], c.name);
-    const events = bundle.entries.map((e) => e["event"]);
+    if (V1_CASES.has(c.name)) {
+      assert.equal(bundle.v, 1, c.name);
+      assert.equal((bundle.anchor as Record<string, CJson>)["v"], 1, c.name);
+      for (const e of bundle.entries) assert.equal(e["v"], 1, c.name);
+      assert.ok(c.description.trim(), c.name);
+      continue;
+    }
+    assert.equal(bundle.v, 2, c.name);
+    const entries = objectEntries(bundle);
+    const events = entries.map((e) => e["event"]);
     for (const required of ["root", "spawn", "allow", "deny", "outcome", "done"]) {
       assert.ok(events.includes(required as CJson), `${c.name}: no ${required} entry`);
     }
-    const allow = bundle.entries.find((e) => e["event"] === "allow")!;
+    const allow = entries.find((e) => e["event"] === "allow")!;
     for (const field of ["call_id", "capture", "adapter", "authorized_params_hash"]) {
       assert.ok(field in allow, `${c.name}: allow missing ${field}`);
     }
-    const outcome = bundle.entries.find((e) => e["event"] === "outcome")!;
+    const outcome = entries.find((e) => e["event"] === "outcome")!;
     for (const field of ["call_id", "body_state", "invoked_params_hash"]) {
       assert.ok(field in outcome, `${c.name}: outcome missing ${field}`);
     }
@@ -301,9 +337,88 @@ test("the vendored copy is the file the fixtures directory documents, read as ra
   // copied, or is copied with a rewritten serialisation, fails here.
   const raw = readFileSync(resolve(FIXTURES, "vectors", "bundles", "bundle_vectors_v1.json"), "utf8");
   assert.equal(JSON.parse(raw).version, "bundle_vectors_v1");
-  assert.equal(JSON.parse(raw).revision, "bundle_vectors_v1.4");
-  assert.equal(JSON.parse(raw).cases.length, 20);
+  assert.equal(JSON.parse(raw).revision, "bundle_vectors_v1.5");
+  assert.equal(JSON.parse(raw).cases.length, 29);
   assert.ok(raw.endsWith("\n"), "the Python writer terminates the file with a newline");
+});
+
+// ---- revision v1.5 --------------------------------------------------------------------------
+
+// The nine ledger field names no published entry carried when v1.5 was cut. The promise on
+// A2A #1575 was that v1.5 adds no row for them.
+const NEVER_PUBLISHED = [
+  "detail",
+  "error_code",
+  "mode",
+  "params_hash_reason",
+  "pending_at_kill",
+  "receipt",
+  "revoked",
+  "strikes",
+  "target",
+];
+
+test("v1.5: no case carries a field name no published entry carries", () => {
+  for (const c of DOCUMENT.cases) {
+    for (const e of objectEntries(c.bundle)) {
+      for (const name of NEVER_PUBLISHED) assert.ok(!(name in e), `${c.name}: ${name}`);
+    }
+  }
+});
+
+test("v1.5: the v1 bases have no outcome and only canonical v1 fields", () => {
+  const v2Only = new Set([
+    "adapter", "authorized_params_hash", "body_state", "call_id", "capture", "duration_ms",
+    "error_code", "invoked_params_hash", "params_hash_reason", "params_salt", "pending_at_kill",
+    "receipt",
+  ]);
+  const byName = new Map(DOCUMENT.cases.map((c) => [c.name, c]));
+  for (const [name, count] of [["valid_bundle_v1", 7], ["valid_bundle_v1_ungated_allow", 8]] as const) {
+    const entries = byName.get(name)!.bundle.entries;
+    assert.equal(entries.length, count, name);
+    assert.deepEqual(entries.map((e) => e["seq"]), [...Array(count).keys()], name);
+    for (const e of entries) {
+      assert.ok(LEDGER_EVENTS_V1.has(e["event"] as string), `${name}: event ${String(e["event"])}`);
+      for (const field of Object.keys(e)) assert.ok(!v2Only.has(field), `${name}: ${field}`);
+    }
+  }
+});
+
+test("v1.5: each entry-validation row reports only what it is about", () => {
+  // The re-hashed, re-anchored rows report exactly their declared failures; the two non-object
+  // rows may add the chain-level integrity pair and nothing else.
+  const byName = new Map(DOCUMENT.cases.map((c) => [c.name, c]));
+  const key = (f: ExpectedFailure) => JSON.stringify([f.reason, f.seq, f.node]);
+  for (const name of [
+    "reject_unknown_ledger_fields",
+    "reject_v2_field_on_v1",
+    "reject_unknown_ledger_event",
+    "reject_outcome_event_on_v1",
+    "reject_unknown_policy_value_v1_chain",
+  ]) {
+    const c = byName.get(name)!;
+    const report = verifyBundle(c.bundle, signerFor(c));
+    assert.deepEqual(positions(report.failure_details).map(key).sort(), c.expect_failures.map(key).sort(), name);
+    assert.equal(report.checks.anchor, "verified", name);
+    assert.equal(report.checks.integrity, true, name);
+  }
+  for (const name of ["reject_invalid_ledger_entry", "reject_invalid_ledger_entry_array"]) {
+    const c = byName.get(name)!;
+    const report = verifyBundle(c.bundle, signerFor(c));
+    const extras = positions(report.failure_details).filter((f) => !includesPosition(c.expect_failures, f));
+    assert.deepEqual(extras.map((f) => f.reason).sort(), ["integrity", "integrity(anchor)"], name);
+    assert.ok(extras.every((f) => f.seq === null && f.node === null), name);
+    assert.ok(report.failures[0]!.includes("entries[7] is"), report.failures[0]);
+  }
+});
+
+test("v1.5: the v1 policy row reports invalid_policy, not invalid_allow", () => {
+  const c = DOCUMENT.cases.find((x) => x.name === "reject_unknown_policy_value_v1_chain")!;
+  const report = verifyBundle(c.bundle, signerFor(c));
+  const reasons = new Set(report.failure_details.map((d) => d.reason));
+  assert.ok(reasons.has("invalid_policy"));
+  assert.ok(!reasons.has("invalid_allow"));
+  assert.equal(report.ungated, 0);
 });
 
 test("the literal base differs from valid_bundle_v2 in the root authority only", () => {
