@@ -4,6 +4,11 @@ One line per change. The long-form notes for each version (reasoning, review fin
 
 Versions follow semantic versioning.
 
+## [Unreleased]
+
+### Added
+- **Vector `reject_child_adds_detail_type` vendored** into `test/fixtures/vectors/draft02/` byte for byte from attenu-guard (the -02 set now has thirty-six files). The leaf adds a second detail of a type its parent did not carry; this library rejects it at parse as `malformed`, the outcome Python declares, and rebuilds the chain byte for byte. Added for draft -03 (Section 4.4, Kieran Sweeney's rule for a later multi-type revision). `VECTOR_NAMES_02` and the three count assertions in `test/vectors-02.test.ts` read thirty-six
+
 ## [0.15.0] - 2026-10-18
 
 ### Added
