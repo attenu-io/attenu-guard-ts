@@ -9,6 +9,9 @@ Versions follow semantic versioning.
 ### Added
 - **Vector `reject_child_adds_detail_type` vendored** into `test/fixtures/vectors/draft02/` byte for byte from attenu-guard (the -02 set now has thirty-six files). The leaf adds a second detail of a type its parent did not carry; this library rejects it at parse as `malformed`, the outcome Python declares, and rebuilds the chain byte for byte. Added for draft -03 (Section 4.4, Kieran Sweeney's rule for a later multi-type revision). `VECTOR_NAMES_02` and the three count assertions in `test/vectors-02.test.ts` read thirty-six
 
+### Changed
+- **Profile "02": a token is expired at `now == exp`** (`load(..., { draft: "02" })`), as in attenu-guard. Draft -03 step 5 reads `now < exp`, as RFC 7519 Section 4.1.4 does; the default -01 profile is unchanged (`now <= exp`). Test in `test/wire-02.test.ts`. No vector changes
+
 ## [0.15.0] - 2026-10-18
 
 ### Added
