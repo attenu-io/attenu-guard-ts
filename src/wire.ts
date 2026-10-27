@@ -754,7 +754,8 @@ export interface LoadOptions {
  *   4. Subsumption: DT_i's authority `isNarrowerThan` DT_{i-1}'s for every
  *      i > 0 — REUSES the core's own relation (authority.ts); not
  *      reimplemented here.
- *   5. Time: `now <= exp` (and `now >= nbf` where present) for every DT_i, and
+ *   5. Time: `now <= exp` (`now < exp` under profile "02") and `now >= nbf`
+ *      where present, for every DT_i, and
  *      `exp` non-increasing along the chain.
  *
  * OUT OF SCOPE, as in the Python reference implementation — documented here
@@ -972,8 +973,11 @@ export function load(
         );
       }
     }
-    if (now > exp) {
-      throw new WireError(WireReasonCode.EXPIRED, `token[${i}] expired: now=${now} > exp=${exp}`);
+    // The -01 text reads now <= exp; the -03 text, profile "02", now < exp
+    // as RFC 7519 4.1.4 does.
+    if (now > exp || (draft === PROFILE_02 && now === exp)) {
+      const op = now === exp ? ">=" : ">";
+      throw new WireError(WireReasonCode.EXPIRED, `token[${i}] expired: now=${now} ${op} exp=${exp}`);
     }
     if (prevExp !== null && exp > prevExp) {
       throw new WireError(

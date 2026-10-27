@@ -373,3 +373,13 @@ test("-02 wire: the Table 2 names the library can report", () => {
     assert.ok((Object.values(WireReasonCode) as string[]).includes(name), name);
   }
 });
+
+test("-03 step 5: now == leaf exp is expired under 02 (RFC 7519 4.1.4)", () => {
+  const tokens = mint();
+  const exp = Number(payloadOf(tokens[tokens.length - 1]!).exp);
+  assert.ok(load(tokens, signer(), { draft: "02", now: exp - 1 }));
+  assert.throws(
+    () => load(tokens, signer(), { draft: "02", now: exp }),
+    (e: unknown) => e instanceof WireError && e.reason === WireReasonCode.EXPIRED,
+  );
+});

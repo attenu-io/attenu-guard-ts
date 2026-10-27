@@ -72,6 +72,7 @@ const VECTOR_NAMES_02 = [
   "reject_detail_extra_member",
   "reject_second_detail",
   "reject_unknown_detail_type",
+  "reject_child_adds_detail_type",
   "reject_altered_sub_and_par_hash",
   "reject_reissued_parent",
 ] as const;
@@ -114,7 +115,7 @@ test("-02 vectors: the directory holds exactly the thirty-five listed files", ()
   assert.deepEqual(onDisk, VECTOR_NAMES_02.map((n) => `${n}.json`).sort());
 });
 
-test("-02 vectors: all 35 score exactly as declared under the -02 profile", () => {
+test("-02 vectors: all 36 score exactly as declared under the -02 profile", () => {
   let scored = 0;
   for (const name of VECTOR_NAMES_02) {
     const v = vector(name);
@@ -122,8 +123,8 @@ test("-02 vectors: all 35 score exactly as declared under the -02 profile", () =
     assert.equal(score(v), v.expect ?? v.expect_reject_reason, name);
     scored++;
   }
-  assert.equal(scored, 35);
-  assert.equal(N, 35);
+  assert.equal(scored, 36);
+  assert.equal(N, 36);
 });
 
 test("-02 vectors: declared reasons are Table 2 names", () => {
@@ -314,6 +315,8 @@ const GENERATORS: Record<(typeof VECTOR_NAMES_02)[number], () => string[]> = {
   reject_second_detail: () =>
     tamper(base(), 2, (p) => p["authorization_details"].push({ type: "agent_delegation", scopes: ["crm.read"], constraints: [] })),
   reject_unknown_detail_type: () => tamper(base(), 0, (p) => (detail(p)["type"] = "acme_site_policy")),
+  reject_child_adds_detail_type: () =>
+    tamper(base(), 2, (p) => p["authorization_details"].push({ type: "acme_site_policy", policy: "site-default" })),
   reject_altered_sub_and_par_hash: () => {
     const t = base();
     t[2] = signParts(
@@ -334,7 +337,7 @@ const GENERATORS: Record<(typeof VECTOR_NAMES_02)[number], () => string[]> = {
   },
 };
 
-test("-02 byte parity: this library rebuilds all 35 chains byte for byte as Python wrote them", () => {
+test("-02 byte parity: this library rebuilds all 36 chains byte for byte as Python wrote them", () => {
   let identical = 0;
   for (const name of VECTOR_NAMES_02) {
     const v = vector(name);
@@ -343,7 +346,7 @@ test("-02 byte parity: this library rebuilds all 35 chains byte for byte as Pyth
     assert.deepEqual(GENERATORS[name](), v.tokens, name);
     identical++;
   }
-  assert.equal(identical, 35);
+  assert.equal(identical, 36);
 });
 
 test("-02 byte parity: every token re-encodes from its decoded parts to its own bytes", () => {
