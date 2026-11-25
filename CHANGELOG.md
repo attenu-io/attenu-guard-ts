@@ -6,6 +6,14 @@ Versions follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-25
+
+### Changed
+- **Profile "02": an Ed25519 key is expected to sign as `"Ed25519"`** (RFC 9864; draft -03 Section 3 and step 1). `load(..., { draft: "02" })` defaults its accepted list to `["Ed25519"]` for an Ed25519 verifier, so a -02 chain minted as `"EdDSA"` by attenu-guard 0.22.0 or earlier is now `signature_invalid` by default; pass `acceptedAlgs: ["Ed25519", "EdDSA"]` to keep accepting it. The alg-confusion guard admits both names of the signer's own algorithm and never another key type. The default -01 profile is unchanged, and so is the evidence envelope's `witness.alg`. Same rule as attenu-guard's `_profile_alg`. Tests: `test/wire-02.test.ts`
+
+### Added
+- **Three step-5 boundary vectors vendored** byte for byte from attenu-guard (the -02 set now has thirty-nine files): `valid_now_before_exp`, `reject_now_equals_exp`, `reject_now_after_exp`, each `valid_chain`'s tokens with `now` at 299, 300 and 301; this library scores them accept, `expired`, `expired` and rebuilds all thirty-nine chains byte for byte. Every vendored -02 file also carries the informational `steps` member; tokens of the thirty-six earlier files are unchanged
+
 ## [0.16.0] - 2026-10-27
 
 ### Added

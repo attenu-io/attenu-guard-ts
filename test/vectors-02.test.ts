@@ -75,6 +75,9 @@ const VECTOR_NAMES_02 = [
   "reject_child_adds_detail_type",
   "reject_altered_sub_and_par_hash",
   "reject_reissued_parent",
+  "valid_now_before_exp",
+  "reject_now_equals_exp",
+  "reject_now_after_exp",
 ] as const;
 
 const N = VECTOR_NAMES_02.length;
@@ -110,12 +113,12 @@ function score(v: Vector02): string {
   }
 }
 
-test("-02 vectors: the directory holds exactly the thirty-five listed files", () => {
+test("-02 vectors: the directory holds exactly the thirty-nine listed files", () => {
   const onDisk = readdirSync(fixturePath("vectors/draft02")).filter((f) => f.endsWith(".json")).sort();
   assert.deepEqual(onDisk, VECTOR_NAMES_02.map((n) => `${n}.json`).sort());
 });
 
-test("-02 vectors: all 36 score exactly as declared under the -02 profile", () => {
+test("-02 vectors: all 39 score exactly as declared under the -02 profile", () => {
   let scored = 0;
   for (const name of VECTOR_NAMES_02) {
     const v = vector(name);
@@ -123,8 +126,8 @@ test("-02 vectors: all 36 score exactly as declared under the -02 profile", () =
     assert.equal(score(v), v.expect ?? v.expect_reject_reason, name);
     scored++;
   }
-  assert.equal(scored, 36);
-  assert.equal(N, 36);
+  assert.equal(scored, 39);
+  assert.equal(N, 39);
 });
 
 test("-02 vectors: declared reasons are Table 2 names", () => {
@@ -335,9 +338,13 @@ const GENERATORS: Record<(typeof VECTOR_NAMES_02)[number], () => string[]> = {
     ); // the leaf's par_hash is NOT repaired
     return t;
   },
+  // valid_chain's tokens unchanged; only `now` moves (299, 300, 301).
+  valid_now_before_exp: base,
+  reject_now_equals_exp: base,
+  reject_now_after_exp: base,
 };
 
-test("-02 byte parity: this library rebuilds all 36 chains byte for byte as Python wrote them", () => {
+test("-02 byte parity: this library rebuilds all 39 chains byte for byte as Python wrote them", () => {
   let identical = 0;
   for (const name of VECTOR_NAMES_02) {
     const v = vector(name);
@@ -346,7 +353,7 @@ test("-02 byte parity: this library rebuilds all 36 chains byte for byte as Pyth
     assert.deepEqual(GENERATORS[name](), v.tokens, name);
     identical++;
   }
-  assert.equal(identical, 36);
+  assert.equal(identical, 39);
 });
 
 test("-02 byte parity: every token re-encodes from its decoded parts to its own bytes", () => {

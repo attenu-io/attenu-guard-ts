@@ -2,6 +2,7 @@
 
 The long-form notes behind each version. `CHANGELOG.md` at the repo root is one line per change; this directory keeps the reasoning, the review findings and the migration detail.
 
+- [0.17.0](v0.17.0.md) — 2026-11-25
 - [0.16.0](v0.16.0.md) — 2026-10-27
 - [0.15.0](v0.15.0.md) — 2026-10-18
 - [0.14.0](v0.14.0.md) — 2026-10-15

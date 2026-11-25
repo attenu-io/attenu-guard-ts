@@ -544,7 +544,7 @@ export class VerifiedChain {
    * here, so a decision taken from a verified chain and a decision taken
    * in-process are the same decision. Under the -02, `options.audience` names
    * this Enforcement Point and is checked against DT_n's `aud` first (reason
-   * `audience_mismatch`); a cumulative constraint whose running total `ctx` does
+   * `audience_mismatch`); a cumulative constraint whose running total `totals` does
    * not carry denies (draft02.ts).
    */
   permits(scope: string, ctx: Context | null = null, options: PermitsOptions = {}): Decision {
@@ -720,8 +720,10 @@ export interface LoadOptions {
   /**
    * The algorithms this verifier accepts, checked in step 1 before the signature:
    * a token whose `alg` is off the list is denied even where its signature
-   * verifies. Defaults to the signer's own under "02"; honoured under "01" only
-   * when given, never implied there.
+   * verifies. Defaults to the signer's own under "02", under its fully-specified
+   * RFC 9864 name ("Ed25519" for an Ed25519 key); pass ["Ed25519", "EdDSA"] to keep
+   * accepting -02 chains minted with "EdDSA" by attenu-guard 0.22.0 or earlier.
+   * Honoured under "01" only when given, never implied there.
    */
   acceptedAlgs?: readonly string[] | null;
   /**
@@ -762,6 +764,28 @@ export interface LoadOptions {
  * rather than silently skipped: step 6 (`cnf`/DPoP holder-binding proof) and
  * step 7 (Token Status List revocation). Neither is checked.
  */
+/**
+ * RFC 9864 deprecates the polymorphic JOSE identifier "EdDSA" for JWS and registers the
+ * fully-specified "Ed25519". The -02/-03 profile (Section 3, step 1) requires a fully-specified
+ * algorithm, so under that profile an Ed25519 key is expected to sign as "Ed25519". The -01
+ * profile, the default, keeps "EdDSA". Mirrors `_profile_alg` in the Python reference.
+ */
+const FULLY_SPECIFIED: Readonly<Record<string, string>> = { EdDSA: "Ed25519" };
+const ALIASES: Readonly<Record<string, readonly string[]>> = { EdDSA: ["EdDSA", "Ed25519"] };
+
+function profileAlg(signerAlg: string, draft: Profile): string {
+  return draft === PROFILE_02 ? (FULLY_SPECIFIED[signerAlg] ?? signerAlg) : signerAlg;
+}
+
+/**
+ * Alg-confusion guard: the header may name only the signer's own algorithm, under either of its
+ * JOSE identifiers ("EdDSA" or "Ed25519" for an Ed25519 key). Which of the two a verifier accepts
+ * is the accepted list's job, not this guard's.
+ */
+function algMatchesSigner(headerAlg: unknown, signerAlg: string): boolean {
+  return typeof headerAlg === "string" && (ALIASES[signerAlg] ?? [signerAlg]).includes(headerAlg);
+}
+
 export function load(
   tokens: readonly string[],
   signer: Signer,
@@ -786,7 +810,7 @@ export function load(
 
   // ---- step 1: signatures -------------------------------------------------
   const trustedRoots = rootKeyIds === null ? null : new Set(rootKeyIds);
-  const acceptedAlgs: readonly string[] | null = given ?? (draft === PROFILE_02 ? [signer.alg] : null);
+  const acceptedAlgs: readonly string[] | null = given ?? (draft === PROFILE_02 ? [profileAlg(signer.alg, draft)] : null);
   for (let i = 0; i < parsed.length; i++) {
     const { header, sig, signingInput } = parsed[i]!;
     const alg = header["alg"];
@@ -797,7 +821,7 @@ export function load(
           JSON.stringify(acceptedAlgs),
       );
     }
-    if (alg !== signer.alg) {
+    if (draft === PROFILE_02 ? !algMatchesSigner(alg, signer.alg) : alg !== signer.alg) {
       throw new WireError(
         WireReasonCode.SIGNATURE_INVALID,
         `token[${i}] header alg ${JSON.stringify(alg)} != signer alg ${JSON.stringify(signer.alg)}`,
