@@ -6,6 +6,8 @@ Versions follow semantic versioning.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-25
+
 ### Changed
 - **Profile "02": an Ed25519 key is expected to sign as `"Ed25519"`** (RFC 9864; draft -03 Section 3 and step 1). `load(..., { draft: "02" })` defaults its accepted list to `["Ed25519"]` for an Ed25519 verifier, so a -02 chain minted as `"EdDSA"` by attenu-guard 0.22.0 or earlier is now `signature_invalid` by default; pass `acceptedAlgs: ["Ed25519", "EdDSA"]` to keep accepting it. The alg-confusion guard admits both names of the signer's own algorithm and never another key type. The default -01 profile is unchanged, and so is the evidence envelope's `witness.alg`. Same rule as attenu-guard's `_profile_alg`. Tests: `test/wire-02.test.ts`
 
