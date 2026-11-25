@@ -544,7 +544,7 @@ export class VerifiedChain {
    * here, so a decision taken from a verified chain and a decision taken
    * in-process are the same decision. Under the -02, `options.audience` names
    * this Enforcement Point and is checked against DT_n's `aud` first (reason
-   * `audience_mismatch`); a cumulative constraint whose running total `ctx` does
+   * `audience_mismatch`); a cumulative constraint whose running total `totals` does
    * not carry denies (draft02.ts).
    */
   permits(scope: string, ctx: Context | null = null, options: PermitsOptions = {}): Decision {
