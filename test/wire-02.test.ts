@@ -15,7 +15,7 @@ import { toPlain } from "../src/canonical.js";
 import { CallLimit, EgressRank, RowLimit, SpendCap } from "../src/ceilings.js";
 import * as d from "../src/draft02.js";
 import { Guard } from "../src/guard.js";
-import { HS256TestSigner, WireError, WireReasonCode, b64urlDecode, b64urlEncode, load, type LoadOptions } from "../src/wire.js";
+import { Ed25519Signer, HS256TestSigner, WireError, WireReasonCode, b64urlDecode, b64urlEncode, load, type LoadOptions } from "../src/wire.js";
 import { fixtureJson } from "./helpers.js";
 import { mintChain02, payloadOf, repair as repairWith, resign as resignWith, signParts, type Mint02Options } from "./mint02.js";
 
@@ -382,4 +382,41 @@ test("-03 step 5: now == leaf exp is expired under 02 (RFC 7519 4.1.4)", () => {
     () => load(tokens, signer(), { draft: "02", now: exp }),
     (e: unknown) => e instanceof WireError && e.reason === WireReasonCode.EXPIRED,
   );
+});
+
+
+// =========================================================================
+// RFC 9864: under the -02/-03 profile an Ed25519 key is expected to sign as "Ed25519"
+// (Section 3; step 1). The -01 profile is unchanged. Mirrors FullySpecifiedEd25519 in
+// tests/test_wire_02.py.
+// =========================================================================
+
+const ed = Ed25519Signer.generate("ed-1");
+/** The same key, writing the fully-specified name the -02 profile requires. */
+const edFullySpecified = { alg: "Ed25519", kid: "ed-1", sign: (si: Buffer) => ed.sign(si), verify: () => false };
+const algsOf = (tokens: readonly string[]) =>
+  new Set(tokens.map((t) => JSON.parse(b64urlDecode(t.split(".")[0]!).toString("utf8")).alg));
+const mintEd = (s: any) => mintChain02(chain(), s, { principal: PRINCIPAL, aud: AUD, cnf, maxDepth: 4 });
+
+test("Ed25519: a -02 chain signed as \"Ed25519\" verifies under the default accepted list", () => {
+  const tokens = mintEd(edFullySpecified);
+  assert.deepEqual(algsOf(tokens), new Set(["Ed25519"]));
+  assert.ok(load(tokens, ed, { draft: "02" }));
+});
+
+test("Ed25519: a legacy -02 chain signed as \"EdDSA\" is denied by default, admitted by the list", () => {
+  const tokens = mintEd(ed);
+  assert.deepEqual(algsOf(tokens), new Set(["EdDSA"]));
+  assert.throws(() => load(tokens, ed, { draft: "02" }),
+    (e: unknown) => e instanceof WireError && e.reason === WireReasonCode.SIGNATURE_INVALID);
+  assert.ok(load(tokens, ed, { draft: "02", acceptedAlgs: ["Ed25519", "EdDSA"] }));
+});
+
+test("Ed25519: the alias never crosses key types", () => {
+  assert.throws(() => load(mint(), ed, { draft: "02", acceptedAlgs: ["HS256", "Ed25519"] }),
+    (e: unknown) => e instanceof WireError && e.reason === WireReasonCode.SIGNATURE_INVALID);
+});
+
+test("Ed25519: the -01 profile still requires \"EdDSA\" exactly", () => {
+  assert.throws(() => load(mintEd(edFullySpecified), ed, { draft: "01" }), WireError);
 });
